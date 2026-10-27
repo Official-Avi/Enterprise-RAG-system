@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { MeContext, useApi, useMe } from "@/lib/hooks";
 import type { Me } from "@/lib/types";
 import { Icon, type IconName } from "./icons";
+import { Logo } from "./Logo";
 import { Button, cx, ErrorState, Loading } from "./ui";
 
 interface NavItem {
@@ -129,13 +130,8 @@ export function Shell({ children }: { children: ReactNode }) {
       <div className="flex min-h-screen">
         <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-panel md:flex">
           <div className="border-b border-border px-4 py-3.5">
-            <div className="flex items-center gap-2">
-              <span
-                aria-hidden="true"
-                className="grid h-7 w-7 place-items-center rounded-md bg-accent text-xs font-bold text-accent-contrast"
-              >
-                RF
-              </span>
+            <div className="flex items-center gap-2.5">
+              <Logo size={34} />
               <div>
                 <div className="text-sm font-semibold leading-tight">RackFlow AI</div>
                 <div className="text-xs text-muted">{tenant?.tenant_name ?? "Workspace"}</div>
@@ -193,7 +189,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </aside>
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex items-center justify-between border-b border-border bg-panel px-4 py-2 md:hidden">
-            <span className="font-semibold">RackFlow AI</span>
+            <span className="flex items-center gap-2 font-semibold"><Logo size={26} />RackFlow AI</span>
             <Button variant="ghost" onClick={logout}>
               Sign out
             </Button>

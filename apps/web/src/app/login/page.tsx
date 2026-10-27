@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState, type FormEvent } from "react";
+import { Logo } from "@/components/Logo";
 import { Button, inputClass } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 
@@ -81,13 +82,8 @@ export default function LoginPage() {
   return (
     <main className="grid min-h-screen place-items-center px-4">
       <div className="w-full max-w-sm rounded-xl border border-border bg-panel p-6 shadow-sm">
-        <div className="mb-6 flex items-center gap-2">
-          <span
-            aria-hidden="true"
-            className="grid h-8 w-8 place-items-center rounded-md bg-accent text-xs font-bold text-accent-contrast"
-          >
-            RF
-          </span>
+        <div className="mb-6 flex items-center gap-3">
+          <Logo size={48} />
           <div>
             <h1 className="font-semibold leading-tight">RackFlow AI</h1>
             <p className="text-xs text-muted">Enterprise RAG control plane</p>

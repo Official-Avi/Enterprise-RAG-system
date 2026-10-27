@@ -55,6 +55,7 @@ cd apps\web
 npm install
 npm run build
 Copy-Item -Recurse .next\static .next\standalone\.next\
+Copy-Item -Recurse public .next\standalone\
 $env:PORT=3000; $env:HOSTNAME="127.0.0.1"; node .next\standalone\server.js
 # open http://127.0.0.1:3000 and sign in, e.g. engineer@acme.example.com
 ```
