@@ -87,9 +87,10 @@ services:
     # Scale horizontally: docker compose up --scale worker=3
 
   web:
-    build: ./apps/web
-    environment:
-      API_PROXY_TARGET: http://api:8000
+    build:
+      context: ./apps/web
+      args:
+        API_PROXY_TARGET: http://api:8000
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
