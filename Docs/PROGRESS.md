@@ -29,14 +29,7 @@
 | 10 | Release and deployment | Not started | |
 
 ## Latest session
-- Date: 2026-10-27
-- Work completed: Documentation baseline prepared; implementation not yet verified.
-- Tests run: None
-- Known blockers: Target workspace and available compute not yet inspected.
-- Next actions:
-  1. Read `AGENT_INSTRUCTIONS.md`, `PID.md`, `PRD.md`, `ARCHITECTURE.md`.
-  2. Inspect existing files and preserve work.
-  3. Complete Phase 0 only, then Phase 1 after review.
+- Date: 2026-10-27 — Sprint Day 1 complete (entry below). Day 2 next: operations endpoint tests, admin/RBAC management, audit log, tenant settings, logical racks, evaluation.
 
 ### 2026-10-27 — Sprint Day 1: core platform and RAG pipeline
 - Implemented: foundation (config, logging, errors, 24-table tenant-scoped schema + migration, local auth with hashed sessions, CSRF, RBAC matrix, collection access); ingestion (validation, storage, PDF/DOCX/TXT/MD extraction, RapidOCR, quality, cleaning, chunking); PostgreSQL job queue with leases/backoff/cancel/reclaim, worker process with heartbeats; embeddings (FastEmbed), Qdrant adapter, idempotent indexing; permission-aware retrieval with PostgreSQL re-validation; grounded answers with verified citations; chat sessions; model providers (Claude, OpenAI-compatible, extractive); jobs/operations/models APIs; Next.js console (login, overview, collections, documents + upload, document detail, chat, job queue, workers, model serving, inspector); Dockerfiles, Compose, CI workflow.
