@@ -56,6 +56,14 @@ def _schema() -> Iterator[None]:
         cfg.attributes["connection"] = conn
         command.upgrade(cfg, "head")
     yield
+    try:  # drop this session's throwaway Qdrant collection
+        from rackflow.providers.vectorstore import get_vector_store
+
+        store = get_vector_store()
+        if store.client.collection_exists(store.collection):
+            store.client.delete_collection(store.collection)
+    except Exception as exc:  # noqa: BLE001 — Qdrant may not be running for unit-only runs
+        print(f"qdrant cleanup skipped: {type(exc).__name__}")
 
 
 @pytest.fixture(autouse=True)

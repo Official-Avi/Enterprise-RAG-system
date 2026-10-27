@@ -130,3 +130,59 @@ Every infrastructure response includes `state_source`: `manual`, `simulated`, or
 - Apply rate limits to uploads and chat.
 - Add correlation IDs to responses/logs.
 - Add OpenAPI docs, but do not expose administrative endpoints publicly without authorization.
+
+---
+
+## Implemented v1 response contracts (sprint 2026-10-27)
+
+These shapes are the binding contract between backend modules and the web app. All paths are under `/api/v1`. Timestamps are ISO-8601 UTC. IDs are UUID strings. Lists use `{ "items": [...], "next_cursor": string | null }` with `?limit=` (default 50, max 200) and `?cursor=` unless noted.
+
+### Auth (implemented)
+- `POST /auth/login` body `{email, password, tenant_slug?, mode?: "cookie"|"token"}` → `Me & {token: string|null}`. Cookie mode sets an HttpOnly `rf_session` cookie.
+- `POST /auth/logout` → 204. `GET /auth/me` → `Me`.
+- `Me = {user_id, email, display_name, tenant_id, role, permissions: string[], memberships: [{tenant_id, tenant_name, tenant_slug, role}]}`
+- Browser writes (POST/PATCH/DELETE with cookie auth) must send header `X-RackFlow-CSRF: 1`.
+
+### Collections (implemented)
+- `GET /collections` → `Collection[]` (plain array). `POST /collections` `{name, description?, visibility?: "tenant"|"restricted"}` → 201 `Collection`.
+- `GET|PATCH|DELETE /collections/{id}`.
+- `Collection = {id, name, description, visibility, access_level: "read"|"write"|"manage"|null, document_count, created_at, updated_at}`
+
+### Documents
+- `POST /collections/{collection_id}/documents` multipart field `files` (one or more) → 201
+  `{items: [{filename, status: "queued"|"duplicate"|"rejected", document_id|null, job_id|null, duplicate: bool, error: {code, message}|null}]}`
+- `GET /documents?collection_id=&status=&file_type=&q=` → list of `Document`
+- `GET /documents/{id}` → `Document`
+- `Document = {id, collection_id, collection_name, filename, file_type, mime_type, size_bytes, status: "queued"|"processing"|"indexed"|"failed"|"deleting"|"deleted", page_count, chunk_count, token_count, extraction_method, ocr_page_count, quality_score, warnings: string[], pipeline_version, embedding_model, uploaded_by, created_at, updated_at, indexed_at, latest_job: JobBrief|null}`
+- `JobBrief = {id, job_type, status, stage, attempt_count, max_attempts, error_code, safe_error_message}`
+- `GET /documents/{id}/pipeline` → `{document_id, status, jobs: [Job & {attempts: Attempt[], stages: StageRun[]}]}`
+- `GET /documents/{id}/chunks?page=` → list of `{id, chunk_index, page_start, page_end, token_count, text}` (requires content access)
+- `POST /documents/{id}/retry` → 202 `{document_id, job_id}`; `DELETE /documents/{id}` → 202 `{document_id, job_id, status: "deleting"}`
+
+### Jobs
+- `GET /jobs?status=&job_type=&collection_id=&document_id=` → list of `Job`
+- `GET /jobs/{id}` → `Job & {attempts: Attempt[], stages: StageRun[]}`
+- `POST /jobs/{id}/retry`, `POST /jobs/{id}/cancel` → `Job`
+- `Job = {id, job_type, status: "queued"|"running"|"retry_wait"|"succeeded"|"failed"|"cancelled", stage, document_id, document_filename, collection_id, attempt_count, max_attempts, priority, queued_at, available_at, started_at, finished_at, error_code, safe_error_message, correlation_id, cancel_requested}`
+- `Attempt = {attempt_number, worker_id, status, stage, started_at, finished_at, error_code, safe_error_message}`
+- `StageRun = {attempt_number, stage, status, started_at, finished_at, duration_ms, details: object, error_code}`
+
+### Operations
+- `GET /operations/summary` → `{jobs: {queued, running, retry_wait, succeeded, failed, cancelled}, queue_depth, oldest_queued_age_seconds, documents: {queued, processing, indexed, failed, deleting}, indexed_chunks, workers: {total, healthy, stale}, generated_at}`
+- `GET /operations/workers` → `{items: [{worker_id, hostname, status, health: "healthy"|"stale"|"stopped", current_job_id|null, jobs_succeeded, jobs_failed, started_at, last_heartbeat_at, version}]}`
+- `GET /operations/metrics?window=1h|24h|7d` → `{window_seconds, buckets: [{start, succeeded, failed}], avg_job_duration_ms, p95_job_duration_ms, error_rate, stage_durations_ms: {<stage>: number}}`
+
+### Chat
+- `POST /chat/sessions` `{title?, collection_ids: uuid[]}` → 201 `Session`; `GET /chat/sessions` → list of `Session`
+- `GET /chat/sessions/{id}` → `{session: Session, messages: Message[]}`
+- `POST /chat/sessions/{id}/messages` `{message, collection_ids?}` →
+  `{message_id, user_message_id, answer, evidence_status: "supported"|"insufficient", citations: Citation[], model: {provider, name, deployment_mode}, latency_ms, retrieved_count}`
+- `Session = {id, title, collection_ids, created_at, updated_at}`
+- `Message = {id, role: "user"|"assistant", content, evidence_status|null, citations: Citation[], model: {provider, name}|null, latency_ms|null, created_at}`
+- `Citation = {marker, document_id, filename, page, chunk_id, quote, score}` — only for sources the caller can still access.
+- `POST /retrieval/inspect` `{query, collection_ids}` → `{items: [{chunk_id, document_id, filename, page_start, page_end, score, text}]}` (permission `retrieval:inspect`)
+
+### Models
+- `GET /models` → `{items: [{provider, name, deployment_mode, is_default, timeout_seconds, max_concurrency}]}`
+- `GET /models/health` → `{ok, provider, model, deployment_mode, detail, latency_ms}`
+- `GET /models/metrics?window=1h` → `{window_seconds, requests, errors, timeouts, error_rate, avg_latency_ms, p95_latency_ms, prompt_tokens, completion_tokens}`
