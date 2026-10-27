@@ -36,11 +36,21 @@ Record decisions here before making changes that affect architecture or scope.
 
 ## Proposed during the 2026-10-27 audit (3-day sprint)
 
-### ADR-005 (proposal) — Celery + Redis, PostgreSQL job table as source of truth
-- Status: Proposed — becomes Accepted when the worker-crash/retry/idempotency integration test passes.
-- Decision: Celery 5 with Redis broker, `acks_late=True`, `task_reject_on_worker_lost=True`, explicit visibility timeout. `ProcessingJob`/`JobAttempt` rows in PostgreSQL are the authoritative job state; Celery is transport only. Task payloads carry IDs only, never document text.
-- Alternatives: RQ (simpler, fewer ack/retry controls); PostgreSQL `SKIP LOCKED` queue (fewer moving parts, but diverges from the documented Redis stack).
-- Consequences: workers run in Linux containers (Celery prefork is unsupported on native Windows).
+### ADR-005 — Durable job queue on PostgreSQL (supersedes the Celery/Redis proposal)
+- Status: Accepted 2026-10-27 — final acceptance when the worker-crash/retry/idempotency integration test passes.
+- Context: The development host is Windows without Docker or admin rights. Celery does not support native Windows workers, RQ requires `fork()`, and Redis has no supported native Windows build. The README lists Redis + Celery/RQ as *proposed* defaults.
+- Decision: `ProcessingJob` rows are both the authoritative state and the queue. Workers claim jobs with `SELECT … FOR UPDATE SKIP LOCKED`, hold a time-bounded lease renewed by heartbeat, and record every attempt in `JobAttempt`. Expired leases are reclaimed (crash recovery). Jobs are inserted in the same transaction as the document row (outbox-safe). Payloads carry IDs only.
+- Alternatives: Celery + Redis (documented default; needs Linux containers), RQ (no Windows support).
+- Consequences: One fewer infrastructure dependency; queue throughput is bounded by PostgreSQL (adequate for ingestion workloads; revisit with load tests). The `JobQueue` boundary (`rackflow.jobs`) allows a Celery/Redis transport later without changing handlers.
+
+### ADR-014 — Local services without Docker; Docker Compose for deployment
+- Status: Accepted 2026-10-27
+- Decision: On the Windows development host, PostgreSQL 18 and Qdrant 1.20 run from portable binaries (`scripts/dev/start-services.ps1`, data under `.data/`, bound to 127.0.0.1). `docker-compose.yml` and Dockerfiles are maintained for Linux deployment and verified in CI (GitHub Actions), not on this host.
+- Note: use `127.0.0.1`, not `localhost` — on this host IPv6 `::1` connections hang instead of being refused.
+
+### ADR-015 — OCR provider: RapidOCR (ONNX) by default
+- Status: Accepted 2026-10-27 (amends ADR-012)
+- Decision: `rapidocr-onnxruntime` (Apache-2.0; pip-installable, no system binary) renders OCR for image-only PDF pages rendered with `pypdfium2`. Tesseract remains a possible alternative adapter behind `OCRProvider`.
 
 ### ADR-006 (proposal) — Local accounts + server-side sessions; OIDC adapter later
 - Status: Proposed — awaiting owner confirmation that enterprise SSO is not required for the MVP.
@@ -76,7 +86,8 @@ Record decisions here before making changes that affect architecture or scope.
 - Decision: `pypdf` (BSD) for text-layer PDFs, `pypdfium2` (Apache-2.0/BSD) to render pages for OCR, Tesseract (Apache-2.0) for OCR inside the worker image, `python-docx` (MIT) for DOCX. Avoid PyMuPDF (AGPL) to keep enterprise licensing clean.
 
 ### ADR-013 — Development host
-- Status: Blocked — awaiting owner
+- Status: Owner accepted risk 2026-10-27 — development proceeds on this host. Owner was informed of the malware findings and chose to continue. Mitigations: no secrets committed; `.env` git-ignored; services bound to 127.0.0.1.
+- Original status: Blocked — awaiting owner
 - Context: The 2026-10-27 environment audit found the current Windows host has active Microsoft Defender malware detections and real-time protection disabled; Python executables are missing/damaged.
 - Decision: Do not install toolchains, run builds, or place credentials on this host. Development resumes in a clean Linux environment with Docker (cleaned/reimaged host, separate machine, or cloud dev environment).
 
