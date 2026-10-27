@@ -5,7 +5,8 @@ and index them through a durable job pipeline, ask questions and receive answers
 source citations, and operate the queues, workers, model endpoints and logical infrastructure
 behind it. Product and architecture documents live in [`Docs/`](Docs/).
 
-> Status: active 3-day sprint. See [`Docs/PROGRESS.md`](Docs/PROGRESS.md) for what is verified,
+> Status: v0.1.0 pilot release (3-day sprint complete). Final report: [`Docs/DELIVERY_REPORT.md`](Docs/DELIVERY_REPORT.md).
+> See [`Docs/PROGRESS.md`](Docs/PROGRESS.md) for what is verified,
 > partial or pending, and [`Docs/TESTING.md`](Docs/TESTING.md) for actual test results.
 
 ## Architecture at a glance

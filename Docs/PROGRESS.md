@@ -1,15 +1,15 @@
 # RackFlow AI — Progress Tracker
 
-**Current phase:** Sprint Day 3 — integration and verification  
-**Overall status:** Day 1 and Day 2 acceptance met; Day 3 (verification, hardening, delivery) next  
+**Current phase:** Sprint complete (v0.1.0 pilot release)  
+**Overall status:** Day 1, Day 2 and Day 3 acceptance met; production hardening remains (see DELIVERY_REPORT.md)  
 **Last updated:** 2026-10-27  
 **Rule:** The coding agent must update this file after every implementation session.
 
 ## Summary
-- Completed phases: 0–8 verified at API level (see TODO.md); 9–10 partial or not started
-- Active phase: Day 3 — verification, hardening, documentation
+- Completed phases: 0–8 verified (API and browser); 9–10 partially complete. Tasks: 73 verified / 13 partial / 5 not started / 1 deferred (of 92)
+- Active phase: none (sprint closed); next: production hardening
 - Blocked tasks: none. Repository: https://github.com/Official-Avi/Enterprise-RAG-system (private)
-- Last verified test run: 2026-10-27 — backend 90/90 passed; web lint/tsc/build passed; live platform smoke passed; CI green incl. Docker Compose
+- Last verified test run: 2026-10-27 — backend 96/96; browser E2E 5/5; web lint/tsc/build clean; clean install passed; CI green incl. Docker Compose
 - Current commit: see `git log` (Day 1 ends at 7a83d94)
 - Environment: Inspected 2026-10-27 — see session log below
 
@@ -17,19 +17,30 @@
 | Phase | Name | Status | Evidence / notes |
 |---|---|---|---|
 | 0 | Repository and decisions | Verified | CI green |
-| 1 | Local foundation | Verified | Compose verified in CI; UI not browser-inspected |
+| 1 | Local foundation | Verified | Compose verified in CI; UI verified in browser |
 | 2 | Authentication, tenancy, RBAC | Verified (API) | Email invitations deferred (ADR-019) |
 | 3 | Document ingestion and processing | Verified | S3 adapter not started |
 | 4 | Embeddings, vector index, retrieval | Verified | Hybrid/rerank not started (optional) |
-| 5 | RAG chat and citations | Verified | Retention policy pending; chat UI not browser-inspected |
+| 5 | RAG chat and citations | Verified | Retention policy pending |
 | 6 | Operations and workload management | Verified (API) | No load test; LB guidance pending |
 | 7 | Model Serving and evaluation | Partially complete | Evaluation verified; no LLM compared (none configured) |
-| 8 | Infrastructure / logical rack management | Verified (API) | UI not browser-inspected |
-| 9 | Monitoring, security, enterprise hardening | Partially complete | |
-| 10 | Release and deployment | Not started | |
+| 8 | Infrastructure / logical rack management | Verified | API + browser |
+| 9 | Monitoring, security, enterprise hardening | Partially complete | Security gates in CI; no tracing, backups or CI dependency scanning |
+| 10 | Release and deployment | Partially complete | Clean install verified; deployment guide; no staging or load tests |
 
 ## Latest session
-- Date: 2026-10-27 — Sprint Day 2 complete (entry below). Day 3 next: browser/E2E verification, security pass, clean-install check, docs and final delivery report.
+- Date: 2026-10-27 — Sprint complete. Final report: Docs/DELIVERY_REPORT.md. Release notes: Docs/RELEASE_NOTES.md.
+
+### 2026-10-27 — Sprint Day 3: integration, verification, delivery
+- Implemented: authentication release gate and other release-gate tests; Playwright browser E2E (5 specs); route-level permission gating and role-based landing; fixes for defects found by E2E; RAG logo and favicon; deployment guide (DEPLOYMENT.md §8); security status (SECURITY.md §9); release notes; final delivery report.
+- Files changed: commits c8c4912, 0732c82, 883d4a9 and the Day-3 close commit.
+- Tests run and results: backend 96/96; browser E2E 5/5 (Edge 156); web lint/tsc/build clean; dependency audits clean; clean install from GitHub passed; CI green (see TESTING.md).
+- Manual verification: screenshot review of all main pages in light and dark mode.
+- Decisions made: none new beyond ADR-021 (route gating is UI convenience; API remains the enforcement point).
+- Day 3 acceptance: application starts from documented instructions (clean install); verified workflows operate (backend, browser, CI, live smoke); results recorded (TESTING.md); incomplete functionality documented (TODO.md, RELEASE_NOTES.md, DELIVERY_REPORT.md).
+- Blockers/risks: no LLM configured; no backups/DR; no load tests; host malware (owner-accepted).
+- Next steps: see DELIVERY_REPORT.md §13.
+- TODO/PROGRESS updated: Yes
 
 ### 2026-10-27 — Sprint Day 2: enterprise infrastructure
 - Implemented: member/role management with last-admin guard; collection access grants; audit log API; tenant settings API; logical racks/nodes/workloads with provenance rules and simulated seed; evaluation dataset v1, deterministic metrics, job-based runner and API; prompt-injection detector; shared ingestion service; UI pages for users, audit log, settings, racks (overview and detail with front view), evaluation and collection access management; GitHub repository and CI.

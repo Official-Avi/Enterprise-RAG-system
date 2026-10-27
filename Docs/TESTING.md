@@ -137,3 +137,32 @@ PDF embedded the current time). Fixed with deterministic PDF bytes and name-base
 
 Remaining verification gaps: no browser-level UI testing; no real LLM evaluated; no load tests;
 tracing and backups/DR not implemented.
+
+### 2026-10-27 — Day 3 (final verification)
+
+| Check | Command / method | Result |
+|---|---|---|
+| Backend lint / types | `ruff check src tests migrations` · `mypy` | clean · no issues (78 files) |
+| Backend tests | `pytest -q` | **96 passed**, 0 failed (102 s) |
+| Authentication release gate | `tests/test_security_gates.py` | 62 API operations: 59 require authentication (static dependency check **and** anonymous request → 401), 3 intentionally public (health live/ready, login) |
+| Other release gates | same file | login rate limit (10/min/key → 429); safe error shape + security headers; production config refuses insecure cookies / test embedder and hides API docs; migrations `head → base → head` round trip |
+| Dependency audit | `npm audit` (prod + dev); `uvx pip-audit -r <uv export --no-dev>` | 0 vulnerabilities; no known vulnerabilities |
+| Clean install | fresh `git clone` of the GitHub repo into an empty folder; README commands only (`uv sync`, `alembic upgrade head`, `seed-demo`, API :8100, worker, `npm install`, `npm run build` with `API_PROXY_TARGET`, standalone web :3100); separate database and Qdrant collection; shared PostgreSQL/Qdrant servers | Passed: `smoke_e2e.py` (PDF indexed in 6.1 s with bge-small, cited answer) and web proxy login + document listing |
+| Browser E2E | `E2E_BROWSER_CHANNEL=msedge npx playwright test` (Microsoft Edge 156; Playwright 1.64.1) | **5 passed** — engineer journey (create collection → upload → indexed → pipeline → ask → supported answer → citation source), auth redirect + bad password, landing page by role, auditor restrictions, operator infra/job queue/workers/models/evaluation |
+| Visual review | 11 E2E screenshots + light/dark logo screenshots reviewed by the developer | layout acceptable; 2 visual defects found and fixed (below) |
+| CI | GitHub Actions on each push | backend, web, compose-smoke green |
+
+Defects found by Day-3 testing and fixed (all re-verified):
+1. **Chat page crash** in current Chromium/Edge — `TypeError: i is not a function`: a concise-arrow
+   `useEffect` returned `scrollIntoView()`'s new Promise, which React treated as a cleanup
+   function. HTTP-level checks could not detect this; the browser E2E did.
+2. Users without `ops:read` (engineers) landed on an access-denied Overview whose data hooks
+   still issued forbidden requests (3 × 403). Fixed with route-level permission gating in the
+   shell and a role-based landing page.
+3. Overview throughput chart rendered no bars (bucket column lacked an explicit height).
+4. Extractive answers quoted Markdown headings.
+5. Gate test initially enumerated only 1 route: FastAPI 0.162 keeps included routers as
+   `_IncludedRouter` objects; the gate now reads the public router list the app mounts.
+
+Verification limitations that remain: browser E2E runs locally (not in CI) on Edge only; no
+mobile/responsive or automated accessibility audit; no load testing; no real LLM exercised.

@@ -17,3 +17,14 @@ the Dockerfile sets it to `http://api:8000` for Docker Compose.
 Security notes: model answers, document text and filenames are rendered as plain text only
 (no `dangerouslySetInnerHTML`, no Markdown links/images); navigation hiding is cosmetic — the
 API enforces every permission.
+
+## End-to-end tests (Playwright)
+
+Run against a live stack (API on :8000, a worker, and this app on :3000 — see the root README):
+
+```bash
+npx playwright install chromium        # once; or use an installed browser:
+E2E_BROWSER_CHANNEL=msedge npx playwright test
+```
+The demo password is read from `E2E_PASSWORD` or `<repo>/.data/demo-password.txt`. Screenshots
+of the main pages are written to `test-results/screenshots/` (git-ignored).
