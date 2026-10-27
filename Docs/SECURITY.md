@@ -53,3 +53,28 @@
 
 ## 8. Security release gate
 No release is production-ready until authorization tests, dependency scanning, secret scanning, upload limits, tenant isolation, and deletion cleanup tests pass.
+
+
+## 9. Implementation status (sprint 2026-10-27)
+
+| Control | Implementation | Verification |
+|---|---|---|
+| Authentication on every endpoint | `require(Permission)` / `get_principal` dependencies | Automated gate: all 59 non-public operations depend on authentication and return 401 anonymously; only health and login are public |
+| Tenant derived from identity | Session → membership; no tenant in request bodies | Cross-tenant tests for every module return 404 |
+| RBAC + collection permissions | Role matrix + tenant/restricted collections + grants | Role tests per module; restricted-collection tests incl. retrieval and citations |
+| Retrieval authorization | Collection intersection, tenant-filtered vector search, PostgreSQL re-validation | Deleted document with live vectors never returned; cross-tenant identical content isolated |
+| No existence leaks | Identical 404 for missing/foreign/forbidden | Tests compare responses |
+| Prompt injection | Delimited untrusted sources; grounding policy; citations must map to supplied sources; instruction-like text detector (flag in prompt, never quoted by extractive mode, ingestion warning) | Unit tests + evaluation canary (resistance 1.0 after fix) |
+| Upload safety | Extension allowlist + content signature, size/page limits, zip-bomb and macro rejection, generated storage keys, path-traversal-safe storage | Unit and API tests |
+| Session security | argon2id passwords; random tokens stored hashed; HttpOnly SameSite=Lax cookie; Secure required in production; CSRF header on cookie writes | Tests incl. CSRF rejection and logout revocation |
+| Abuse controls | Rate limits on login/upload/chat (per process); tenant storage quota; model concurrency limit | Tests for login rate limit, quota, concurrency |
+| Safe errors and logging | Standard error shape with correlation ID; validation errors never echo input; job errors use safe codes; logs carry IDs/counts only | Tests (redaction of unknown exception text, validation echo) |
+| Security headers | nosniff, frame DENY, no-referrer, CSP `default-src 'none'` on API, no-store | Test |
+| Audit trail | Logins, member/role changes, grants, documents, jobs, settings, infrastructure, evaluation | Tests |
+| Dependency scanning | `npm audit` (0 vulnerabilities), `pip-audit` on runtime lock (no known vulnerabilities) — run manually 2026-10-27 | Not yet a CI gate |
+| Secret scanning | Manual scan of all commits before first push (no secrets) | Not yet a CI gate |
+| Deletion propagation | Async job removes vectors, stored file and chunk rows; document hidden immediately | End-to-end test |
+
+Open risks: the development host has active malware detections (owner accepted, ADR-013);
+rate limits are per process; retention policies, encryption at rest, malware scanning of uploads,
+SSO/OIDC and backup/restore are not implemented. **This is not a production-readiness claim.**

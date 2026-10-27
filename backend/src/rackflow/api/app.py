@@ -36,6 +36,10 @@ _CID_RE = re.compile(r"^[A-Za-z0-9\-]{8,64}$")
 
 API_PREFIX = "/api/v1"
 
+# Every router mounted under API_PREFIX (also used by the authentication release gate test).
+ROUTER_MODULES = (health, auth, workspaces, collections, documents, jobs, operations, chat,
+                  models, infrastructure, admin, evaluation, settings_router)
+
 
 def create_app() -> FastAPI:
     settings = get_settings()
@@ -92,21 +96,7 @@ def create_app() -> FastAPI:
         )
         return response
 
-    for module in (
-        health,
-        auth,
-        workspaces,
-        collections,
-        documents,
-        jobs,
-        operations,
-        chat,
-        models,
-        infrastructure,
-        admin,
-        evaluation,
-        settings_router,
-    ):
+    for module in ROUTER_MODULES:
         app.include_router(module.router, prefix=API_PREFIX)
 
     # Unprefixed liveness alias for load balancers / orchestrator probes.
