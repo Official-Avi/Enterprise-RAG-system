@@ -54,6 +54,7 @@ class AnswerResult:
     retrieved_count: int = 0
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    sources: list[RetrievedChunk] = field(default_factory=list)  # what the model was given
 
 
 def _quote(chunk: RetrievedChunk, answer: str) -> str:
@@ -123,7 +124,7 @@ def answer_question(db: Session, principal: Principal, question: str,
     result = AnswerResult(
         answer="", evidence_status="insufficient", provider=completion.provider,
         model=completion.model, deployment_mode=provider.deployment_mode,
-        retrieved_count=len(sources), prompt_tokens=completion.prompt_tokens,
+        retrieved_count=len(sources), sources=sources, prompt_tokens=completion.prompt_tokens,
         completion_tokens=completion.completion_tokens,
     )
     text = completion.text.strip()

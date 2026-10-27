@@ -13,13 +13,16 @@ from rackflow.auth.access import accessible_collections, require_collection, vis
 from rackflow.auth.deps import require
 from rackflow.auth.principal import Principal
 from rackflow.auth.rbac import Permission
-from rackflow.core.errors import ConflictError
+from rackflow.core.errors import ConflictError, NotFoundError
 from rackflow.db.models import (
     Collection,
+    CollectionPermission,
     CollectionPermissionLevel,
     CollectionVisibility,
     Document,
     DocumentStatus,
+    TenantMembership,
+    User,
 )
 from rackflow.db.session import get_db
 
@@ -176,5 +179,91 @@ def delete_collection(
     db.delete(c)
     record_audit(db, action="collection.delete", resource_type="collection", resource_id=c.id,
                  principal=principal)
+    db.commit()
+    return Response(status_code=204)
+
+
+# ------------------------------------------------------------- access grants
+
+
+class GrantIn(BaseModel):
+    permission: CollectionPermissionLevel
+
+
+class GrantOut(BaseModel):
+    user_id: uuid.UUID
+    email: str
+    display_name: str
+    permission: CollectionPermissionLevel
+
+
+@router.get("/{collection_id}/permissions", response_model=list[GrantOut])
+def list_grants(
+    collection_id: uuid.UUID,
+    principal: Principal = Depends(require(Permission.COLLECTION_MANAGE)),
+    db: Session = Depends(get_db),
+) -> list[GrantOut]:
+    c = require_collection(db, principal, collection_id, minimum=CollectionPermissionLevel.MANAGE)
+    rows = db.execute(
+        select(CollectionPermission, User)
+        .join(User, User.id == CollectionPermission.principal_id)
+        .where(CollectionPermission.collection_id == c.id,
+               CollectionPermission.tenant_id == principal.tenant_id,
+               CollectionPermission.principal_type == "user")
+        .order_by(User.email)
+    ).all()
+    return [GrantOut(user_id=u.id, email=u.email, display_name=u.display_name,
+                     permission=g.permission) for g, u in rows]
+
+
+@router.put("/{collection_id}/permissions/{user_id}", response_model=GrantOut)
+def set_grant(
+    collection_id: uuid.UUID,
+    user_id: uuid.UUID,
+    body: GrantIn,
+    principal: Principal = Depends(require(Permission.COLLECTION_MANAGE)),
+    db: Session = Depends(get_db),
+) -> GrantOut:
+    c = require_collection(db, principal, collection_id, minimum=CollectionPermissionLevel.MANAGE)
+    member = db.execute(
+        select(User).join(TenantMembership, TenantMembership.user_id == User.id)
+        .where(User.id == user_id, TenantMembership.tenant_id == principal.tenant_id)
+    ).scalar_one_or_none()
+    if member is None:  # grants only to members of this workspace
+        raise NotFoundError(code="MEMBER_NOT_FOUND", message="The member could not be found.")
+    grant = db.scalar(select(CollectionPermission).where(
+        CollectionPermission.collection_id == c.id, CollectionPermission.principal_type == "user",
+        CollectionPermission.principal_id == user_id))
+    if grant is None:
+        grant = CollectionPermission(tenant_id=principal.tenant_id, collection_id=c.id,
+                                     principal_type="user", principal_id=user_id,
+                                     permission=body.permission)
+        db.add(grant)
+    else:
+        grant.permission = body.permission
+    record_audit(db, action="collection.grant", resource_type="collection", resource_id=c.id,
+                 principal=principal,
+                 metadata={"user_id": str(user_id), "permission": body.permission.value})
+    db.commit()
+    return GrantOut(user_id=member.id, email=member.email, display_name=member.display_name,
+                    permission=grant.permission)
+
+
+@router.delete("/{collection_id}/permissions/{user_id}", status_code=204)
+def revoke_grant(
+    collection_id: uuid.UUID,
+    user_id: uuid.UUID,
+    principal: Principal = Depends(require(Permission.COLLECTION_MANAGE)),
+    db: Session = Depends(get_db),
+) -> Response:
+    c = require_collection(db, principal, collection_id, minimum=CollectionPermissionLevel.MANAGE)
+    grant = db.scalar(select(CollectionPermission).where(
+        CollectionPermission.collection_id == c.id, CollectionPermission.principal_type == "user",
+        CollectionPermission.principal_id == user_id))
+    if grant is None:
+        raise NotFoundError(code="GRANT_NOT_FOUND", message="No such access grant.")
+    db.delete(grant)
+    record_audit(db, action="collection.revoke", resource_type="collection", resource_id=c.id,
+                 principal=principal, metadata={"user_id": str(user_id)})
     db.commit()
     return Response(status_code=204)

@@ -29,6 +29,7 @@ from rackflow.providers.interfaces import ExtractedPage
 from rackflow.providers.ocr import get_ocr_provider, render_pdf_page_png
 from rackflow.providers.storage import get_object_storage
 from rackflow.providers.tokenizer import get_tokenizer
+from rackflow.rag.injection import looks_like_injection
 from rackflow.tenant_settings import effective_settings
 
 log = logging.getLogger(__name__)
@@ -141,6 +142,11 @@ def process_document(ctx: JobContext) -> None:
             raise PermanentJobError("NO_EXTRACTABLE_TEXT",
                                     "No usable text could be extracted from this document.")
         warnings.extend(report.warnings)
+        flagged = [n for n, t in pages if looks_like_injection(t)]
+        if flagged:
+            warnings.append("Contains text resembling instructions to AI systems (page "
+                            + ", ".join(map(str, flagged[:5])) + "); it is treated as data only")
+            rec.details["instruction_like_pages"] = len(flagged)
 
     with ctx.stage(PipelineStage.CLEAN) as rec:
         cleaned = clean_pages(pages)

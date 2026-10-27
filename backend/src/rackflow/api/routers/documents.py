@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -44,9 +43,9 @@ from rackflow.db.models import (
     Role,
 )
 from rackflow.db.session import get_db
-from rackflow.ingestion.validation import UploadRejected, validate_upload
+from rackflow.ingestion.service import accept_upload, used_storage_bytes
 from rackflow.jobs.enqueue import enqueue_job
-from rackflow.providers.storage import document_key, get_object_storage
+from rackflow.providers.storage import get_object_storage
 from rackflow.tenant_settings import effective_settings
 
 router = APIRouter(tags=["documents"])
@@ -213,70 +212,26 @@ async def upload_documents(
         raise ConflictError(code="TOO_MANY_FILES",
                             message=f"Upload between 1 and {MAX_FILES_PER_REQUEST} files at once.")
     settings = effective_settings(db, principal.tenant_id)
-    storage = get_object_storage()
-    used = db.scalar(select(func.coalesce(func.sum(Document.size_bytes), 0)).where(
-        Document.tenant_id == principal.tenant_id, Document.deleted_at.is_(None))) or 0
-
+    used = used_storage_bytes(db, principal.tenant_id)
     items: list[UploadItem] = []
     for upload in files:
         name = upload.filename or "upload"
         try:
             data = await _read_capped(upload, settings.upload_max_bytes)
-            checked = validate_upload(name, data, max_bytes=settings.upload_max_bytes)
         except PayloadTooLargeError as exc:
             items.append(UploadItem(filename=name[:200], status="rejected",
                                     error=UploadError(code=exc.code, message=exc.message)))
             continue
-        except UploadRejected as exc:
-            items.append(UploadItem(filename=name[:200], status="rejected",
-                                    error=UploadError(code=exc.code, message=exc.message)))
-            continue
-        if settings.max_storage_bytes is not None and used + len(data) > settings.max_storage_bytes:
-            items.append(UploadItem(filename=checked.filename, status="rejected", error=UploadError(
-                code="QUOTA_EXCEEDED", message="The workspace storage quota has been reached.")))
-            continue
-
-        content_hash = hashlib.sha256(data).hexdigest()
-        existing = db.scalar(select(Document).where(
-            Document.tenant_id == principal.tenant_id, Document.collection_id == collection.id,
-            Document.content_hash == content_hash, Document.deleted_at.is_(None)))
-        if existing is not None:
-            items.append(UploadItem(filename=checked.filename, status="duplicate",
-                                    document_id=existing.id, duplicate=True))
-            continue
-
-        doc_id = uuid.uuid4()
-        key = document_key(principal.tenant_id, doc_id)
-        storage.put(key, data)
-        try:
-            doc = Document(
-                id=doc_id, tenant_id=principal.tenant_id, collection_id=collection.id,
-                filename=checked.filename, file_type=checked.file_type,
-                mime_type=checked.mime_type, size_bytes=checked.size_bytes,
-                content_hash=content_hash, storage_key=key, status=DocumentStatus.QUEUED,
-                warnings=[], uploaded_by=principal.user_id,
-            )
-            db.add(doc)
-            db.flush()
-            job = enqueue_job(
-                db, tenant_id=principal.tenant_id, job_type=JobType.INGEST_DOCUMENT,
-                idempotency_key=f"ingest:{doc_id}:v1", document_id=doc_id,
-                collection_id=collection.id, payload={"document_id": str(doc_id), "version": 1},
-                created_by=principal.user_id,
-            )
-            record_audit(db, action="document.upload", resource_type="document",
-                         resource_id=doc_id, principal=principal,
-                         metadata={"collection_id": str(collection.id),
-                                   "size_bytes": checked.size_bytes,
-                                   "file_type": checked.file_type})
-            db.commit()
-        except Exception:
-            db.rollback()
-            storage.delete(key)
-            raise
-        used += len(data)
-        items.append(UploadItem(filename=checked.filename, status="queued", document_id=doc_id,
-                                job_id=job.id))
+        result = accept_upload(db, tenant_id=principal.tenant_id, collection_id=collection.id,
+                               user_id=principal.user_id, filename=name, data=data,
+                               settings=settings, used_bytes=used)
+        used += result.stored_bytes
+        items.append(UploadItem(
+            filename=result.filename, status=result.status, document_id=result.document_id,
+            job_id=result.job_id, duplicate=result.status == "duplicate",
+            error=UploadError(code=result.error_code, message=result.error_message or "")
+            if result.error_code else None,
+        ))
     return UploadResult(items=items)
 
 

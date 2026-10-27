@@ -25,6 +25,7 @@ import httpx
 from rackflow.core.config import get_settings
 from rackflow.core.errors import AppError
 from rackflow.providers.interfaces import ChatCompletion, ChatTurn, ProviderHealth
+from rackflow.rag.injection import looks_like_injection
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 _CONCURRENCY_WAIT_SECONDS = 10.0
@@ -97,7 +98,9 @@ class ExtractiveProvider:
             sid = int(sid_text)
             # Re-join hard-wrapped lines (PDF extraction) so sentences are not cut mid-way.
             body = _HARD_WRAP_RE.sub(" ", body)
-            sentences[sid] = [s.strip() for s in _SENTENCE_RE.split(body) if s.strip()]
+            # Never quote instruction-like text planted in documents back to the user.
+            sentences[sid] = [s.strip() for s in _SENTENCE_RE.split(body)
+                              if s.strip() and not looks_like_injection(s)]
             for idx, sentence in enumerate(sentences[sid]):
                 overlap = len(question_terms & _terms(sentence))
                 if overlap and 20 <= len(sentence) <= 600:

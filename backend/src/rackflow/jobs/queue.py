@@ -22,6 +22,7 @@ from rackflow.core.config import get_settings
 from rackflow.db.models import (
     Document,
     DocumentStatus,
+    EvaluationRun,
     JobAttempt,
     JobStatus,
     JobType,
@@ -58,7 +59,14 @@ def _now() -> datetime:
 
 
 def _on_terminal(db: Session, job: ProcessingJob) -> None:
-    """Propagate terminal job outcomes to the owning document."""
+    """Propagate terminal job outcomes to the owning document or evaluation run."""
+    if job.job_type == JobType.EVALUATION_RUN and job.status in (JobStatus.FAILED,
+                                                                 JobStatus.CANCELLED):
+        run_id = (job.payload or {}).get("run_id")
+        run = db.get(EvaluationRun, uuid.UUID(str(run_id))) if run_id else None
+        if run is not None and run.status in ("queued", "running"):
+            run.status = job.status.value
+            run.finished_at = _now()
     if (job.job_type == JobType.INGEST_DOCUMENT and job.document_id
             and job.status in (JobStatus.FAILED, JobStatus.CANCELLED)):
         doc = db.get(Document, job.document_id)
