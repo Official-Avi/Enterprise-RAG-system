@@ -8,11 +8,18 @@ test("unauthenticated users are sent to login and bad passwords are rejected", a
   await page.getByLabel("Work email").fill("engineer@acme.example.com");
   await page.getByLabel("Password").fill("definitely-not-the-password");
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("alert")).toHaveText("Email or password is incorrect.");
+  // (Next.js also renders an empty role=alert route announcer, so match the message itself.)
+  await expect(page.getByText("Email or password is incorrect.")).toBeVisible();
   await page.getByLabel("Password").fill(demoPassword());
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/documents$/);
   await page.screenshot({ path: join(SHOTS, "05-login-redirect.png") });
+});
+
+test("engineer lands on a page their role can use", async ({ page }) => {
+  await login(page, "engineer@acme.example.com");
+  await expect(page).toHaveURL(/\/collections$/); // engineers have no ops:read → no Overview
+  await expect(page.getByText("You don't have access to this page.")).toHaveCount(0);
 });
 
 test("auditor sees status and audit trail but never document content", async ({ page }) => {

@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { MeContext, useApi, useMe } from "@/lib/hooks";
 import type { Me } from "@/lib/types";
@@ -66,9 +66,39 @@ function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 }
 
+const ALL_ITEMS = NAV.flatMap((g) => g.items);
+
+/** Permission required by the most specific nav item that owns `pathname`. */
+function requiredPermission(pathname: string): string | undefined {
+  const owners = ALL_ITEMS.filter((i) => isActive(pathname, i.href));
+  owners.sort((a, b) => b.href.length - a.href.length);
+  return owners[0]?.permission;
+}
+
+function landingPage(permissions: string[]): string {
+  return ALL_ITEMS.find((i) => !i.permission || permissions.includes(i.permission))?.href ?? "/";
+}
+
+function NoAccess() {
+  return (
+    <div role="alert" className="rounded-lg border border-border bg-panel px-4 py-6 text-center">
+      <p className="font-medium">You don&apos;t have access to this page.</p>
+      <p className="mt-1 text-sm text-muted">Ask an organization admin if you need it.</p>
+    </div>
+  );
+}
+
 export function Shell({ children }: { children: ReactNode }) {
   const me = useApi<Me>("/auth/me");
   const pathname = usePathname();
+  const router = useRouter();
+  const permissions = me.data?.permissions;
+  const mustRedirect = pathname === "/" && !!permissions && !permissions.includes("ops:read");
+
+  useEffect(() => {
+    // Send users whose role cannot see the Overview to the first page they can use.
+    if (mustRedirect && permissions) router.replace(landingPage(permissions));
+  }, [mustRedirect, permissions, router]);
 
   if (me.loading) return <Loading label="Checking your session…" />;
   if (me.error || !me.data) {
@@ -169,7 +199,14 @@ export function Shell({ children }: { children: ReactNode }) {
             </Button>
           </header>
           <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 md:px-8">
-            {children}
+            {mustRedirect ? (
+              <Loading label="Opening your workspace…" />
+            ) : (() => {
+              // Route-level gate: pages the role cannot use are not rendered at all, so their
+              // data requests never run. The API enforces the same rules independently.
+              const required = requiredPermission(pathname);
+              return !required || user.permissions.includes(required) ? children : <NoAccess />;
+            })()}
           </main>
         </div>
       </div>

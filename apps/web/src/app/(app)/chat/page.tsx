@@ -106,7 +106,11 @@ function Conversation({ session, model }: { session: ChatSession; model?: ModelH
   const [active, setActive] = useState<Citation | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => endRef.current?.scrollIntoView({ block: "end" }), [detail.data, pending]);
+  useEffect(() => {
+    // Block body on purpose: newer browsers return a Promise from scrollIntoView, and React
+    // would treat a returned value as an effect cleanup function.
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [detail.data, pending]);
 
   const ask = async (ev: FormEvent<HTMLFormElement>) => {
     ev.preventDefault();
@@ -230,7 +234,7 @@ export default function ChatPage() {
               {sessions.data.items.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
             </select>
           )}
-          <Button onClick={() => { setCurrent(null); setCreating(true); }}>New conversation</Button>
+          <Button className="whitespace-nowrap" onClick={() => { setCurrent(null); setCreating(true); }}>New conversation</Button>
         </div>
       </div>
       {(sessions.loading || collections.loading) && <Loading />}

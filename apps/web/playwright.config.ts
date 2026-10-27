@@ -16,5 +16,16 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } }],
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1440, height: 900 },
+        // Optional: use an installed browser instead of Playwright's download,
+        // e.g. E2E_BROWSER_CHANNEL=msedge on Windows.
+        channel: process.env.E2E_BROWSER_CHANNEL || undefined,
+      },
+    },
+  ],
 });

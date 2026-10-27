@@ -66,6 +66,7 @@ class _Limiter:
 _SOURCE_RE = re.compile(r'<source id="(\d+)"[^>]*>\n(.*?)\n</source>', re.DOTALL)
 _QUESTION_RE = re.compile(r"\nQuestion:\s*(.+)\s*$", re.DOTALL)
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+_HEADING_RE = re.compile(r"^#{1,6}\s")
 _HARD_WRAP_RE = re.compile(r"(?<![.!?:])\n(?!\n|\d+\.|[-*•] )")
 _WORD_RE = re.compile(r"[a-z0-9_]+")
 _STOP = frozenset([
@@ -99,8 +100,10 @@ class ExtractiveProvider:
             # Re-join hard-wrapped lines (PDF extraction) so sentences are not cut mid-way.
             body = _HARD_WRAP_RE.sub(" ", body)
             # Never quote instruction-like text planted in documents back to the user.
+            # Markdown headings are structure, not statements, so they are not quoted either.
             sentences[sid] = [s.strip() for s in _SENTENCE_RE.split(body)
-                              if s.strip() and not looks_like_injection(s)]
+                              if s.strip() and not _HEADING_RE.match(s.strip())
+                              and not looks_like_injection(s)]
             for idx, sentence in enumerate(sentences[sid]):
                 overlap = len(question_terms & _terms(sentence))
                 if overlap and 20 <= len(sentence) <= 600:

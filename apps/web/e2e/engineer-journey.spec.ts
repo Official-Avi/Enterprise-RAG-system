@@ -10,7 +10,7 @@ test("engineer uploads a document and gets a cited answer", async ({ page }) => 
   const fact = `The zephyr-${stamp} cooling loop must be flushed every 45 days by the facilities team.`;
 
   await login(page, "engineer@acme.example.com");
-  await page.screenshot({ path: join(SHOTS, "01-overview-engineer.png"), fullPage: true });
+  await page.screenshot({ path: join(SHOTS, "01-landing-engineer.png"), fullPage: true });
 
   await page.getByRole("link", { name: "Collections" }).click();
   await page.getByRole("button", { name: "New collection" }).click();
@@ -50,7 +50,8 @@ test("engineer uploads a document and gets a cited answer", async ({ page }) => 
 
   await expect(page.getByText("Evidence found")).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText(/45 days/).first()).toBeVisible();
-  await page.getByRole("button", { name: new RegExp(`Source 1: ${filename}`) }).click();
+  // The answer may cite source [1] in several sentences; open the first chip.
+  await page.getByRole("button", { name: new RegExp(`Source 1: ${filename}`) }).first().click();
   await expect(page.getByText("Source [1]")).toBeVisible();
   await expect(page.locator("blockquote")).toContainText("45 days");
   await expect(page.getByText(/verify critical operational steps/i)).toBeVisible();

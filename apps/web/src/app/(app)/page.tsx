@@ -13,7 +13,7 @@ function Throughput({ metrics }: { metrics: OpsMetrics }) {
     <div>
       <div className="flex h-28 items-end gap-1" role="img" aria-label="Jobs finished per 5-minute bucket, last hour">
         {metrics.buckets.map((b) => (
-          <div key={b.start} className="flex flex-1 flex-col justify-end" title={`${new Date(b.start).toLocaleTimeString()}: ${b.succeeded} succeeded, ${b.failed} failed`}>
+          <div key={b.start} className="flex h-full flex-1 flex-col justify-end" title={`${new Date(b.start).toLocaleTimeString()}: ${b.succeeded} succeeded, ${b.failed} failed`}>
             <div className="bg-bad" style={{ height: `${(b.failed / max) * 100}%` }} />
             <div className="rounded-t-sm bg-accent" style={{ height: `${(b.succeeded / max) * 100}%` }} />
           </div>
