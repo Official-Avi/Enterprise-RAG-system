@@ -4,7 +4,7 @@ The coding agent must implement in order. Do not mark a task complete until code
 
 Status vocabulary (3-day sprint): **VERIFIED** (tests/functional checks passed) · **IMPLEMENTED — NOT VERIFIED** (code exists; no passing check yet) · **PARTIALLY COMPLETE** · **IN PROGRESS** · **BLOCKED** · **NOT STARTED** · **DEFERRED** (owner/ADR decision). Checkbox legend kept for compatibility: `[x]` verified, `[~]` partial / not verified, `[ ]` not started, `[!]` blocked, `[-]` deferred.
 
-_Last updated: 2026-10-27, end of sprint Day 1. Evidence: Docs/TESTING.md "Results log"._
+_Last updated: 2026-10-27, end of sprint Day 2. Evidence: Docs/TESTING.md "Results log"._
 
 ## Phase 0 — Repository and decisions
 - [x] VERIFIED — Inspect workspace and preserve existing user work (only `Docs/` existed).
@@ -12,12 +12,12 @@ _Last updated: 2026-10-27, end of sprint Day 1. Evidence: Docs/TESTING.md "Resul
 - [x] VERIFIED — Repository structure (adapted layout, ADR-016: `backend/` Python package + `apps/web`).
 - [x] VERIFIED — `.env.example`; `.env` git-ignored; no secrets committed.
 - [x] VERIFIED — Pinned versions (`backend/uv.lock`, exact versions in `apps/web/package.json` + lockfile).
-- [~] PARTIALLY COMPLETE — Formatter/linter/type checker: ruff, mypy, ESLint, tsc pass locally. CI workflow written but not yet run (repo not pushed). No pre-commit hooks.
+- [x] VERIFIED — Formatter/linter/type checker + CI: ruff, mypy, ESLint, tsc and tests run in GitHub Actions (green). No pre-commit hooks.
 - [x] VERIFIED — DECISIONS.md entries for queue, auth, storage, vector DB, model provider (ADR-005…016).
 - [x] VERIFIED — PROGRESS.md updated.
 
 ## Phase 1 — Local foundation
-- [~] IMPLEMENTED — NOT VERIFIED — Docker Compose for PostgreSQL, Qdrant, API, worker, web (no Docker on host; CI job pending). Redis not used (ADR-005).
+- [x] VERIFIED (CI) — Docker Compose for PostgreSQL, Qdrant, migrate, API, worker, web: built and health-checked by the `compose-smoke` CI job. Redis not used (ADR-005).
 - [x] VERIFIED — FastAPI health/readiness endpoints.
 - [~] IMPLEMENTED — NOT VERIFIED (visual) — Next.js app shell, navigation, design tokens, responsive layout. Build/lint/typecheck pass; pages served over HTTP; not inspected in a browser.
 - [x] VERIFIED — DB migrations (Alembic) and configuration validation.
@@ -31,9 +31,9 @@ _Last updated: 2026-10-27, end of sprint Day 1. Evidence: Docs/TESTING.md "Resul
 - [x] VERIFIED — Tenant/workspace membership; tenant derived from session.
 - [x] VERIFIED — Roles org_admin, operator, engineer, auditor with explicit permission matrix.
 - [x] VERIFIED — Server-side permission dependency (`require(Permission.X)`).
-- [~] PARTIALLY COMPLETE — Tenant isolation tests: collections, documents, chunks, chat, retrieval verified; jobs/operations/admin endpoints pending.
-- [~] PARTIALLY COMPLETE — Audit events: login, collection, document, job, inspector actions recorded; admin/role-change endpoints not built yet.
-- [ ] NOT STARTED — Admin user management and collection-permission grant APIs + UI.
+- [x] VERIFIED — Tenant isolation tests: collections, documents, chunks, chat, retrieval, jobs, operations, admin, audit, infrastructure, evaluation.
+- [x] VERIFIED — Audit events for logins, members/roles, grants, collections, documents, jobs, settings, infrastructure, evaluation; audit log API + UI (UI not browser-inspected).
+- [x] VERIFIED (API) — Member management (add, role change, remove, last-admin guard) and collection grants; UI built (not browser-inspected). Email invitations DEFERRED (ADR-019).
 - [x] VERIFIED — PROGRESS.md updated.
 
 ## Phase 3 — Document ingestion and processing
@@ -75,38 +75,38 @@ _Last updated: 2026-10-27, end of sprint Day 1. Evidence: Docs/TESTING.md "Resul
 - [x] VERIFIED — PROGRESS.md updated.
 
 ## Phase 6 — Operations and workload management
-- [~] IMPLEMENTED — NOT VERIFIED — Job queue dashboard and filters (UI built; jobs API not yet HTTP-tested).
-- [~] IMPLEMENTED — NOT VERIFIED — Job detail/attempt timeline and retry/cancel actions (queue semantics verified; endpoints not yet HTTP-tested).
-- [~] PARTIALLY COMPLETE — Worker heartbeat (written by workers) and queue-depth metrics; operations endpoints not yet tested.
+- [~] IMPLEMENTED — NOT VERIFIED (visual) — Job queue dashboard and filters; jobs API VERIFIED over HTTP.
+- [x] VERIFIED (API) — Job detail/attempt timeline and retry/cancel actions with permission and state checks; UI not browser-inspected.
+- [x] VERIFIED — Worker heartbeat, queue depth, summary counts matching the database, throughput/latency metrics.
 - [x] VERIFIED — Bounded retries, exponential backoff with jitter, terminal failure handling.
 - [~] PARTIALLY COMPLETE — Worker scaling documented (start more processes / `--scale worker=N`); no load test.
 - [ ] NOT STARTED — Load balancer/API deployment guidance.
 - [x] VERIFIED — Worker termination/recovery (real process kill test).
-- [ ] NOT STARTED — Explicit duplicate-delivery test for the ingestion handler.
+- [x] VERIFIED — Duplicate delivery of the same ingestion job creates no duplicate chunks or vectors.
 - [x] VERIFIED — PROGRESS.md updated.
 
 ## Phase 7 — Model serving and evaluation
 - [x] VERIFIED — Model endpoint configuration and health checks.
-- [~] PARTIALLY COMPLETE — Timeouts, safe errors and request metrics verified; concurrency limiter not tested.
+- [x] VERIFIED — Timeouts, safe errors, request metrics and the concurrency limiter.
 - [ ] NOT STARTED — Evaluate candidate small model (no local LLM runtime installed; Qwen2.5 via Ollama possible).
-- [ ] NOT STARTED — Repeatable test questions with expected evidence sources.
-- [ ] NOT STARTED — Retrieval recall, citation correctness, groundedness, latency measurement.
-- [ ] NOT STARTED — Model comparison report.
+- [x] VERIFIED — Versioned dataset v1: 13 labelled questions across 7 categories (factual, multi-chunk, conflicting versions, no-answer, prompt injection, scanned OCR, restricted).
+- [x] VERIFIED — Deterministic runner (job-based) measuring hit rate, MRR, citation precision/correctness, term recall, abstention, injection resistance, restricted leakage, latency (ADR-021). Groundedness beyond citation checks not measured.
+- [~] PARTIALLY COMPLETE — Baseline report for the extractive (no-LLM) provider recorded in TESTING.md; no LLM compared yet (no key/local model configured).
 
 ## Phase 8 — Infrastructure / logical rack management
-- [~] PARTIALLY COMPLETE — Data model (racks, nodes, workloads with provenance) migrated; APIs NOT STARTED.
-- [ ] NOT STARTED — Manual registration and seeded simulated demo data.
-- [ ] NOT STARTED — Rack overview and detail UI.
-- [ ] NOT STARTED — Resource display with Configured/Simulated/Integration-reported labels.
-- [ ] NOT STARTED — Workload placement and utilisation views.
+- [x] VERIFIED — Logical rack, node/resource and workload-placement APIs with provenance rules (ADR-020).
+- [x] VERIFIED — Manual registration and `seed-infra` simulated demo data (labelled).
+- [~] IMPLEMENTED — NOT VERIFIED (visual) — Rack overview and detail UI (front view, node cards); pages served.
+- [~] IMPLEMENTED — NOT VERIFIED (visual) — Provenance badges on every rack/node/workload; API provenance VERIFIED.
+- [~] IMPLEMENTED — NOT VERIFIED (visual) — Workload placement and requested-vs-capacity allocation (not measured usage).
 - [x] VERIFIED — No hardware control in MVP (no such code exists; ADR-002).
-- [ ] NOT STARTED — Role and audit tests for infrastructure changes.
+- [x] VERIFIED — Role and audit tests for infrastructure changes.
 
 ## Phase 9 — Monitoring, security, enterprise hardening
 - [~] PARTIALLY COMPLETE — Operational metrics (summary, throughput chart, model metrics).
 - [ ] NOT STARTED — OpenTelemetry-compatible tracing.
-- [~] PARTIALLY COMPLETE — Rate limits (in-process, per API replica) for login/upload/chat; tenant storage quota implemented, untested; retention/deletion policy NOT STARTED.
-- [~] PARTIALLY COMPLETE — Prompt-injection, file-parser, path-traversal, CSRF reviewed and tested; SSRF not applicable (no URL fetching); CORS restricted to WEB_ORIGIN.
+- [~] PARTIALLY COMPLETE — Rate limits (in-process, per API replica) for login/upload/chat; tenant storage quota VERIFIED; retention policy NOT STARTED.
+- [~] PARTIALLY COMPLETE — Prompt-injection (delimiting + detector found via evaluation), file-parser, path-traversal, CSRF reviewed and tested; SSRF not applicable (no URL fetching); CORS restricted to WEB_ORIGIN.
 - [x] VERIFIED — All vector search paths apply authorization filters (single retrieval path + PostgreSQL re-check).
 - [ ] NOT STARTED — Dependency/security scanning and CI test gates.
 - [ ] NOT STARTED — Backup/restore and disaster recovery runbook.

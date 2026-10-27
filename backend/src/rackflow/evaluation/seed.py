@@ -4,13 +4,14 @@ normal ingestion path (validation, dedup, queued jobs). Idempotent."""
 from __future__ import annotations
 
 import io
+import time
 import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from rackflow.db.models import Collection, CollectionVisibility
+from rackflow.db.models import Collection, CollectionVisibility, Document
 from rackflow.evaluation.dataset import Dataset
 from rackflow.ingestion.service import accept_upload, used_storage_bytes
 from rackflow.tenant_settings import effective_settings
@@ -34,7 +35,8 @@ def _scanned_pdf(lines: list[str]) -> bytes:
     for i, line in enumerate(lines):
         draw.text((100, 120 + 80 * i), line, fill="black", font=font)
     buf = io.BytesIO()
-    image.save(buf, format="PDF", resolution=150)
+    fixed = time.gmtime(1_767_225_600)  # 2026-01-01: deterministic bytes → stable content hash
+    image.save(buf, format="PDF", resolution=150, creationDate=fixed, modDate=fixed)
     return buf.getvalue()
 
 
@@ -72,7 +74,13 @@ def seed_dataset(db: Session, dataset: Dataset, *, tenant_id: uuid.UUID,
 
     queued = duplicates = 0
     rejected: list[str] = []
+    present = set(db.execute(select(Document.collection_id, Document.filename).where(
+        Document.tenant_id == tenant_id, Document.collection_id.in_([main.id, restricted.id]),
+        Document.deleted_at.is_(None))).tuples())
     for collection_id, filename, data in files:
+        if (collection_id, filename) in present:  # dataset documents are identified by name
+            duplicates += 1
+            continue
         result = accept_upload(db, tenant_id=tenant_id, collection_id=collection_id,
                                user_id=user_id, filename=filename, data=data, settings=settings,
                                used_bytes=used)

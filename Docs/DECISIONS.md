@@ -105,6 +105,20 @@ Record decisions here before making changes that affect architecture or scope.
 - Status: Accepted 2026-10-27
 - Decision: The model receives numbered, delimited sources marked as untrusted; it must cite `[n]` or reply `INSUFFICIENT_EVIDENCE:`. Only markers referring to sources actually supplied survive; an answer with no valid citation is replaced by an "unverifiable" message and marked `insufficient`. Single-turn retrieval per question (no prior answers fed back), avoiding leakage from documents whose access was revoked. The extractive provider (no LLM) is the default until a model is configured and is labelled in UI and API.
 
+### ADR-019 — Deviations from API_SPEC in the sprint
+- Status: Accepted 2026-10-27
+- `POST /admin/users/invitations` → replaced by `POST /admin/users`: no mail service exists, so admins add members directly; a one-time temporary password is returned once for new accounts (never for existing accounts, never logged). Email invitations remain future work.
+- `PATCH /settings/model` → deferred; `GET /settings/model` is read-only. The model provider is configured by deployment environment so credentials never pass through the API or database (`ModelEndpoint.api_key_env` names an env variable only).
+- Added (not in the original spec): `GET/PUT/DELETE /collections/{id}/permissions[/{user_id}]`, `DELETE /admin/users/{id}`, `GET/PATCH /settings/tenant`, `GET /infrastructure/overview`, `DELETE /infrastructure/racks/{id}`, `GET /evaluation/datasets`, `POST /evaluation/datasets/{version}/seed`, `GET /evaluation/runs`, `POST /retrieval/inspect`.
+
+### ADR-020 — Provenance rules for the logical infrastructure registry
+- Status: Accepted 2026-10-27
+- Decision: API clients may register racks/nodes/workloads only as `manual` (configured) or `simulated`. `integration` is reserved for data the platform measures itself; today that is only RackFlow worker heartbeats, shown as live platform processes with healthy/stale/stopped health. A manually registered workload never reports an observed state (`unknown`) because nothing is measured. Utilisation is labelled as requested-vs-configured allocation, not usage. No endpoint deploys, starts or controls anything.
+
+### ADR-021 — Deterministic evaluation (no LLM judge)
+- Status: Accepted 2026-10-27
+- Decision: Evaluation scores retrieval hit/MRR against labelled source documents, citation precision/correctness, expected-term recall, abstention on unanswerable questions, prompt-injection canaries and restricted-document leakage — all deterministic. Runs execute as queued jobs with the requesting user's permissions; auditors see scores but not questions/answers. An LLM judge may be added later only as an additional signal (TESTING.md).
+
 ## Change template
 ### ADR-XXX — Title
 - Status: Proposed / Accepted / Superseded

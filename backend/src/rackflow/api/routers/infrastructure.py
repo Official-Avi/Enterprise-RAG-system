@@ -25,6 +25,7 @@ from rackflow.auth.rbac import Permission
 from rackflow.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from rackflow.db.models import NodeResource, Rack, StateSource, WorkerHeartbeat, Workload
 from rackflow.db.session import get_db
+from rackflow.worker.main import HEARTBEAT_SECONDS
 
 router = APIRouter(prefix="/infrastructure", tags=["infrastructure"])
 
@@ -170,6 +171,7 @@ class PlatformProcess(BaseModel):
     worker_id: str
     hostname: str
     status: str
+    health: Literal["healthy", "stale", "stopped"]
     last_heartbeat_at: datetime
     state_source: StateSource = StateSource.INTEGRATION
 
@@ -283,14 +285,18 @@ def overview(
         counts.update({src.value: n for src, n in rows})
         return counts
 
-    recent = datetime.now(UTC) - timedelta(hours=1)
+    now = datetime.now(UTC)
+    recent = now - timedelta(hours=1)
+    stale_after = timedelta(seconds=HEARTBEAT_SECONDS * 3)
     workers = db.scalars(select(WorkerHeartbeat).where(
         WorkerHeartbeat.last_heartbeat_at > recent)).all()
     return Overview(
         racks=by_source(Rack), nodes=by_source(NodeResource), workloads=by_source(Workload),
-        platform_processes=[PlatformProcess(worker_id=w.worker_id, hostname=w.hostname,
-                                            status=w.status,
-                                            last_heartbeat_at=w.last_heartbeat_at)
+        platform_processes=[PlatformProcess(
+            worker_id=w.worker_id, hostname=w.hostname, status=w.status,
+            health="stopped" if w.status == "stopped"
+            else "healthy" if now - w.last_heartbeat_at <= stale_after else "stale",
+            last_heartbeat_at=w.last_heartbeat_at)
                             for w in workers],
         note=("Racks, nodes and workloads are logical inventory (configured or simulated). Only "
               "platform processes are integration-reported, from worker heartbeats. No hardware "
