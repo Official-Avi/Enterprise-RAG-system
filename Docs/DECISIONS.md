@@ -91,6 +91,20 @@ Record decisions here before making changes that affect architecture or scope.
 - Context: The 2026-10-27 environment audit found the current Windows host has active Microsoft Defender malware detections and real-time protection disabled; Python executables are missing/damaged.
 - Decision: Do not install toolchains, run builds, or place credentials on this host. Development resumes in a clean Linux environment with Docker (cleaned/reimaged host, separate machine, or cloud dev environment).
 
+### ADR-016 — Repository layout adapted from ARCHITECTURE §9
+- Status: Accepted 2026-10-27
+- Decision: One Python distribution `backend/` (package `rackflow`) holds the API, worker, ingestion, RAG, providers, jobs, ops and infra modules as sub-packages with explicit boundaries; the API (`rackflow.api`) and worker (`rackflow.worker`) are separate processes built from the same codebase (ADR-001). The web console is `apps/web`. Docs stay in `Docs/`.
+- Alternatives: separate `apps/api`, `apps/worker`, `packages/*` Python distributions (more packaging overhead, shared models duplicated or published).
+- Consequences: one dependency lock for API and workers; module boundaries enforced by package structure and provider interfaces rather than separate distributions.
+
+### ADR-017 — Collection visibility and content permissions
+- Status: Accepted 2026-10-27
+- Decision: Collections are `tenant` (all content-capable members can read; engineers can write) or `restricted` (only creator, org_admin and explicit grants). Auditors never receive document content (metadata only). Every content path — retrieval, chunks, citations, download — uses `rackflow.auth.access`. Missing, foreign-tenant and forbidden resources return identical 404 responses.
+
+### ADR-018 — Answer grounding contract
+- Status: Accepted 2026-10-27
+- Decision: The model receives numbered, delimited sources marked as untrusted; it must cite `[n]` or reply `INSUFFICIENT_EVIDENCE:`. Only markers referring to sources actually supplied survive; an answer with no valid citation is replaced by an "unverifiable" message and marked `insufficient`. Single-turn retrieval per question (no prior answers fed back), avoiding leakage from documents whose access was revoked. The extractive provider (no LLM) is the default until a model is configured and is labelled in UI and API.
+
 ## Change template
 ### ADR-XXX — Title
 - Status: Proposed / Accepted / Superseded

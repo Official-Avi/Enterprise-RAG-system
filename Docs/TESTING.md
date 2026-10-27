@@ -44,3 +44,41 @@ Do not treat an LLM judge as the only quality signal; include deterministic chec
 - No secrets committed.
 - Backup/restore and deletion behavior documented.
 - Performance claims cite environment and test methodology.
+
+---
+
+## Results log (actual runs — never edited after the fact)
+
+Environment: Windows 11 host, Python 3.12.15 (uv), PostgreSQL 18.6 and Qdrant 1.20.0 portable
+binaries on 127.0.0.1, Node 24.21.0. Embeddings in tests: `hash` test provider (fast, lexical);
+live smoke uses the real `BAAI/bge-small-en-v1.5`. Answer model: extractive (no LLM).
+
+### 2026-10-27 — end of Day 1
+
+| Command (from `backend/` unless noted) | Result |
+|---|---|
+| `.venv/Scripts/python.exe -m ruff check src tests migrations` | All checks passed |
+| `.venv/Scripts/python.exe -m mypy` | Success: no issues found in 72 source files |
+| `.venv/Scripts/python.exe -m pytest -q` | **64 passed**, 0 failed (36.6 s) |
+| `.venv/Scripts/python.exe ../scripts/dev/smoke_e2e.py` (live API + worker, real embeddings) | PASSED — PDF indexed in 2.0 s (bge-small), answer `supported`, citation → uploaded document p.1 |
+| `apps/web`: `npm run lint` | 0 problems |
+| `apps/web`: `npx tsc --noEmit` | 0 errors |
+| `apps/web`: `npm run build` | Success, 17 routes |
+| `apps/web` live via standalone server + API (curl) | /login 200; security headers present; unauthenticated API 401; cookie login sets HttpOnly `rf_session`; cookie request without CSRF header → 403 `CSRF_REQUIRED`; multipart upload through proxy → queued |
+
+Test inventory (64): foundation/auth/RBAC/tenant isolation for collections (11); ingestion unit
+tests — validation incl. traversal names, content spoofing, zip bomb, macro DOCX, extraction,
+cleaning, quality, chunking (25); end-to-end ingestion incl. OCR of a scanned PDF, dedup,
+failure+retry, deletion propagation to vectors/objects/rows, document access scoping (4); queue —
+idempotent enqueue, concurrent claim, backoff/exhaustion, permanent failure, error-text redaction,
+cancellation, lease reclaim with stale-owner guard, document status propagation, manual retry,
+**real worker process kill and recovery** (11); RAG — grounded answer with verbatim quotes,
+insufficient evidence, cross-tenant isolation, restricted collections/roles, deleted document with
+live vectors never retrieved, citation hidden after access revoked, session ownership, safe model
+timeout + metrics, models endpoints, invented-citation removal, prompt-injection delimiter
+containment, Claude adapter request shape (no sampling params) and refusal handling, real
+FastEmbed ranking (13).
+
+Known verification gaps at end of Day 1: UI not inspected in a real browser; Docker Compose and CI
+not executed; jobs/operations endpoints not HTTP-tested; concurrency limiter and tenant quota
+untested; no load/performance tests; no real LLM exercised (no key / local model configured).
