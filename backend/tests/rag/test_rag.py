@@ -10,10 +10,17 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from rackflow.db.models import ModelRequestLog, Role, TenantSettings
+from rackflow.db.models import (
+    AuditEvent,
+    ChatMessage,
+    Citation,
+    ModelRequestLog,
+    Role,
+    TenantSettings,
+)
 from rackflow.db.session import session_scope
 from rackflow.providers import chat as chat_mod
 from rackflow.providers.chat import AnthropicProvider, ModelError, _model_error
@@ -165,6 +172,81 @@ def test_session_ownership(client: TestClient, factory: Factory) -> None:
     assert client.get(f"/api/v1/chat/sessions/{sid}", headers=b.headers).status_code == 404
     assert client.post(f"/api/v1/chat/sessions/{sid}/messages", json={"message": "hi"},
                        headers=b.headers).status_code == 404
+
+
+def test_session_survives_deleted_collections(client: TestClient, factory: Factory) -> None:
+    """BUG-06: deleting one of a session's collections must not break the chat. Missing ids are
+    dropped silently; only a scope with nothing left is an error."""
+    eng = factory.actor(Role.ENGINEER)
+    cid = indexed_collection(client, eng)
+    spare = make_collection(client, eng, "Spare")
+    sid = client.post("/api/v1/chat/sessions", json={"collection_ids": [cid, spare]},
+                      headers=eng.headers).json()["id"]
+    assert client.delete(f"/api/v1/collections/{spare}", headers=eng.headers).status_code == 204
+    url = f"/api/v1/chat/sessions/{sid}/messages"
+    r = client.post(url, json={"message": QUESTION}, headers=eng.headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["citations"]
+    # An explicit per-message override is still validated strictly.
+    r = client.post(url, json={"message": QUESTION, "collection_ids": [spare]},
+                    headers=eng.headers)
+    assert r.status_code == 404 and r.json()["error"]["code"] == "COLLECTION_NOT_FOUND"
+
+    lonely = make_collection(client, eng, "Lonely")
+    sid2 = client.post("/api/v1/chat/sessions", json={"collection_ids": [lonely]},
+                       headers=eng.headers).json()["id"]
+    assert client.delete(f"/api/v1/collections/{lonely}", headers=eng.headers).status_code == 204
+    r = client.post(f"/api/v1/chat/sessions/{sid2}/messages", json={"message": QUESTION},
+                    headers=eng.headers)
+    assert r.status_code == 404 and r.json()["error"]["code"] == "SESSION_SCOPE_EMPTY"
+
+
+def test_rename_rescope_and_delete_session(client: TestClient, factory: Factory,
+                                           db: Session) -> None:
+    """BUG-07: PATCH/DELETE /chat/sessions/{id} are owner-only, audited, and a rename keeps
+    updated_at (UI spec §5.10). Deleting removes the messages and their citations."""
+    eng = factory.actor(Role.ENGINEER)
+    other = factory.actor(Role.ENGINEER)
+    auditor = factory.actor(Role.AUDITOR)
+    cid = indexed_collection(client, eng)
+    second = make_collection(client, eng, "Second")
+    sid, r = ask(client, eng, [cid])
+    assert r.status_code == 200 and r.json()["citations"]
+    url = f"/api/v1/chat/sessions/{sid}"
+    before = client.get(url, headers=eng.headers).json()["session"]
+
+    r = client.patch(url, json={"title": "  Pool runbook  "}, headers=eng.headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "Pool runbook"
+    assert r.json()["updated_at"] == before["updated_at"]
+    r = client.patch(url, json={"collection_ids": [cid, second, cid]}, headers=eng.headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["collection_ids"] == [cid, second]
+    assert r.json()["updated_at"] == before["updated_at"]
+    for bad in ({"title": ""}, {"title": "   "}, {"title": "x" * 201}, {"collection_ids": []},
+                {"collection_ids": [str(uuid.uuid4())] * 51}):
+        assert client.patch(url, json=bad, headers=eng.headers).status_code == 422, bad
+    r = client.patch(url, json={"collection_ids": [str(uuid.uuid4())]}, headers=eng.headers)
+    assert r.status_code == 404 and r.json()["error"]["code"] == "COLLECTION_NOT_FOUND"
+    # Owner only: another user gets 404, a role without chat:use gets 403.
+    for actor, status in ((other, 404), (auditor, 403)):
+        r = client.patch(url, json={"title": "mine"}, headers=actor.headers)
+        assert r.status_code == status
+        assert client.delete(url, headers=actor.headers).status_code == status
+    assert client.get(url, headers=eng.headers).json()["session"]["title"] == "Pool runbook"
+
+    message_ids = [uuid.UUID(m["id"]) for m in client.get(url, headers=eng.headers)
+                   .json()["messages"]]
+    assert client.delete(url, headers=eng.headers).status_code == 204
+    assert client.get(url, headers=eng.headers).status_code == 404
+    assert client.delete(url, headers=eng.headers).status_code == 404
+    assert db.scalar(select(func.count()).select_from(ChatMessage)
+                     .where(ChatMessage.id.in_(message_ids))) == 0
+    assert db.scalar(select(func.count()).select_from(Citation)
+                     .where(Citation.message_id.in_(message_ids))) == 0
+    actions = db.scalars(select(AuditEvent.action).where(AuditEvent.resource_id == sid)).all()
+    assert sorted(actions) == ["chat.session.delete", "chat.session.rename",
+                               "chat.session.update"]
 
 
 def test_model_errors_are_safe_and_recorded(client: TestClient, factory: Factory,

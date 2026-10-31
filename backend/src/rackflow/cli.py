@@ -2,6 +2,7 @@
 
     rackflow-admin create-user --email a@b.com --name "A" --tenant acme --role org_admin
     rackflow-admin seed-demo            # two demo tenants with one user per role
+    rackflow-admin reindex --tenant acme [--include-failed] [--dry-run]
 
 Passwords are read from RACKFLOW_SEED_PASSWORD / --password-env, or generated and printed once.
 They are never hard-coded or written to logs.
@@ -190,6 +191,59 @@ def cmd_seed_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+REINDEX_PRIORITY = 200  # behind interactive uploads (100), so a bulk re-index never blocks them
+
+
+def cmd_reindex(args: argparse.Namespace) -> int:
+    """Re-queue ingestion for a tenant's documents so their vectors are rebuilt from the stored
+    originals (recovery after the vector collection was lost, or an embedding model change).
+
+    Each document gets a fresh ingest job and DocumentVersion; the worker re-runs every stage,
+    re-embeds and upserts, then FINALIZE drops the old version's chunks and vectors. Documents
+    are moved to `queued`, so running the command again does not queue them twice."""
+    from rackflow.audit import record_audit
+    from rackflow.db.models import Document, DocumentStatus, JobType
+    from rackflow.ingestion.service import next_ingest_version
+    from rackflow.jobs.enqueue import enqueue_job
+
+    statuses = [DocumentStatus.INDEXED] + ([DocumentStatus.FAILED] if args.include_failed else [])
+    with session_scope() as db:
+        tenant = db.scalar(select(Tenant).where(Tenant.slug == args.tenant))
+        if tenant is None:
+            print(f"tenant {args.tenant!r} not found")
+            return 1
+        docs = db.scalars(
+            select(Document)
+            .where(Document.tenant_id == tenant.id, Document.status.in_(statuses),
+                   Document.deleted_at.is_(None))
+            .order_by(Document.created_at)
+        ).all()
+        verb = "would queue" if args.dry_run else "queued"
+        counts = {s.value: 0 for s in statuses}
+        for doc in docs:
+            counts[doc.status.value] += 1
+            version = next_ingest_version(db, doc.id)
+            print(f"{verb:11s} {doc.id}  v{version}  {doc.status.value:8s} {doc.filename}")
+            if args.dry_run:
+                continue
+            enqueue_job(db, tenant_id=tenant.id, job_type=JobType.INGEST_DOCUMENT,
+                        idempotency_key=f"reindex:{doc.id}:{version}", document_id=doc.id,
+                        collection_id=doc.collection_id,
+                        payload={"document_id": str(doc.id), "version": version},
+                        priority=REINDEX_PRIORITY)
+            doc.status = DocumentStatus.QUEUED
+            record_audit(db, action="document.reindex", resource_type="document",
+                         resource_id=doc.id, tenant_id=tenant.id,
+                         metadata={"version": version, "source": "cli"})
+        if args.dry_run:
+            db.rollback()
+    found = ", ".join(f"{n} {status}" for status, n in counts.items())
+    print(f"\n{args.tenant}: {found} -> {verb} {len(docs)} document(s)."
+          + (" Dry run: nothing was changed." if args.dry_run
+             else " Run a worker to re-index them."))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="rackflow-admin")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -216,6 +270,13 @@ def main(argv: list[str] | None = None) -> int:
     si = sub.add_parser("seed-infra", help="seed SIMULATED racks/nodes/workloads for a tenant")
     si.add_argument("--tenant", required=True, help="tenant slug")
     si.set_defaults(func=cmd_seed_infra)
+
+    ri = sub.add_parser("reindex", help="re-queue ingestion to rebuild a tenant's vectors")
+    ri.add_argument("--tenant", required=True, help="tenant slug")
+    ri.add_argument("--include-failed", action="store_true",
+                    help="also re-queue documents whose ingestion failed")
+    ri.add_argument("--dry-run", action="store_true", help="list the documents, change nothing")
+    ri.set_defaults(func=cmd_reindex)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

@@ -6,6 +6,7 @@ limit multiplies; a shared store (e.g. Redis) is required for exact global limit
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import defaultdict, deque
@@ -27,7 +28,9 @@ class SlidingWindowLimiter:
             while q and now - q[0] > self.window:
                 q.popleft()
             if len(q) >= self.limit:
-                raise RateLimitedError()
+                # Seconds until the oldest hit leaves the window and a slot frees up.
+                wait = self.window - (now - q[0])
+                raise RateLimitedError(retry_after=max(1, math.ceil(wait)))
             q.append(now)
 
     def reset(self) -> None:
@@ -38,8 +41,9 @@ class SlidingWindowLimiter:
 login_limiter = SlidingWindowLimiter(limit=10, window_seconds=60)
 upload_limiter = SlidingWindowLimiter(limit=60, window_seconds=60)
 chat_limiter = SlidingWindowLimiter(limit=30, window_seconds=60)
+demo_login_limiter = SlidingWindowLimiter(limit=30, window_seconds=60)
 
 
 def reset_all() -> None:
-    for limiter in (login_limiter, upload_limiter, chat_limiter):
+    for limiter in (login_limiter, upload_limiter, chat_limiter, demo_login_limiter):
         limiter.reset()

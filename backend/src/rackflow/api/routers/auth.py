@@ -9,14 +9,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from rackflow.audit import record_audit
+from rackflow.auth.demo import DEMO_PERSONAS, find_persona
 from rackflow.auth.deps import get_principal
 from rackflow.auth.passwords import verify_password
 from rackflow.auth.principal import Principal
 from rackflow.auth.rbac import ROLE_PERMISSIONS
 from rackflow.auth.sessions import SESSION_COOKIE, create_session, revoke_session
 from rackflow.core.config import get_settings
-from rackflow.core.errors import UnauthenticatedError
-from rackflow.core.ratelimit import login_limiter
+from rackflow.core.errors import NotFoundError, UnauthenticatedError
+from rackflow.core.ratelimit import demo_login_limiter, login_limiter
 from rackflow.db.models import Role, Tenant, TenantMembership, User
 from rackflow.db.session import get_db
 
@@ -49,6 +50,25 @@ class MeOut(BaseModel):
 
 class LoginOut(MeOut):
     token: str | None = None  # only for mode="token" (API clients)
+
+
+class DemoPersonaOut(BaseModel):
+    key: str
+    title: str
+    display_name: str
+    email: str
+    summary: str
+    can: list[str]
+    cannot: list[str]
+
+
+class DemoInfoOut(BaseModel):
+    enabled: bool
+    personas: list[DemoPersonaOut]
+
+
+class DemoLoginRequest(BaseModel):
+    persona: str = Field(min_length=1, max_length=40)
 
 
 def _memberships(db: Session, user_id: uuid.UUID) -> list[MembershipOut]:
@@ -101,12 +121,19 @@ def login(
         raise UnauthenticatedError(code="INVALID_CREDENTIALS",
                                    message="Email or password is incorrect.")
 
-    token, session = create_session(db, user_id=user.id, tenant_id=chosen.tenant_id)
-    record_audit(db, action="auth.login", resource_type="user", resource_id=user.id,
-                 tenant_id=chosen.tenant_id, actor_user_id=user.id)
+    return _start_session(db, response, user, chosen, mode=body.mode, action="auth.login")
+
+
+def _start_session(
+    db: Session, response: Response, user: User, membership: MembershipOut, *,
+    mode: Literal["cookie", "token"], action: str,
+) -> LoginOut:
+    token, session = create_session(db, user_id=user.id, tenant_id=membership.tenant_id)
+    record_audit(db, action=action, resource_type="user", resource_id=user.id,
+                 tenant_id=membership.tenant_id, actor_user_id=user.id)
     db.commit()
 
-    if body.mode == "cookie":
+    if mode == "cookie":
         settings = get_settings()
         response.set_cookie(
             SESSION_COOKIE,
@@ -117,11 +144,61 @@ def login(
             samesite="lax",
             path="/",
         )
-    principal = Principal(user_id=user.id, tenant_id=chosen.tenant_id, role=Role(chosen.role),
-                          session_id=session.id, email=user.email, display_name=user.display_name)
+    principal = Principal(user_id=user.id, tenant_id=membership.tenant_id,
+                          role=Role(membership.role), session_id=session.id, email=user.email,
+                          display_name=user.display_name)
     out = LoginOut(**_me(db, principal).model_dump())
-    out.token = token if body.mode == "token" else None
+    out.token = token if mode == "token" else None
     return out
+
+
+def _demo_account(db: Session, key: str) -> tuple[User, MembershipOut] | None:
+    """The seeded, active account behind a persona, or None if it is not available."""
+    persona = find_persona(key)
+    if persona is None:
+        return None
+    user = db.scalar(select(User).where(User.email == persona.email))
+    if user is None or user.status != "active":
+        return None
+    membership = next(
+        (m for m in _memberships(db, user.id) if m.tenant_slug == persona.tenant_slug), None
+    )
+    return (user, membership) if membership else None
+
+
+@router.get("/demo", response_model=DemoInfoOut)
+def demo_info(db: Session = Depends(get_db)) -> DemoInfoOut:
+    """Public: which one-click demo personas exist. Empty unless DEMO_MODE is on."""
+    if not get_settings().demo_mode:
+        return DemoInfoOut(enabled=False, personas=[])
+    personas = []
+    for p in DEMO_PERSONAS:
+        account = _demo_account(db, p.key)
+        if account is None:
+            continue
+        personas.append(DemoPersonaOut(
+            key=p.key, title=p.title, display_name=account[0].display_name, email=p.email,
+            summary=p.summary, can=list(p.can), cannot=list(p.cannot),
+        ))
+    return DemoInfoOut(enabled=True, personas=personas)
+
+
+@router.post("/demo", response_model=LoginOut)
+def demo_login(
+    body: DemoLoginRequest, request: Request, response: Response, db: Session = Depends(get_db)
+) -> LoginOut:
+    """Public: sign in as a demo persona without a password (DEMO_MODE only)."""
+    if not get_settings().demo_mode:
+        raise NotFoundError()
+    client = request.client.host if request.client else "unknown"
+    demo_login_limiter.hit(client)
+    account = _demo_account(db, body.persona)
+    if account is None:
+        raise NotFoundError(code="DEMO_PERSONA_NOT_FOUND",
+                            message="That demo account is not available.")
+    user, membership = account
+    return _start_session(db, response, user, membership, mode="cookie",
+                          action="auth.demo_login")
 
 
 @router.post("/logout", status_code=204)

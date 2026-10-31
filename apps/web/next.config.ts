@@ -14,6 +14,15 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  experimental: {
+    // Request bodies are buffered up to this size before the /api rewrite forwards them
+    // (Next's default is 10 MB). 26mb fits the 25 MiB per-file upload limit plus multipart overhead.
+    proxyClientMaxBodySize: "26mb",
+  },
+  async redirects() {
+    // The console chat moved to the /ask workspace.
+    return [{ source: "/chat", destination: "/ask", permanent: true }];
+  },
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${apiTarget}/api/:path*` }];
   },

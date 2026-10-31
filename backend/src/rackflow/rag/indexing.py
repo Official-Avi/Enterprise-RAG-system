@@ -10,7 +10,12 @@ from sqlalchemy import select, update
 from rackflow import PIPELINE_VERSION
 from rackflow.db.models import Chunk, Document, DocumentVersion, PipelineStage
 from rackflow.jobs.context import JobContext
-from rackflow.jobs.errors import PermanentJobError, RetryableJobError
+from rackflow.jobs.errors import (
+    DependencyUnavailable,
+    PermanentJobError,
+    RetryableJobError,
+    is_dependency_failure,
+)
 from rackflow.providers.embeddings import get_embedding_provider
 from rackflow.providers.interfaces import VectorRecord
 from rackflow.providers.vectorstore import VectorDimensionMismatch, get_vector_store
@@ -26,17 +31,20 @@ def index_document_version(ctx: JobContext, version_id: uuid.UUID) -> None:
         .where(Chunk.document_version_id == version_id, Chunk.tenant_id == ctx.tenant_id)
         .order_by(Chunk.chunk_index)
     ).all()
-    embedder = get_embedding_provider()
-    store = get_vector_store()
 
     vectors: list[list[float]] = []
+    # Providers are built inside their stage so a failure to load them is recorded against
+    # EMBED / INDEX, not against the previous stage.
     with ctx.stage(PipelineStage.EMBED) as rec:
         try:
+            embedder = get_embedding_provider()
             for i in range(0, len(chunks), EMBED_BATCH):
                 batch = [c.text for c in chunks[i:i + EMBED_BATCH]]
                 vectors.extend(embedder.embed_documents(batch))
                 ctx.heartbeat()
         except Exception as exc:  # noqa: BLE001 — provider errors are transient by default
+            if is_dependency_failure(exc):  # e.g. the ONNX runtime cannot load on this host
+                raise DependencyUnavailable() from exc
             raise RetryableJobError("EMBEDDING_FAILED", "Embedding generation failed.") from exc
         rec.details = {"chunks": len(chunks), "model": embedder.model_name,
                        "dimension": embedder.dimension}
@@ -62,6 +70,7 @@ def index_document_version(ctx: JobContext, version_id: uuid.UUID) -> None:
         ]
         document_id = chunks[0].document_id if chunks else None
         try:
+            store = get_vector_store()
             store.ensure_collection(embedder.dimension)
             for i in range(0, len(records), UPSERT_BATCH):
                 store.upsert(records[i:i + UPSERT_BATCH])

@@ -23,6 +23,8 @@ PUBLIC = {
     ("GET", "/api/v1/health/live"),
     ("GET", "/api/v1/health/ready"),
     ("POST", "/api/v1/auth/login"),
+    ("GET", "/api/v1/auth/demo"),  # empty unless DEMO_MODE; tests in test_demo_login.py
+    ("POST", "/api/v1/auth/demo"),
     ("GET", "/health/live"),
 }
 
@@ -72,6 +74,26 @@ def test_login_is_rate_limited(client: TestClient, factory: Factory) -> None:
                          json={"email": actor.email, "password": "wrong-password!"}).status_code
              for _ in range(12)]
     assert codes[:9] == [401] * 9 and codes[9:] == [429] * 3
+
+
+def test_rate_limited_responses_carry_retry_after(client: TestClient, factory: Factory) -> None:
+    from rackflow.core.errors import RateLimitedError
+    from rackflow.core.ratelimit import SlidingWindowLimiter
+
+    limiter = SlidingWindowLimiter(limit=2, window_seconds=30)
+    limiter.hit("k")
+    limiter.hit("k")
+    with pytest.raises(RateLimitedError) as caught:
+        limiter.hit("k")
+    assert caught.value.retry_after is not None and 1 <= caught.value.retry_after <= 30
+
+    actor = factory.actor(Role.ENGINEER)  # its own login is hit 1 of 10
+    responses = [client.post("/api/v1/auth/login",
+                             json={"email": actor.email, "password": "wrong-password!"})
+                 for _ in range(10)]
+    assert responses[-1].status_code == 429
+    assert 1 <= int(responses[-1].headers["Retry-After"]) <= 60
+    assert "Retry-After" not in responses[0].headers
 
 
 def test_error_responses_are_safe(client: TestClient) -> None:

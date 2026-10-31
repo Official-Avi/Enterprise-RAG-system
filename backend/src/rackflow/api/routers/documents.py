@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from rackflow.api.pagination import decode_cursor, encode_cursor
@@ -43,7 +43,7 @@ from rackflow.db.models import (
     Role,
 )
 from rackflow.db.session import get_db
-from rackflow.ingestion.service import accept_upload, used_storage_bytes
+from rackflow.ingestion.service import accept_upload, next_ingest_version, used_storage_bytes
 from rackflow.jobs.enqueue import enqueue_job
 from rackflow.providers.storage import get_object_storage
 from rackflow.tenant_settings import effective_settings
@@ -344,9 +344,7 @@ def retry_document(
     doc, _ = _content_document(db, principal, document_id, CollectionPermissionLevel.WRITE)
     if doc.status != DocumentStatus.FAILED:
         raise ConflictError(code="NOT_RETRYABLE", message="Only failed documents can be retried.")
-    version = (db.scalar(select(func.count()).select_from(ProcessingJob).where(
-        ProcessingJob.document_id == doc.id,
-        ProcessingJob.job_type == JobType.INGEST_DOCUMENT)) or 0) + 1
+    version = next_ingest_version(db, doc.id)
     job = enqueue_job(db, tenant_id=principal.tenant_id, job_type=JobType.INGEST_DOCUMENT,
                       idempotency_key=f"ingest:{doc.id}:v{version}", document_id=doc.id,
                       collection_id=doc.collection_id,

@@ -62,13 +62,16 @@ export default function OverviewPage() {
         <Card title="Model endpoint">
           {model.error && <ErrorState error={model.error} />}
           {model.data && (
-            <dl className="space-y-1.5 text-sm">
-              <div className="flex justify-between"><dt className="text-muted">Status</dt><dd><StatusBadge status={model.data.ok ? "healthy" : "failed"} label={model.data.ok ? "Available" : "Unavailable"} /></dd></div>
-              <div className="flex justify-between"><dt className="text-muted">Provider</dt><dd>{model.data.provider}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted">Model</dt><dd className="font-mono text-xs">{model.data.model}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted">Mode</dt><dd>{model.data.deployment_mode}</dd></div>
-              <p className="pt-1 text-xs text-muted">{model.data.detail}</p>
-            </dl>
+            <>
+              <dl className="space-y-1.5 text-sm">
+                <div className="flex justify-between"><dt className="text-muted">Status</dt><dd><StatusBadge status={model.data.ok ? "healthy" : "failed"} label={model.data.ok ? "Available" : "Unavailable"} /></dd></div>
+                <div className="flex justify-between"><dt className="text-muted">Provider</dt><dd>{model.data.provider}</dd></div>
+                <div className="flex justify-between"><dt className="text-muted">Model</dt><dd className="font-mono text-xs">{model.data.model}</dd></div>
+                <div className="flex justify-between"><dt className="text-muted">Mode</dt><dd>{model.data.deployment_mode}</dd></div>
+              </dl>
+              {/* Outside the <dl>: a <dl> may only hold dt/dd groups. */}
+              <p className="mt-2 text-xs text-muted">{model.data.detail}</p>
+            </>
           )}
         </Card>
         <Card title="Pipeline status" className="lg:col-span-1">

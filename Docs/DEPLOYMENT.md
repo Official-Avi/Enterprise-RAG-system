@@ -103,7 +103,8 @@ fails if `COOKIE_SECURE` is false or a test-only embedding provider is configure
 ### 8.3 Docker Compose (Linux) — verified in CI
 `docker compose up --build` starts PostgreSQL, Qdrant, the migration job, API, worker and web,
 with health checks. CI job `compose-smoke` runs this on every push and checks liveness,
-readiness (database + vector store) and the web login page. Data ports bind to 127.0.0.1.
+readiness (database, vector store, vector collection, embeddings; see §8.6) and the web login
+page. Data ports bind to 127.0.0.1.
 Scale workers with `docker compose up --scale worker=3` (documented; queue concurrency is covered
 by tests, not by a multi-replica Compose run). The web image bakes the API proxy target at
 build time (`API_PROXY_TARGET` build arg, default `http://api:8000`).
@@ -121,7 +122,18 @@ live smoke test (upload → index with real embeddings → cited answer) and web
 
 ### 8.6 Health probes and operations
 - Liveness: `GET /health/live` (also `/api/v1/health/live`). Readiness: `GET /api/v1/health/ready`
-  (503 until PostgreSQL and Qdrant respond).
+  returns 503 until every check passes: `database` (PostgreSQL answers), `vector_store` (Qdrant
+  answers), `vector_collection` (the configured collection exists, or nothing is indexed yet: the
+  worker creates it on the first index) and `embeddings` (the embedding provider loads and embeds
+  a short string within 5 s; success is cached for 60 s). The API starts loading the embedding
+  model in the background at startup, so the first probe is usually fast; on a cold model cache
+  readiness can stay 503 while the model downloads.
+- Lost vectors (for example a deleted Qdrant collection: readiness shows
+  `vector_collection: false`): rebuild them from the stored originals with
+  `rackflow-admin reindex --tenant <slug> [--include-failed] [--dry-run]`, then let the workers
+  drain the queue. Re-index jobs run behind interactive uploads (priority 200).
+- Jobs that fail because a library cannot be loaded on the host (ImportError, DLL load errors)
+  fail at once with `DEPENDENCY_UNAVAILABLE` instead of being retried; fix the host, then retry.
 - Worker liveness: heartbeats every 5 s in `worker_heartbeats`; the console marks a worker stale
   after 15 s. A crashed worker's jobs are reclaimed after `JOB_LEASE_SECONDS` (verified by a
   process-kill test).

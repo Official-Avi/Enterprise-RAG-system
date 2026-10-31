@@ -64,8 +64,8 @@ $env:PORT=3000; $env:HOSTNAME="127.0.0.1"; node .next\standalone\server.js
 On subsequent runs only `start-services.ps1`, the API, the worker and the web server are needed.
 `npm run dev` is the standard Next.js dev server but has not been verified in this sprint.
 
-Health: `GET http://127.0.0.1:8000/api/v1/health/live` and `/api/v1/health/ready` (database +
-vector store). API docs (non-production only): `http://127.0.0.1:8000/api/v1/docs`.
+Health: `GET http://127.0.0.1:8000/api/v1/health/live` and `/api/v1/health/ready` (database,
+vector store, vector collection and embeddings). API docs (non-production only): `http://127.0.0.1:8000/api/v1/docs`.
 
 ### Smoke test (live stack)
 

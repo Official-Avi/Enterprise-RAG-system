@@ -27,9 +27,12 @@ class QdrantVectorStore:
         self._ready = False
 
     def ensure_collection(self, dimension: int) -> None:
-        if self._ready:
+        # Existence is re-checked on every call (one cheap request per indexed document): a
+        # collection deleted while the worker runs is recreated instead of failing every upsert.
+        exists = self.client.collection_exists(self.collection)
+        if self._ready and exists:
             return
-        if not self.client.collection_exists(self.collection):
+        if not exists:
             self.client.create_collection(
                 self.collection,
                 vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
@@ -127,6 +130,9 @@ class QdrantVectorStore:
     def health(self) -> bool:
         self.client.get_collections()
         return True
+
+    def collection_exists(self) -> bool:
+        return bool(self.client.collection_exists(self.collection))
 
 
 @lru_cache(maxsize=1)

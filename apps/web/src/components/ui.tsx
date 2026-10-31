@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  type ButtonHTMLAttributes,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { ApiError } from "@/lib/api";
 import { Icon } from "./icons";
 
@@ -24,8 +32,9 @@ export function Button({
   return (
     <button
       className={cx(
-        "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium",
-        "disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
+        // aria-disabled keeps a focused control focusable (§9 #5); the caller guards the click.
+        "disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50",
         styles[variant],
         className,
       )}
@@ -34,8 +43,10 @@ export function Button({
   );
 }
 
+// --border-strong keeps the control boundary at >= 3:1 (§9 #14); 16px text below md stops
+// iOS zooming into a focused field (§10).
 export const inputClass =
-  "w-full rounded-md border border-border bg-panel px-3 py-1.5 text-sm text-text " +
+  "w-full rounded-md border border-border-strong bg-panel px-3 py-1.5 text-base text-text md:text-sm " +
   "placeholder:text-muted";
 
 type Tone = "ok" | "warn" | "bad" | "info" | "neutral" | "accent";
@@ -78,7 +89,8 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
   return (
     <span
       className={cx(
-        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+        // `badge` gets a CanvasText border in forced-colors mode (globals.css).
+        "badge inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
         "whitespace-nowrap",
         toneStyles[tone],
       )}
@@ -91,7 +103,7 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
 
 export function Badge({ tone = "neutral", children }: { tone?: Tone; children: ReactNode }) {
   return (
-    <span className={cx("rounded px-1.5 py-0.5 text-xs font-medium", toneStyles[tone])}>
+    <span className={cx("badge rounded px-1.5 py-0.5 text-xs font-medium", toneStyles[tone])}>
       {children}
     </span>
   );
@@ -159,11 +171,46 @@ export function Loading({ label = "Loading…" }: { label?: string }) {
   );
 }
 
-export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+/** Empty state. `children` stays the body for existing callers; the optional slots (§11) add an
+ *  icon, a description and up to two actions. */
+export function Empty({
+  title,
+  children,
+  icon,
+  description,
+  primary,
+  secondary,
+  variant = "dashed",
+}: {
+  title: string;
+  children?: ReactNode;
+  icon?: ReactNode;
+  description?: ReactNode;
+  primary?: ReactNode;
+  secondary?: ReactNode;
+  variant?: "dashed" | "plain";
+}) {
+  const body = description ?? children;
   return (
-    <div className="rounded-lg border border-dashed border-border px-6 py-10 text-center">
+    <div
+      className={cx(
+        "rounded-lg px-6 py-10 text-center",
+        variant === "dashed" && "border border-dashed border-border",
+      )}
+    >
+      {icon && (
+        <div aria-hidden="true" className="mx-auto mb-3 grid size-10 place-items-center rounded-full bg-panel-2 text-muted">
+          {icon}
+        </div>
+      )}
       <p className="font-medium">{title}</p>
-      {children && <div className="mt-1 text-sm text-muted">{children}</div>}
+      {body && <div className="mt-1 text-sm text-muted">{body}</div>}
+      {(primary || secondary) && (
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          {primary}
+          {secondary}
+        </div>
+      )}
     </div>
   );
 }
@@ -188,6 +235,20 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
   );
 }
 
+const FIRST_FIELD =
+  'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])';
+
+/** Hand focus back to the opener, unless the page has already moved it somewhere on purpose. */
+function restoreFocus(dialog: HTMLDialogElement, opener: RefObject<HTMLElement | null>) {
+  const active = document.activeElement;
+  const lost = !active || active === document.body || dialog.contains(active);
+  if (lost && opener.current?.isConnected) opener.current.focus({ preventScroll: true });
+}
+
+/** Native modal <dialog> (§9 #10, §11): showModal from an effect traps focus and makes the page
+ *  behind inert. Initial focus: an element marked `data-autofocus`, else the first form field,
+ *  else the heading. Esc closes and focus returns to the opener. Children render only while
+ *  open, so a form starts fresh every time. */
 export function Dialog({
   open,
   title,
@@ -201,62 +262,76 @@ export function Dialog({
   children: ReactNode;
   wide?: boolean;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDialogElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+
+  // A layout effect, so closing never paints an empty box between unmounting the children
+  // and dialog.close().
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (open && !dialog.open) {
+      const active = document.activeElement;
+      openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+      dialog.showModal();
+      const target =
+        dialog.querySelector<HTMLElement>("[data-autofocus]") ??
+        dialog.querySelector<HTMLElement>(FIRST_FIELD) ??
+        headingRef.current;
+      target?.focus();
+    } else if (!open && dialog.open) {
+      dialog.close();
+    }
+  }, [open]);
+
+  // Pages unmount some dialogs while open (job details, run details). A removed <dialog> fires
+  // no close event, so focus is handed back here. Strict Mode's rehearsal keeps the node
+  // connected, which is why the check is isConnected rather than dialog.open.
   useEffect(() => {
-    if (!open) return;
-    const previous = document.activeElement as HTMLElement | null;
-    const node = ref.current;
-    const focusables = () =>
-      Array.from(
-        node?.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      ).filter((el) => !el.hasAttribute("disabled"));
-    focusables()[0]?.focus();
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") onClose();
-      if (ev.key === "Tab") {
-        const items = focusables();
-        if (!items.length) return;
-        const first = items[0];
-        const last = items[items.length - 1];
-        if (ev.shiftKey && document.activeElement === first) {
-          ev.preventDefault();
-          last.focus();
-        } else if (!ev.shiftKey && document.activeElement === last) {
-          ev.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    document.addEventListener("keydown", onKey);
+    const dialog = ref.current;
     return () => {
-      document.removeEventListener("keydown", onKey);
-      previous?.focus();
+      if (dialog && !dialog.isConnected) restoreFocus(dialog, openerRef);
     };
-  }, [open, onClose]);
-  if (!open) return null;
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center bg-black/40 p-4 pt-[8vh]">
-      <div
-        ref={ref}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className={cx(
-          "max-h-[84vh] w-full overflow-auto rounded-lg border border-border bg-panel shadow-xl",
-          wide ? "max-w-3xl" : "max-w-md",
-        )}
-      >
-        <header className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="font-semibold">{title}</h2>
-          <Button variant="ghost" aria-label="Close dialog" onClick={onClose}>
-            <Icon name="close" />
-          </Button>
-        </header>
-        <div className="p-4">{children}</div>
-      </div>
-    </div>
+    <dialog
+      ref={ref}
+      aria-labelledby={titleId}
+      onClose={() => {
+        const dialog = ref.current;
+        if (dialog) restoreFocus(dialog, openerRef);
+        // Esc closed it natively: tell the owner so its state follows. When the owner closed
+        // it, `open` is already false here.
+        if (open) onClose();
+      }}
+      className={cx(
+        "m-auto mt-[8vh] max-h-[84vh] w-[calc(100%-2rem)] overflow-auto rounded-2xl border border-border",
+        "bg-panel p-0 text-text shadow-elev-3 backdrop:bg-black/40",
+        "transition-opacity duration-200 ease-[var(--ease-snappy)] starting:open:opacity-0",
+        wide ? "max-w-3xl" : "max-w-md",
+      )}
+    >
+      <header className="flex items-center justify-between gap-2 border-b border-border py-1.5 pl-4 pr-1.5">
+        <h2 ref={headingRef} id={titleId} tabIndex={-1} className="min-w-0 font-semibold">
+          {title}
+        </h2>
+        <button
+          type="button"
+          aria-label="Close dialog"
+          onClick={onClose}
+          className={cx(
+            "inline-flex size-10 shrink-0 items-center justify-center rounded-md text-muted",
+            "transition-colors hover:bg-panel-2 hover:text-text max-sm:size-11",
+          )}
+        >
+          <Icon name="close" />
+        </button>
+      </header>
+      {open && <div className="p-4">{children}</div>}
+    </dialog>
   );
 }
 

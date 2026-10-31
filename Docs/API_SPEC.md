@@ -21,7 +21,12 @@ Do not expose stack traces, secrets, internal paths, or cross-tenant existence.
 
 ## Health
 - `GET /health/live` — process liveness.
-- `GET /health/ready` — dependency readiness; no secrets in response.
+- `GET /health/ready` — dependency readiness; no secrets in response. 200
+  `{status: "ready", checks: {database, vector_store, vector_collection, embeddings}}` when every
+  check is true, otherwise 503 with `status: "not_ready"` and the failing checks `false`.
+  `vector_collection` is false when the configured Qdrant collection is missing while documents
+  are marked indexed (a fresh deployment with nothing indexed is ready). `embeddings` builds the
+  embedding provider and embeds a short string (5 s timeout; success cached for 60 s).
 
 ## Workspaces and collections
 - `GET /workspaces`
@@ -127,7 +132,8 @@ Every infrastructure response includes `state_source`: `manual`, `simulated`, or
 - Validate request bodies with typed schemas.
 - Use pagination for lists.
 - Use consistent status codes.
-- Apply rate limits to uploads and chat.
+- Apply rate limits to uploads and chat. A 429 `RATE_LIMITED` response carries `Retry-After`
+  (whole seconds until the oldest request leaves the window, at least 1).
 - Add correlation IDs to responses/logs.
 - Add OpenAPI docs, but do not expose administrative endpoints publicly without authorization.
 
@@ -175,8 +181,17 @@ These shapes are the binding contract between backend modules and the web app. A
 ### Chat
 - `POST /chat/sessions` `{title?, collection_ids: uuid[]}` → 201 `Session`; `GET /chat/sessions` → list of `Session`
 - `GET /chat/sessions/{id}` → `{session: Session, messages: Message[]}`
+- `PATCH /chat/sessions/{id}` `{title?: string (1..200), collection_ids?: uuid[] (1..50)}` → `Session`.
+  Owner only (anyone else gets 404), permission `chat:use`. Does not change `updated_at`. Every
+  collection must be accessible (404 `COLLECTION_NOT_FOUND`); a blank title is 422. Audited as
+  `chat.session.rename` (title) and `chat.session.update` (collections), counts only.
+- `DELETE /chat/sessions/{id}` → 204. Owner only (404 otherwise), permission `chat:use`. Removes
+  the messages and their citations; documents are not affected. Audited as `chat.session.delete`.
 - `POST /chat/sessions/{id}/messages` `{message, collection_ids?}` →
-  `{message_id, user_message_id, answer, evidence_status: "supported"|"insufficient", citations: Citation[], model: {provider, name, deployment_mode}, latency_ms, retrieved_count}`
+  `{message_id, user_message_id, answer, evidence_status: "supported"|"insufficient", citations: Citation[], model: {provider, name, deployment_mode}, latency_ms, retrieved_count}`.
+  Without `collection_ids` the session's stored collections are used, minus any that were deleted
+  or are no longer accessible; 404 `SESSION_SCOPE_EMPTY` only when none remain. An explicit
+  `collection_ids` override must be fully accessible (404 `COLLECTION_NOT_FOUND`).
 - `Session = {id, title, collection_ids, created_at, updated_at}`
 - `Message = {id, role: "user"|"assistant", content, evidence_status|null, citations: Citation[], model: {provider, name}|null, latency_ms|null, created_at}`
 - `Citation = {marker, document_id, filename, page, chunk_id, quote, score}` — only for sources the caller can still access.

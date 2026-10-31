@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from rackflow.audit import record_audit
@@ -15,7 +16,7 @@ from rackflow.auth.access import accessible_collections
 from rackflow.auth.deps import require
 from rackflow.auth.principal import Principal
 from rackflow.auth.rbac import Permission
-from rackflow.core.errors import NotFoundError
+from rackflow.core.errors import NotFoundError, ValidationFailedError
 from rackflow.core.ratelimit import chat_limiter
 from rackflow.db.models import (
     ChatMessage,
@@ -36,6 +37,11 @@ router = APIRouter(tags=["chat"])
 class SessionIn(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     collection_ids: list[uuid.UUID] = Field(min_length=1, max_length=50)
+
+
+class SessionPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    collection_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=50)
 
 
 class SessionOut(BaseModel):
@@ -140,6 +146,23 @@ def _require_collections(db: Session, principal: Principal, ids: list[uuid.UUID]
                             message="The requested collection could not be found.")
 
 
+def _session_scope(db: Session, principal: Principal, conv: Conversation) -> list[uuid.UUID]:
+    """The session's stored collections that still exist and are still accessible. Collections
+    deleted (or revoked) since the session was created are dropped silently, so one deleted
+    collection does not break the whole chat; only an empty result is an error."""
+    stored = [uuid.UUID(c) for c in conv.collection_ids]
+    # Guard the empty case explicitly: authorized_collections() treats "none requested" as
+    # "every accessible collection", which would silently widen the scope.
+    scope = authorized_collections(db, principal, stored) if stored else []
+    if not scope:
+        raise NotFoundError(
+            code="SESSION_SCOPE_EMPTY",
+            message="None of this chat's collections are available any more. "
+                    "Choose other collections or start a new chat.",
+        )
+    return scope
+
+
 @router.post("/chat/sessions", response_model=SessionOut, status_code=201)
 def create_session(
     body: SessionIn,
@@ -205,6 +228,60 @@ def get_session(
     ])
 
 
+@router.patch("/chat/sessions/{session_id}", response_model=SessionOut)
+def update_session(
+    session_id: uuid.UUID,
+    body: SessionPatch,
+    principal: Principal = Depends(require(Permission.CHAT_USE)),
+    db: Session = Depends(get_db),
+) -> SessionOut:
+    """Rename and/or re-scope the caller's own chat. `updated_at` is left alone: it orders the
+    history by last activity, and a rename is not activity (UI spec §5.10)."""
+    conv = _own_session(db, principal, session_id)
+    values: dict[str, Any] = {}
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise ValidationFailedError(code="INVALID_TITLE", message="The title cannot be empty.")
+        values["title"] = title
+    if body.collection_ids is not None:
+        _require_collections(db, principal, body.collection_ids)
+        values["collection_ids"] = [str(c) for c in dict.fromkeys(body.collection_ids)]
+    if not values:
+        return _session_out(conv)
+    # A Core UPDATE that sets updated_at to itself; the ORM `onupdate` would otherwise bump it.
+    db.execute(update(Conversation).where(Conversation.id == conv.id)
+               .values(**values, updated_at=Conversation.updated_at)
+               .execution_options(synchronize_session=False))
+    # Audit metadata is counts only: the title is usually the user's first question.
+    if "title" in values:
+        record_audit(db, action="chat.session.rename", resource_type="chat_session",
+                     resource_id=conv.id, principal=principal)
+    if "collection_ids" in values:
+        record_audit(db, action="chat.session.update", resource_type="chat_session",
+                     resource_id=conv.id, principal=principal,
+                     metadata={"collections": len(values["collection_ids"])})
+    db.commit()
+    db.refresh(conv)
+    return _session_out(conv)
+
+
+@router.delete("/chat/sessions/{session_id}", status_code=204)
+def delete_session(
+    session_id: uuid.UUID,
+    principal: Principal = Depends(require(Permission.CHAT_USE)),
+    db: Session = Depends(get_db),
+) -> Response:
+    conv = _own_session(db, principal, session_id)
+    messages = db.scalar(select(func.count()).select_from(ChatMessage)
+                         .where(ChatMessage.conversation_id == conv.id)) or 0
+    db.delete(conv)  # messages and their citations go with it (ON DELETE CASCADE)
+    record_audit(db, action="chat.session.delete", resource_type="chat_session",
+                 resource_id=conv.id, principal=principal, metadata={"messages": messages})
+    db.commit()
+    return Response(status_code=204)
+
+
 @router.post("/chat/sessions/{session_id}/messages", response_model=AnswerOut)
 def ask(
     session_id: uuid.UUID,
@@ -214,8 +291,11 @@ def ask(
 ) -> AnswerOut:
     chat_limiter.hit(f"{principal.tenant_id}:{principal.user_id}")
     conv = _own_session(db, principal, session_id)
-    collection_ids = body.collection_ids or [uuid.UUID(c) for c in conv.collection_ids]
-    _require_collections(db, principal, collection_ids)
+    if body.collection_ids:  # an explicit per-message override must be fully accessible
+        collection_ids = body.collection_ids
+        _require_collections(db, principal, collection_ids)
+    else:
+        collection_ids = _session_scope(db, principal, conv)
 
     result = answer_question(db, principal, body.message.strip(), collection_ids)
 

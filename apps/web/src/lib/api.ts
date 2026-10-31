@@ -7,15 +7,31 @@ export class ApiError extends Error {
     public code: string,
     message: string,
     public correlationId: string | null,
+    /** Whole seconds from a 429's Retry-After header; null when the server sent none. */
+    public retryAfter: number | null = null,
   ) {
     super(message);
   }
 }
 
-type Options = Omit<RequestInit, "body"> & { json?: unknown; body?: BodyInit };
+/** Retry-After is either delta-seconds or an HTTP date. */
+function retryAfterSeconds(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? null : Math.max(0, Math.ceil((at - Date.now()) / 1000));
+}
+
+type Options = Omit<RequestInit, "body"> & {
+  json?: unknown;
+  body?: BodyInit;
+  /** Public pages set this so a 401 is returned to the caller instead of redirecting. */
+  noAuthRedirect?: boolean;
+};
 
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
-  const { json, headers, ...rest } = options;
+  const { json, headers, noAuthRedirect, ...rest } = options;
   const method = (rest.method ?? "GET").toUpperCase();
   const h = new Headers(headers);
   h.set("Accept", "application/json");
@@ -38,7 +54,7 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const err = data?.error ?? {};
-    if (res.status === 401 && typeof window !== "undefined" && !path.startsWith("/auth/login")) {
+    if (res.status === 401 && typeof window !== "undefined" && !noAuthRedirect && !path.startsWith("/auth/login")) {
       const next = encodeURIComponent(window.location.pathname + window.location.search);
       // Full reload on purpose: auth was lost, so discard all client-side state.
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
@@ -49,6 +65,7 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
       err.code ?? "HTTP_ERROR",
       err.message ?? "The request failed.",
       err.correlation_id ?? null,
+      retryAfterSeconds(res.headers.get("Retry-After")),
     );
   }
   return data as T;
@@ -88,6 +105,7 @@ export function uploadFiles<T>(
             data?.error?.code ?? "HTTP_ERROR",
             data?.error?.message ?? "The upload failed.",
             data?.error?.correlation_id ?? null,
+            retryAfterSeconds(xhr.getResponseHeader("Retry-After")),
           ),
         );
     };

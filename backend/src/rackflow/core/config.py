@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     session_ttl_hours: int = Field(default=12, ge=1, le=24 * 30)
     cookie_secure: bool = False
     auth_issuer: str = ""
+    demo_mode: bool = False  # one-click demo personas on the landing page; never in production
 
     @field_validator("object_storage_path", mode="after")
     @classmethod
@@ -83,6 +84,8 @@ class Settings(BaseSettings):
                 raise ValueError("COOKIE_SECURE must be true in production")
             if self.embedding_provider == "hash":
                 raise ValueError("EMBEDDING_PROVIDER=hash is a test-only provider")
+            if self.demo_mode:
+                raise ValueError("DEMO_MODE must be false in production")
         return self
 
     @property

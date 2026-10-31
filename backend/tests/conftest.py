@@ -20,12 +20,23 @@ import pytest
 TEST_DB = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+psycopg://rackflow:rackflow@127.0.0.1:5432/rackflow_test"
 )
+# Every test-relevant setting is FORCED, never setdefault: a developer shell that exports the live
+# values (VECTOR_COLLECTION=rackflow_chunks, EMBEDDING_PROVIDER=fastembed, ...) must not leak into
+# the suite. Overrides go through explicit TEST_* variables only.
+TEST_COLLECTION_PREFIX = "rackflow_test_"
 os.environ["DATABASE_URL"] = TEST_DB
 os.environ["APP_ENV"] = "test"
-os.environ.setdefault("EMBEDDING_PROVIDER", "hash")
-os.environ.setdefault("MODEL_PROVIDER", "extractive")
-os.environ.setdefault("VECTOR_COLLECTION", f"rackflow_test_{uuid.uuid4().hex[:8]}")
+os.environ["EMBEDDING_PROVIDER"] = os.environ.get("TEST_EMBEDDING_PROVIDER") or "hash"
+os.environ["MODEL_PROVIDER"] = os.environ.get("TEST_MODEL_PROVIDER") or "extractive"
+os.environ["VECTOR_COLLECTION"] = (
+    os.environ.get("TEST_VECTOR_COLLECTION") or f"{TEST_COLLECTION_PREFIX}{uuid.uuid4().hex[:8]}"
+)
 os.environ["OBJECT_STORAGE_PATH"] = tempfile.mkdtemp(prefix="rackflow-objects-")
+os.environ["DEMO_MODE"] = "false"  # a local .env may enable it; demo tests switch it on explicitly
+if not os.environ["VECTOR_COLLECTION"].startswith(TEST_COLLECTION_PREFIX):
+    raise RuntimeError(
+        f"refusing to run: test vector collection must start with {TEST_COLLECTION_PREFIX!r}"
+    )
 
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
@@ -60,7 +71,11 @@ def _schema() -> Iterator[None]:
         from rackflow.providers.vectorstore import get_vector_store
 
         store = get_vector_store()
-        if store.client.collection_exists(store.collection):
+        # Second guard: never delete anything that is not unmistakably a test collection, even if
+        # settings were changed mid-session.
+        if not store.collection.startswith(TEST_COLLECTION_PREFIX):
+            print(f"qdrant cleanup refused for non-test collection {store.collection!r}")
+        elif store.client.collection_exists(store.collection):
             store.client.delete_collection(store.collection)
     except Exception as exc:  # noqa: BLE001 — Qdrant may not be running for unit-only runs
         print(f"qdrant cleanup skipped: {type(exc).__name__}")

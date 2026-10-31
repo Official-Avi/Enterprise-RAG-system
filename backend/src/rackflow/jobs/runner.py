@@ -2,7 +2,8 @@
 
 Outcome writes use a fresh session (the handler's session may be mid-failure), and are guarded
 by lease ownership. Unknown exceptions are reported with a generic safe message — `str(exc)` can
-contain document text and is never stored or shown.
+contain document text and is never stored or shown. Import / native library load failures are
+not retried: they fail the same way on every attempt (DEPENDENCY_UNAVAILABLE).
 """
 
 from __future__ import annotations
@@ -15,7 +16,14 @@ from rackflow.db.models import JobStatus
 from rackflow.db.session import get_sessionmaker
 from rackflow.jobs import queue
 from rackflow.jobs.context import JobContext
-from rackflow.jobs.errors import JobCancelled, JobError
+from rackflow.jobs.errors import (
+    DEPENDENCY_MESSAGE,
+    DEPENDENCY_UNAVAILABLE,
+    JobCancelled,
+    JobError,
+    dependency_name,
+    is_dependency_failure,
+)
 from rackflow.jobs.registry import get_handler
 
 log = logging.getLogger("rackflow.jobs")
@@ -23,6 +31,22 @@ log = logging.getLogger("rackflow.jobs")
 
 class LeaseLost(Exception):
     """This worker no longer owns the job (lease expired and another worker reclaimed it)."""
+
+
+def _log_dependency_failure(claim: queue.ClaimedJob, exc: BaseException) -> None:
+    """Operator-facing detail for DEPENDENCY_UNAVAILABLE: the module name and the loader error
+    type/code, never the exception text (it can contain local paths)."""
+    root = exc
+    for _ in range(20):  # bounded: exception chains can, in theory, be cyclic
+        parent = root.__cause__ or root.__context__
+        if parent is None:
+            break
+        root = parent
+    log.error("job_dependency_unavailable", extra={
+        "job_id": str(claim.job_id), "job_type": claim.job_type.value,
+        "dependency": dependency_name(exc), "exc_type": type(root).__name__,
+        "winerror": getattr(root, "winerror", None),
+    })
 
 
 def run_claimed_job(claim: queue.ClaimedJob, worker_id: str, *, lease_seconds: int) -> str:
@@ -65,17 +89,25 @@ def run_claimed_job(claim: queue.ClaimedJob, worker_id: str, *, lease_seconds: i
         with sessions() as s:
             outcome = "cancelled" if queue.mark_cancelled(s, claim, worker_id) else "lease_lost"
     except JobError as exc:
+        if exc.code == DEPENDENCY_UNAVAILABLE:
+            _log_dependency_failure(claim, exc)
         with sessions() as s:
             status = queue.mark_failed(s, claim, worker_id, code=exc.code,
                                        message=exc.safe_message, retryable=exc.retryable)
         outcome = status.value if status else "lease_lost"
-    except Exception as exc:  # noqa: BLE001 — classify unknown errors as transient
-        log.error("job_unexpected_error", extra={"job_id": str(claim.job_id),
-                                                 "exc_type": type(exc).__name__})
+    except Exception as exc:  # noqa: BLE001 — unknown errors are transient, except loader errors
+        if is_dependency_failure(exc):
+            # An import / native library failure is deterministic on this host: fail it once.
+            _log_dependency_failure(claim, exc)
+            code, message, retryable = DEPENDENCY_UNAVAILABLE, DEPENDENCY_MESSAGE, False
+        else:
+            log.error("job_unexpected_error", extra={"job_id": str(claim.job_id),
+                                                     "exc_type": type(exc).__name__})
+            code, message = "INTERNAL_ERROR", "An unexpected processing error occurred."
+            retryable = True
         with sessions() as s:
-            status = queue.mark_failed(s, claim, worker_id, code="INTERNAL_ERROR",
-                                       message="An unexpected processing error occurred.",
-                                       retryable=True)
+            status = queue.mark_failed(s, claim, worker_id, code=code, message=message,
+                                       retryable=retryable)
         outcome = status.value if status else "lease_lost"
     finally:
         correlation_id_var.reset(token)

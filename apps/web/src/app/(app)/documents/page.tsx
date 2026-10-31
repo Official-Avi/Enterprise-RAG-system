@@ -46,7 +46,8 @@ function UploadPanel({ collections, onUploaded }: { collections: Collection[]; o
   const inputRef = useRef<HTMLInputElement>(null);
 
   const send = async (files: File[]) => {
-    if (!files.length || !collectionId) return;
+    // One upload at a time: a drop during an upload would otherwise start a second one.
+    if (!files.length || !collectionId || progress !== null) return;
     const local: UploadItem[] = [];
     const accepted: File[] = [];
     for (const f of files) {
@@ -104,7 +105,16 @@ function UploadPanel({ collections, onUploaded }: { collections: Collection[]; o
       >
         <Icon name="upload" width={22} height={22} className="mx-auto text-muted" />
         <p className="mt-2 text-sm">Drag files here, or</p>
-        <Button className="mt-2" onClick={() => inputRef.current?.click()} disabled={progress !== null}>Choose files</Button>
+        {/* aria-disabled, not disabled: the button keeps focus while the upload runs (§9 #5). */}
+        <Button
+          className="mt-2"
+          aria-disabled={progress !== null || undefined}
+          onClick={() => {
+            if (progress === null) inputRef.current?.click();
+          }}
+        >
+          Choose files
+        </Button>
         <input
           ref={inputRef}
           type="file"
@@ -116,15 +126,20 @@ function UploadPanel({ collections, onUploaded }: { collections: Collection[]; o
         />
         <p className="mt-2 text-xs text-muted">PDF, DOCX, TXT, Markdown · up to 25 MiB each · scanned PDFs are OCR-processed</p>
       </div>
-      <div aria-live="polite">
-        {progress !== null && (
-          <div className="mt-3">
-            <div className="h-1.5 overflow-hidden rounded bg-panel-2" role="progressbar" aria-valuenow={Math.round(progress * 100)} aria-valuemin={0} aria-valuemax={100} aria-label="Upload progress">
-              <div className="h-full bg-accent transition-all" style={{ width: `${progress * 100}%` }} />
-            </div>
-            <p className="mt-1 text-xs text-muted">Uploading… {Math.round(progress * 100)}%</p>
+      {/* Outside the live region: every progress tick would otherwise be read out. */}
+      {progress !== null && (
+        <div className="mt-3">
+          <div className="h-1.5 overflow-hidden rounded bg-panel-2" role="progressbar" aria-valuenow={Math.round(progress * 100)} aria-valuemin={0} aria-valuemax={100} aria-label="Upload progress">
+            {/* scaleX, not width: §8.4 animates transforms only, never layout. */}
+            <div
+              className="h-full w-full origin-left bg-accent transition-transform duration-150"
+              style={{ transform: `scaleX(${progress})` }}
+            />
           </div>
-        )}
+          <p className="mt-1 text-xs text-muted">Uploading… {Math.round(progress * 100)}%</p>
+        </div>
+      )}
+      <div aria-live="polite">
         {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
         {results.length > 0 && (
           <ul className="mt-3 divide-y divide-border rounded-md border border-border text-sm">

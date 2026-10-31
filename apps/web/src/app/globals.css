@@ -21,10 +21,35 @@
   --info: #1d4ed8;
   --info-soft: #e8efff;
   --focus: #0f6b66;
+  /* Added for the landing page and /ask workspace (Docs/UI_DESIGN_SPEC.md §8.1). */
+  --border-strong: #7a8494;
+  --dropzone-border: #4e9c93;
+  --landing-bg: #ffffff;
+  --cite-chip-bg: #e3f1ef;
+  --cite-chip-fg: #0b5753;
+  --cite-chip-active-bg: #0f6b66;
+  --cite-chip-active-fg: #ffffff;
+  --cite-hl: #fdefb2;
+  --cite-hl-active: #fbdc6a;
+  --demo-bg: #fff4d6;
+  --demo-fg: #5c4200;
+  --demo-border: #f0d58c;
+  --elev-1: 0 1px 3px rgb(16 24 40 / 0.1), 0 1px 2px rgb(16 24 40 / 0.06);
+  --elev-3: 0 12px 16px -4px rgb(16 24 40 / 0.08), 0 4px 6px -2px rgb(16 24 40 / 0.03);
+  --ease-snappy: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  color-scheme: light dark;
 }
 
+/* An explicit theme (a later toggle sets data-theme on <html>) also fixes native controls. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Dark tokens, twice: for the OS preference and for an explicit data-theme="dark" (§8.1).
+   CSS can't share one block between a media query and a plain selector; keep both in sync. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0c0e12;
     --panel: #13161c;
     --panel-2: #191d24;
@@ -43,7 +68,57 @@
     --info: #8ab4ff;
     --info-soft: #142038;
     --focus: #3cc4b4;
+    --border-strong: #6b7584;
+    --dropzone-border: #3a8a82;
+    --landing-bg: #0c0e12;
+    --cite-chip-bg: #11302d;
+    --cite-chip-fg: #7fdccf;
+    --cite-chip-active-bg: #3cc4b4;
+    --cite-chip-active-fg: #06201d;
+    --cite-hl: #4a3d0f;
+    --cite-hl-active: #6b5711;
+    --demo-bg: #3a2e0a;
+    --demo-fg: #f5d77a;
+    --demo-border: #5a4712;
+    --elev-1: 0 0 0 1px rgb(255 255 255 / 0.06), 0 1px 3px rgb(0 0 0 / 0.5);
+    --elev-3: 0 0 0 1px rgb(255 255 255 / 0.06), 0 8px 24px rgb(0 0 0 / 0.5);
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c0e12;
+  --panel: #13161c;
+  --panel-2: #191d24;
+  --border: #272c35;
+  --text: #e6e9ee;
+  --muted: #9aa3b1;
+  --accent: #3cc4b4;
+  --accent-soft: #11302d;
+  --accent-contrast: #06201d;
+  --ok: #4ade80;
+  --ok-soft: #10281a;
+  --warn: #fbbf5e;
+  --warn-soft: #2d2010;
+  --bad: #f87171;
+  --bad-soft: #301414;
+  --info: #8ab4ff;
+  --info-soft: #142038;
+  --focus: #3cc4b4;
+  --border-strong: #6b7584;
+  --dropzone-border: #3a8a82;
+  --landing-bg: #0c0e12;
+  --cite-chip-bg: #11302d;
+  --cite-chip-fg: #7fdccf;
+  --cite-chip-active-bg: #3cc4b4;
+  --cite-chip-active-fg: #06201d;
+  --cite-hl: #4a3d0f;
+  --cite-hl-active: #6b5711;
+  --demo-bg: #3a2e0a;
+  --demo-fg: #f5d77a;
+  --demo-border: #5a4712;
+  --elev-1: 0 0 0 1px rgb(255 255 255 / 0.06), 0 1px 3px rgb(0 0 0 / 0.5);
+  --elev-3: 0 0 0 1px rgb(255 255 255 / 0.06), 0 8px 24px rgb(0 0 0 / 0.5);
 }
 
 @theme inline {
@@ -64,8 +139,28 @@
   --color-bad-soft: var(--bad-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+  --color-focus: var(--focus);
+  --color-border-strong: var(--border-strong);
+  --color-dropzone-border: var(--dropzone-border);
+  --color-landing-bg: var(--landing-bg);
+  --color-cite-chip-bg: var(--cite-chip-bg);
+  --color-cite-chip-fg: var(--cite-chip-fg);
+  --color-cite-chip-active-bg: var(--cite-chip-active-bg);
+  --color-cite-chip-active-fg: var(--cite-chip-active-fg);
+  --color-cite-hl: var(--cite-hl);
+  --color-cite-hl-active: var(--cite-hl-active);
+  --color-demo-bg: var(--demo-bg);
+  --color-demo-fg: var(--demo-fg);
+  --color-demo-border: var(--demo-border);
+  --shadow-elev-1: var(--elev-1);
+  --shadow-elev-3: var(--elev-3);
+  --animate-flash: flash 1.2s var(--ease-snappy) 1;
+  --animate-shimmer: shimmer 2s ease-in-out infinite;
+  --animate-dash: dash 0.8s linear infinite;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
     Arial, sans-serif;
+  --font-display: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
 }
 
@@ -75,18 +170,87 @@ body {
   color: var(--text);
 }
 
+@keyframes flash {
+  from {
+    background-color: color-mix(in oklab, var(--accent) 18%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+/* Skeleton loop. Opacity only: §8.4 animates opacity, translate, scale, colour, shadow and
+   stroke-dashoffset, never layout or background position. */
+@keyframes shimmer {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* Marching dashed SVG border. One period of the `4 4` dropzone dash is 8 units. */
+@keyframes dash {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+html:has(dialog[open]) {
+  overflow: hidden;
+}
+
 body {
+  font-feature-settings: "cv05", "cv08";
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
 }
 
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* The ring itself is unlayered, so a stray `outline-none` utility can't remove it; components
+   that draw their own indicator opt out with `focus-visible:outline-none!`. */
 :focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: 4px;
+}
+
+/* Offset and radius are layered: unlayered they beat every utility, which squared off
+   `rounded-full` pills on focus and ignored `focus-visible:outline-offset-*`. */
+@layer base {
+  :focus-visible {
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
 }
 
 table {
   border-collapse: collapse;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .badge,
+  .cite-chip {
+    border: 1px solid CanvasText;
+  }
+  :focus-visible {
+    outline-color: Highlight;
+  }
 }

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
@@ -41,6 +43,14 @@ ROUTER_MODULES = (health, auth, workspaces, collections, documents, jobs, operat
                   models, infrastructure, admin, evaluation, settings_router)
 
 
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # Load the embedding model in the background at startup, so the first readiness probe does
+    # not pay for it (and the first question does not either). Never blocks startup.
+    health.embedding_probe.start()
+    yield
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -52,6 +62,7 @@ def create_app() -> FastAPI:
         docs_url=None if is_prod else f"{API_PREFIX}/docs",
         redoc_url=None,
         openapi_url=None if is_prod else f"{API_PREFIX}/openapi.json",
+        lifespan=_lifespan,
     )
     install_error_handlers(app)
 
@@ -61,7 +72,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Content-Type", "Authorization", CSRF_HEADER, "X-Request-ID"],
-        expose_headers=["X-Correlation-ID"],
+        expose_headers=["X-Correlation-ID", "Retry-After"],
     )
 
     @app.middleware("http")

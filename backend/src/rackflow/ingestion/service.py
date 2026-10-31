@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from rackflow.audit import record_audit
-from rackflow.db.models import Document, DocumentStatus, JobType
+from rackflow.db.models import Document, DocumentStatus, JobType, ProcessingJob
 from rackflow.ingestion.validation import UploadRejected, validate_upload
 from rackflow.jobs.enqueue import enqueue_job
 from rackflow.providers.storage import document_key, get_object_storage
@@ -27,6 +27,14 @@ class AcceptResult:
     error_code: str | None = None
     error_message: str | None = None
     stored_bytes: int = 0
+
+
+def next_ingest_version(db: Session, document_id: uuid.UUID) -> int:
+    """Version number for a new ingest run of an existing document (retry, re-index): one past
+    the number of ingest jobs so far, so every run builds a fresh DocumentVersion."""
+    return (db.scalar(select(func.count()).select_from(ProcessingJob).where(
+        ProcessingJob.document_id == document_id,
+        ProcessingJob.job_type == JobType.INGEST_DOCUMENT)) or 0) + 1
 
 
 def used_storage_bytes(db: Session, tenant_id: uuid.UUID) -> int:

@@ -132,7 +132,7 @@ export default function RackDetailPage() {
           {units === 0 ? (
             <p className="text-sm text-muted">Rack height not set; see the node list.</p>
           ) : (
-            <ol className="rounded border border-border font-mono text-[11px]" aria-label="Rack units from top">
+            <ol className="rounded border border-border font-mono text-xs" aria-label="Rack units from top">
               {Array.from({ length: units }, (_, i) => units - i).map((u) => {
                 const node = byUnit.get(u);
                 return (
