@@ -29,6 +29,10 @@ from rackflow.worker.main import HEARTBEAT_SECONDS
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 STALE_AFTER = timedelta(seconds=HEARTBEAT_SECONDS * 3)
+# Heartbeats come from their own thread every few seconds, so this long a silence means the process
+# is gone (crashed, or killed before it could write its "stopped" row), not that it is slow.
+GONE_AFTER = timedelta(minutes=10)
+LISTED_FOR = timedelta(days=1)
 WINDOWS = {"1h": (3600, 300), "24h": (86400, 3600), "7d": (604800, 21600)}
 
 
@@ -80,10 +84,18 @@ class Metrics(BaseModel):
     stage_durations_ms: dict[str, int]
 
 
-def _health(w: WorkerHeartbeat, now: datetime) -> Literal["healthy", "stale", "stopped"]:
-    if w.status == "stopped":
+def worker_health(w: WorkerHeartbeat, now: datetime) -> Literal["healthy", "stale", "stopped"]:
+    silent_for = now - w.last_heartbeat_at
+    if w.status == "stopped" or silent_for > GONE_AFTER:
         return "stopped"
-    return "healthy" if now - w.last_heartbeat_at <= STALE_AFTER else "stale"
+    return "healthy" if silent_for <= STALE_AFTER else "stale"
+
+
+def _listed_workers(db: Session, now: datetime) -> list[WorkerHeartbeat]:
+    """The one definition of which workers exist, so the summary counts what the list shows."""
+    return list(db.scalars(select(WorkerHeartbeat).where(
+        WorkerHeartbeat.last_heartbeat_at > now - LISTED_FOR)
+        .order_by(WorkerHeartbeat.started_at.desc())).all())
 
 
 @router.get("/summary", response_model=Summary)
@@ -108,8 +120,7 @@ def summary(
     chunks = db.scalar(select(func.count()).select_from(Chunk).join(
         Document, Document.current_version_id == Chunk.document_version_id).where(
         Chunk.tenant_id == tid, Document.status == DocumentStatus.INDEXED)) or 0
-    workers = db.scalars(select(WorkerHeartbeat)).all()
-    health = [_health(w, now) for w in workers]
+    health = [worker_health(w, now) for w in _listed_workers(db, now)]
     return Summary(
         jobs=jobs,
         queue_depth=jobs["queued"] + jobs["retry_wait"],
@@ -128,16 +139,14 @@ def workers(
     db: Session = Depends(get_db),
 ) -> WorkerList:
     now = datetime.now(UTC)
-    rows = db.scalars(select(WorkerHeartbeat).where(
-        WorkerHeartbeat.last_heartbeat_at > now - timedelta(days=1))
-        .order_by(WorkerHeartbeat.started_at.desc())).all()
+    rows = _listed_workers(db, now)
     current_ids = [w.current_job_id for w in rows if w.current_job_id]
     own_jobs = set(db.scalars(select(ProcessingJob.id).where(
         ProcessingJob.id.in_(current_ids), ProcessingJob.tenant_id == principal.tenant_id)).all()
     ) if current_ids else set()
     return WorkerList(items=[
         WorkerOut(worker_id=w.worker_id, hostname=w.hostname, status=w.status,
-                  health=_health(w, now),
+                  health=worker_health(w, now),
                   current_job_id=w.current_job_id if w.current_job_id in own_jobs else None,
                   jobs_succeeded=w.jobs_succeeded, jobs_failed=w.jobs_failed,
                   started_at=w.started_at, last_heartbeat_at=w.last_heartbeat_at,

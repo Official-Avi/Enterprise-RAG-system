@@ -7,6 +7,7 @@ import { MeContext } from "@/lib/hooks";
 import { PERMISSION_COPY } from "@/lib/permissionCopy";
 import type { DemoPersona, Me } from "@/lib/types";
 import { fetchDemoInfo } from "@/lib/workspace";
+import { openPersonaMenu } from "./DemoStrip";
 import { Icon } from "./icons";
 import { cx } from "./ui";
 
@@ -44,24 +45,6 @@ const linkBase =
 const linkPrimary = "border-transparent bg-accent text-accent-contrast hover:opacity-90";
 const linkSecondary = "border-border-strong bg-panel text-text hover:bg-panel-2";
 
-function ArrowLeft() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width={16}
-      height={16}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M19 12H5M11 6l-6 6 6 6" />
-    </svg>
-  );
-}
-
 /** Role-aware "needs a different role" page body (§7 #4). A plain region with an h1, never an
  *  alert: the page loaded fine, it just isn't for this role. */
 export function NoAccess({ page, permission }: { page: string; permission?: string }) {
@@ -93,7 +76,7 @@ export function NoAccess({ page, permission }: { page: string; permission?: stri
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
         {can("chat:use") ? (
           <Link href="/ask" className={cx(linkBase, linkPrimary)}>
-            <ArrowLeft /> Back to Ask
+            <Icon name="arrowLeft" /> Back to Ask
           </Link>
         ) : can("ops:read") ? (
           <Link href="/overview" className={cx(linkBase, linkPrimary)}>
@@ -107,7 +90,13 @@ export function NoAccess({ page, permission }: { page: string; permission?: stri
           )
         )}
         {persona && (
-          <Link href="/#demo" className={cx(linkBase, linkSecondary)}>
+          <Link
+            href="/#demo"
+            className={cx(linkBase, linkSecondary)}
+            onClick={(e) => {
+              if (openPersonaMenu()) e.preventDefault();
+            }}
+          >
             Switch persona
           </Link>
         )}

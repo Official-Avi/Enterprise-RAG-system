@@ -1,7 +1,16 @@
+const BYTE_UNITS = ["KB", "MB", "GB", "TB"];
+
+/** "812 B", "1.5 KB", "41.2 MB", "64 GB", "2 TB". A trailing ".0" is dropped. */
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  let value = n / 1024;
+  let unit = 0;
+  // Compare the rounded value, so 1023.99 MB reads "1 GB" rather than "1024 MB".
+  while (Number(value.toFixed(1)) >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(1).replace(/\.0$/, "")} ${BYTE_UNITS[unit]}`;
 }
 
 export function formatTime(iso: string | null | undefined): string {

@@ -70,7 +70,8 @@ test.describe("My documents as the Engineer", () => {
     await expect(readyChip).toHaveAttribute("aria-pressed", "true");
     await expect(all).toHaveAttribute("aria-pressed", "false");
     await expect(tableRows(page).first()).toBeVisible();
-    await expect(tableRows(page).filter({ hasNotText: /\bReady\b/ })).toHaveCount(0);
+    // The Status cell only: a row's text runs its cells together, and a file name could say Ready.
+    await expect(tableRows(page).locator("td:nth-child(2)").filter({ hasNotText: "Ready" })).toHaveCount(0);
 
     await all.click();
     await expect(all).toHaveAttribute("aria-pressed", "true");

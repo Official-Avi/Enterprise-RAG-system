@@ -8,6 +8,9 @@ import { authFile, demoInfo, escapeRegExp, expectNoHorizontalScroll, knownDemoPa
 const hero = (page: Page) => page.getByRole("region", { name: /^Ask your documents\./ });
 const siteNav = (page: Page) => page.getByRole("navigation", { name: "Site" });
 const demoCards = (page: Page) => page.locator("#demo").getByRole("button", { name: /^Continue as / });
+/** A persona's card: the list item holding its CTA button, named exactly "Continue as {title}". */
+const demoCard = (page: Page, title: string) =>
+  page.locator("#demo li").filter({ has: page.getByRole("button", { name: `Continue as ${title}`, exact: true }) });
 
 test.describe("landing page", () => {
   test("has its own title and the tool as the hero (§9 #17)", async ({ page }) => {
@@ -41,13 +44,21 @@ test.describe("landing page", () => {
     await expect(section.getByRole("heading", { level: 2, name: "Try it with a demo account" })).toBeVisible();
     await expect(demoCards(page)).toHaveCount(demo.personas.length);
     for (const p of demo.personas) {
-      const card = section.getByRole("button", { name: `Continue as ${p.title}`, exact: true });
+      const card = demoCard(page, p.title);
       await expect(card).toBeVisible();
       await expect(card).toContainText(p.email);
       await expect(card).toContainText(p.key === "auditor" ? "Opens the admin console" : "Opens Ask");
+      // The whole card is the target: its email, far from the CTA, still hits the button.
+      const email = card.getByText(p.email, { exact: true });
+      await email.scrollIntoViewIfNeeded();
+      const hit = await email.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.textContent;
+      });
+      expect(hit).toBe(`Continue as ${p.title}`);
     }
     if (demo.personas.some((p) => p.key === "engineer")) {
-      await expect(section.getByRole("button", { name: "Continue as Engineer", exact: true })).toContainText("Start here");
+      await expect(demoCard(page, "Engineer")).toContainText("Start here");
     }
 
     // Nothing on the page, or in the persona list it was built from, carries a password.

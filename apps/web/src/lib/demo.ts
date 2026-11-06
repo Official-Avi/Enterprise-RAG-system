@@ -13,6 +13,34 @@ export function canSeeConsole(permissions: string[]): boolean {
   return CONSOLE_PERMISSIONS.some((p) => permissions.includes(p));
 }
 
+/** A same-site relative path from ?next=, or null (no open redirects). Browsers read "/\host" and
+ *  "/<tab>/host" as "//host", so the parsed origin is checked as well as the prefix. Browser only. */
+export function safeNext(next: string | null): string | null {
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) return null;
+  try {
+    const url = new URL(next, window.location.origin);
+    if (url.origin !== window.location.origin || url.pathname.startsWith("/login")) return null;
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether these permissions can use the workspace page at `path`; the API still enforces them. */
+export function canOpen(path: string, permissions: string[]): boolean {
+  const has = (p: string) => permissions.includes(p);
+  const under = (prefix: string) => path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}?`);
+  if (under("/ask") || under("/chat")) return has("chat:use");
+  if (under("/library")) return has("collection:read") && (has("chat:use") || has("document:upload"));
+  return true;
+}
+
+/** §4.2: after sign-in, go to a safe ?next= this user can open, else `home` (homePath(permissions)). */
+export function destination(next: string | null, permissions: string[], home: string): string {
+  const safe = safeNext(next);
+  return safe && canOpen(safe, permissions) ? safe : home;
+}
+
 export const ROLE_LABEL: Record<string, string> = {
   org_admin: "Admin",
   operator: "Operator",

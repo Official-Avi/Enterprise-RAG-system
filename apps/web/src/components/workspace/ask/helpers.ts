@@ -18,7 +18,7 @@ export const MAX_MESSAGE_CHARS = 4000;
 /** The backend titles a chat with the first 80 characters of its first question. */
 export const TITLE_CHARS = 80;
 /** The title a session has until its first answered question renames it. */
-const UNTITLED = "New conversation";
+export const UNTITLED = "New conversation";
 
 /** document.title per §9 #17. */
 export function pageTitle(chat: string | null): string {
@@ -100,7 +100,8 @@ export function turnsFromMessages(messages: ChatMessage[]): Turn[] {
       citations: m.citations,
       model: m.model,
       latency_ms: m.latency_ms,
-      retrieved_count: null,
+      retrieved_count: m.retrieved_count,
+      fromHistory: true,
     };
     if (open) {
       turns.push({ ...open, answer });

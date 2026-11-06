@@ -96,6 +96,35 @@ def _me(db: Session, principal: Principal) -> MeOut:
     )
 
 
+def _audit_rejected_login(
+    db: Session, user: User | None, tenant_slug: str | None, outcome: str, reason: str,
+) -> None:
+    """Puts a rejected sign-in where an auditor can see it: the audit log is read per tenant.
+
+    A known account is reported to its own tenants (only the one asked for, if it is one of them),
+    naming the account. Nothing identifies an unknown account: the address typed is not stored, as
+    it may be a mistyped one or someone else's. Its attempt goes to the tenant asked for, else to
+    the only active tenant. With several tenants and none asked for, it belongs to no tenant, so
+    it stays out of every tenant's log. The actor stays empty because nobody was authenticated.
+    """
+    tenants = {m.tenant_slug: m.tenant_id for m in _memberships(db, user.id)} if user else {}
+    if user is not None and tenants:
+        targets = [tenants[tenant_slug]] if tenant_slug in tenants else list(tenants.values())
+        for tenant_id in targets:
+            record_audit(db, action="auth.login", resource_type="user", resource_id=user.id,
+                         outcome=outcome, tenant_id=tenant_id,
+                         metadata={"reason": reason, "email": user.email})
+        return
+
+    active = select(Tenant.id).where(Tenant.status == "active")
+    if tenant_slug is not None:
+        active = active.where(Tenant.slug == tenant_slug)
+    candidates = db.scalars(active.limit(2)).all()
+    record_audit(db, action="auth.login", resource_type="user", outcome=outcome,
+                 tenant_id=candidates[0] if len(candidates) == 1 else None,
+                 metadata={"reason": "unknown_account"})
+
+
 @router.post("/login", response_model=LoginOut)
 def login(
     body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)
@@ -106,8 +135,12 @@ def login(
     user = db.scalar(select(User).where(User.email == body.email.lower()))
     password_ok = verify_password(body.password, user.password_hash if user else None)
     if user is None or not password_ok or user.status != "active":
-        record_audit(db, action="auth.login", resource_type="user", outcome="denied",
-                     tenant_id=None, metadata={"reason": "invalid_credentials"})
+        if user is None:
+            _audit_rejected_login(db, None, body.tenant_slug, "failure", "unknown_account")
+        elif not password_ok:
+            _audit_rejected_login(db, user, body.tenant_slug, "failure", "wrong_password")
+        else:
+            _audit_rejected_login(db, user, body.tenant_slug, "denied", "account_disabled")
         db.commit()
         raise UnauthenticatedError(code="INVALID_CREDENTIALS",
                                    message="Email or password is incorrect.")
@@ -118,6 +151,8 @@ def login(
         None,
     )
     if chosen is None:
+        _audit_rejected_login(db, user, body.tenant_slug, "denied", "not_a_member_of_tenant")
+        db.commit()
         raise UnauthenticatedError(code="INVALID_CREDENTIALS",
                                    message="Email or password is incorrect.")
 

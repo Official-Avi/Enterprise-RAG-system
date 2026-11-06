@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from rackflow.core.config import get_settings
@@ -72,6 +73,27 @@ def _on_terminal(db: Session, job: ProcessingJob) -> None:
         doc = db.get(Document, job.document_id)
         if doc is not None and doc.status in (DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
             doc.status = DocumentStatus.FAILED
+    if (job.job_type == JobType.DELETE_DOCUMENT and job.document_id
+            and job.status in (JobStatus.FAILED, JobStatus.CANCELLED)):
+        doc = db.get(Document, job.document_id)
+        if doc is not None and doc.status == DocumentStatus.DELETING:
+            _restore_undeleted(db, doc)
+
+
+def _restore_undeleted(db: Session, doc: Document) -> None:
+    """A delete that gave up leaves the file in place, so show it again as failed. The owner can
+    then delete it again; nothing is left stuck in `deleting` with no job working on it.
+
+    Some of its vectors or its stored file may already be gone, so it must not read as indexed.
+    Clearing deleted_at can collide with a live copy uploaded after the delete was requested: the
+    copy keeps the dedup slot, and this row stays out of retrieval and quota."""
+    doc.status = DocumentStatus.FAILED
+    try:
+        with db.begin_nested():
+            doc.deleted_at = None
+            db.flush()
+    except IntegrityError:
+        pass  # savepoint rolled back: deleted_at keeps its value
 
 
 def _close_attempt(db: Session, job: ProcessingJob, attempt_number: int, status: str,
@@ -226,14 +248,23 @@ def manual_retry(db: Session, job: ProcessingJob) -> ProcessingJob:
     """Re-queue a FAILED/CANCELLED job with a fresh attempt budget (history is preserved)."""
     if job.status not in (JobStatus.FAILED, JobStatus.CANCELLED):
         raise InvalidTransition(f"cannot retry a {job.status.value} job")
+    doc = db.get(Document, job.document_id) if job.document_id else None
+    if job.job_type == JobType.DELETE_DOCUMENT and doc is not None:
+        # The file may have been re-processed since this delete gave up: never delete it unasked.
+        if doc.status not in (DocumentStatus.FAILED, DocumentStatus.DELETING):
+            raise InvalidTransition(f"cannot retry a delete of a {doc.status.value} document")
+        doc.status = DocumentStatus.DELETING
+        doc.deleted_at = doc.deleted_at or _now()
+    now = _now()
     job.status = JobStatus.QUEUED
-    job.available_at = _now()
+    job.queued_at = now  # when this round of work was queued; attempts keep the earlier history
+    job.available_at = now
+    job.started_at = None
     job.finished_at = None
     job.cancel_requested = False
     job.max_attempts = job.attempt_count + get_settings().job_max_attempts
     job.error_code = job.safe_error_message = None
-    if job.job_type == JobType.INGEST_DOCUMENT and job.document_id:
-        doc = db.get(Document, job.document_id)
-        if doc is not None and doc.status == DocumentStatus.FAILED:
-            doc.status = DocumentStatus.QUEUED
+    if (job.job_type == JobType.INGEST_DOCUMENT and doc is not None
+            and doc.status == DocumentStatus.FAILED):
+        doc.status = DocumentStatus.QUEUED
     return job

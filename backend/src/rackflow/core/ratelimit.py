@@ -42,8 +42,12 @@ login_limiter = SlidingWindowLimiter(limit=10, window_seconds=60)
 upload_limiter = SlidingWindowLimiter(limit=60, window_seconds=60)
 chat_limiter = SlidingWindowLimiter(limit=30, window_seconds=60)
 demo_login_limiter = SlidingWindowLimiter(limit=30, window_seconds=60)
+# Caps audit rows for one user repeating one refused call, e.g. a page polling a route its role
+# cannot read. It limits only the audit writes; the request itself is refused either way.
+denied_audit_limiter = SlidingWindowLimiter(limit=5, window_seconds=60)
 
 
 def reset_all() -> None:
-    for limiter in (login_limiter, upload_limiter, chat_limiter, demo_login_limiter):
+    for limiter in (login_limiter, upload_limiter, chat_limiter, demo_login_limiter,
+                    denied_audit_limiter):
         limiter.reset()

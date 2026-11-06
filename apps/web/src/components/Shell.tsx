@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { api } from "@/lib/api";
 import { ROLE_LABEL } from "@/lib/demo";
 import { MeContext, useApi, useMe } from "@/lib/hooks";
+import { pageName, PERMISSION_COPY } from "@/lib/permissionCopy";
 import type { DemoInfo, Me } from "@/lib/types";
 import { fetchDemoInfo } from "@/lib/workspace";
 import { NoAccess } from "./Can";
@@ -71,11 +72,11 @@ function navItemFor(pathname: string): NavItem | undefined {
   return ALL_ITEMS.filter((i) => isActive(pathname, i.href)).sort((a, b) => b.href.length - a.href.length)[0];
 }
 
-/** Page name for the "needs a different role" copy, taken from the nav label. */
-function pageName(pathname: string, permission?: string): string {
-  return (
-    navItemFor(pathname)?.label ?? ALL_ITEMS.find((i) => i.permission === permission)?.label ?? "This page"
-  );
+/** Whether these permissions can open the console page at `path` (true for non-console paths,
+ *  which have their own rules). For ?next= checks; the API still enforces every page. */
+export function canOpenConsoleRoute(path: string, permissions: string[]): boolean {
+  const required = navItemFor(path.split(/[?#]/, 1)[0])?.permission;
+  return !required || permissions.includes(required);
 }
 
 /** Where a user goes after sign-in: the /ask workspace if their role can chat,
@@ -106,7 +107,7 @@ function NavList({
   touch?: boolean;
   onNavigate?: () => void;
 }) {
-  const base = "flex items-center gap-2 rounded-md px-2 text-sm transition-colors";
+  const base = "flex items-center gap-2 rounded-lg px-2 text-sm transition-colors";
   const row = cx(base, touch ? "min-h-11" : "py-1.5");
   return (
     <>
@@ -258,6 +259,7 @@ export function Shell({ children }: { children: ReactNode }) {
     setSwitchedTo(next);
     me.reload();
     router.replace(homePath(next.permissions));
+    router.refresh();
   };
 
   // Route-level gate: pages the role cannot use are not rendered at all, so their data
@@ -278,7 +280,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <div className="flex flex-1">
           <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-panel md:flex">
             <div className="border-b border-border px-4 py-3.5">
-              <Link href={home} className="flex items-center gap-2.5 rounded-md">
+              <Link href={home} className="flex items-center gap-2.5 rounded-lg">
                 <Logo size={34} />
                 <span>
                   <span className="block text-sm font-semibold leading-tight">RackFlow AI</span>
@@ -292,7 +294,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <UserBlock user={user} />
           </aside>
           <div className="flex min-w-0 flex-1 flex-col">
-            <header className="flex items-center gap-1 border-b border-border bg-panel px-2 py-1 md:hidden">
+            <header className="flex items-center gap-1 border-b border-border bg-panel px-2 py-1 md:hidden [@media(max-height:500px)]:py-0">
               <button
                 type="button"
                 aria-label="Open navigation"
@@ -300,11 +302,11 @@ export function Shell({ children }: { children: ReactNode }) {
                 aria-expanded={drawerOpen}
                 aria-controls={DRAWER_ID}
                 onClick={() => setDrawerOpen(true)}
-                className="inline-flex size-11 items-center justify-center rounded-md text-muted transition-colors hover:bg-panel-2 hover:text-text"
+                className="inline-flex size-11 items-center justify-center rounded-lg text-muted transition-colors hover:bg-panel-2 hover:text-text"
               >
                 <Icon name="menu" width={20} height={20} />
               </button>
-              <Link href={home} className="flex min-h-11 items-center gap-2 rounded-md px-1 font-semibold">
+              <Link href={home} className="flex min-h-11 items-center gap-2 rounded-lg px-1 font-semibold">
                 <Logo size={26} />
                 RackFlow AI
               </Link>
@@ -328,7 +330,7 @@ export function Shell({ children }: { children: ReactNode }) {
             type="button"
             aria-label="Close navigation"
             onClick={closeDrawer}
-            className="ml-auto inline-flex size-11 items-center justify-center rounded-md text-muted transition-colors hover:bg-panel-2 hover:text-text"
+            className="ml-auto inline-flex size-11 items-center justify-center rounded-lg text-muted transition-colors hover:bg-panel-2 hover:text-text"
           >
             <Icon name="close" width={20} height={20} />
           </button>
@@ -352,7 +354,8 @@ export function RequirePermission({
   const me = useMe();
   const pathname = usePathname();
   if (!me.permissions.includes(permission)) {
-    return <NoAccess page={pageName(pathname, permission)} permission={permission} />;
+    const name = pageName(pathname);
+    return <NoAccess page={name === "This page" ? (PERMISSION_COPY[permission]?.page ?? name) : name} permission={permission} />;
   }
   return <>{children}</>;
 }

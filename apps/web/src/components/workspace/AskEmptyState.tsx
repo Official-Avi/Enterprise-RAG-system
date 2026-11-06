@@ -10,7 +10,21 @@ import type { DocumentItem } from "@/lib/types";
 import { MAX_FILE_BYTES, MAX_FILES } from "@/lib/workspace";
 import type { AskStateKey } from "./types";
 
-/** §5.9 order: loading, auditor (E), operator_empty (D), upload_empty (A), reading (C), ready (B). */
+/** Opens the demo strip's Switch persona menu (§4.4), the one place that switches without a reload,
+ *  and puts focus on a persona's row when one is named. */
+export function openPersonaMenu(focusTitle?: string) {
+  const strip = document.querySelector('[role="region"][aria-label="Demo account"]');
+  const button = strip?.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]');
+  if (!button) return;
+  if (button.getAttribute("aria-expanded") !== "true") button.click();
+  if (!focusTitle) return;
+  requestAnimationFrame(() => {
+    strip?.querySelector<HTMLButtonElement>(`[role="menuitemradio"][data-title="${focusTitle}"]`)?.focus();
+  });
+}
+
+/** Loading, auditor (E), not_found (F), operator_empty (D), upload_empty (A), reading (C), ready (B).
+ *  §5.9 lists F last; it goes first so a missing chat never renders as state A or D. */
 export function useAskState(input: {
   loading: boolean;
   canChat: boolean;
@@ -62,7 +76,15 @@ export function AskEmptyState({
               Open admin console
             </ActionLink>
           )}
-          {isDemo && <ActionLink href="/#demo">Switch persona</ActionLink>}
+          {isDemo && (
+            <button
+              type="button"
+              onClick={() => openPersonaMenu()}
+              className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border-strong bg-panel px-4 text-sm font-medium text-text transition-colors duration-150 hover:bg-panel-2 sm:min-h-10"
+            >
+              Switch persona
+            </button>
+          )}
         </BlockedState>
       );
     case "operator_empty":

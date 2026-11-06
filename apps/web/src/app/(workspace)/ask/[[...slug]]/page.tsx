@@ -1,6 +1,7 @@
 "use client";
 
-import { Suspense, useEffect, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "@/components/icons";
 import { cx, ErrorState } from "@/components/ui";
 import { AskEmptyState, useAskState } from "@/components/workspace/AskEmptyState";
@@ -11,6 +12,7 @@ import { useAskRoute } from "@/components/workspace/ask/useAskRoute";
 import { useChatSession } from "@/components/workspace/ask/useChatSession";
 import { useSourcesState } from "@/components/workspace/ask/useSourcesState";
 import { useUploadSignals, type SystemNote } from "@/components/workspace/ask/useUploadSignals";
+import { AnswerErrorCard } from "@/components/workspace/AnswerErrorCard";
 import { Composer } from "@/components/workspace/Composer";
 import { ScopeChip } from "@/components/workspace/ScopeChip";
 import { SourcesPanel } from "@/components/workspace/SourcesPanel";
@@ -18,18 +20,37 @@ import { SuggestionChips } from "@/components/workspace/SuggestionChips";
 import { Thread } from "@/components/workspace/Thread";
 import type { AnswerMode, AnswerView, NotFoundContext, TrackedUpload } from "@/components/workspace/types";
 import { useUploads } from "@/components/workspace/UploadsContext";
-import { useWorkspace } from "@/components/workspace/WorkspaceContext";
+import { useHeaderSlot, useWorkspace } from "@/components/workspace/WorkspaceContext";
+import { ApiError } from "@/lib/api";
 import type { DocumentItem } from "@/lib/types";
 import { LOADING_FILENAME, readyMessage } from "@/lib/workspace";
 
 const PLACEHOLDER = "Ask a question about your documents";
 const PLACEHOLDER_EMPTY = "Add a document first, then ask anything about it";
 
-// §5.6: the caveat under the docked composer.
-const CAVEAT: Record<AnswerMode, string> = {
-  extractive: "Answers are exact quotes from your documents. Open the source to check the context.",
-  llm: "Claude writes answers from your documents and can make mistakes. Check the cited passages.",
-};
+// §5.6: the caveat under the composer. The spec's Claude copy only fits a Claude deployment.
+function caveatFor(mode: AnswerMode, provider: string | null): string {
+  if (mode === "extractive") return "Answers are exact quotes from your documents. Open the source to check the context.";
+  const writer = provider === "anthropic" ? "Claude" : "The AI model";
+  return `${writer} writes answers from your documents and can make mistakes. Check the cited passages.`;
+}
+
+const READY_PREFIX = "(Ready) ";
+
+/** §9 #17. On a client navigation Next mounts the metadata <title> after this page's effects, so the
+ *  title is put back whenever the head changes. UploadsProvider's "(Ready) " prefix is left alone. */
+function usePageTitle(title: string) {
+  useEffect(() => {
+    const sync = () => {
+      const next = (document.title.startsWith(READY_PREFIX) ? READY_PREFIX : "") + title;
+      if (document.title !== next) document.title = next;
+    };
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.head, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, [title]);
+}
 
 // Same breakpoint as the composer's max-md: phones keep the composer at the bottom (§5.3).
 const MOBILE_QUERY = "(max-width: 767.98px)";
@@ -63,9 +84,7 @@ function AskRouter() {
 /** §5.9 E: roles without chat:use get the explained full-page state and load nothing else. */
 function AuditorView() {
   const { consoleHref, persona } = useWorkspace();
-  useEffect(() => {
-    document.title = pageTitle(null);
-  }, []);
+  usePageTitle(pageTitle(null));
   return (
     <div className="flex flex-1 flex-col">
       <AskEmptyState
@@ -111,11 +130,15 @@ function AskView({ route, onAdopt }: { route: AskRoute; onAdopt: (sessionId: str
   const signals = useUploadSignals(uploads.items);
 
   const hasTurns = chat.turns.length > 0;
+  const scope = chat.scope;
+  const scopeStats = data.statsFor(scope);
+  // A ?doc= arrival searches only the file being read, however much else is Ready: that is state C.
+  const readingInScope = scope !== "all" && scopeStats.ready === 0 && scopeStats.pending > 0;
   const state = useAskState({
     loading: data.loading || chat.load === "loading",
     canChat: true,
     canUpload,
-    readyCount: data.readyCount,
+    readyCount: readingInScope ? 0 : data.readyCount,
     pendingCount: data.pendingCount,
     notFound: chat.load === "not_found",
   });
@@ -128,14 +151,13 @@ function AskView({ route, onAdopt }: { route: AskRoute; onAdopt: (sessionId: str
 
   const lastAnswer = chat.turns.findLast((t) => t.answer)?.answer;
   const mode = modeOf(lastAnswer?.model) ?? data.defaultMode;
+  const caveat = caveatFor(mode, lastAnswer?.model?.provider ?? data.defaultProvider);
 
-  const title = chatTitle(chat.sessionTitle, chat.turns);
-  useEffect(() => {
-    document.title = pageTitle(title);
-  }, [title]);
+  // The list has the current name when the sidebar renames this chat.
+  const listed = workspace.sessions.items.find((s) => s.id === chat.sessionId)?.title;
+  const title = chatTitle(listed ?? chat.sessionTitle, chat.turns);
+  usePageTitle(pageTitle(title));
 
-  const scope = chat.scope;
-  const scopeStats = data.statsFor(scope);
   const notFound: NotFoundContext = {
     documentCount: scopeStats.ready,
     readingCount: scopeStats.pending,
@@ -162,13 +184,16 @@ function AskView({ route, onAdopt }: { route: AskRoute; onAdopt: (sessionId: str
     showReading: signals.showReading,
   });
 
+  // A failed send already shows the card under its question; this is for a session lost while idle.
+  const sessionCard = data.sessionError && !chat.turns.some((t) => t.error?.status === 401) ? data.sessionError : null;
+
   // State C already lists what is being read, so the "Reading…" row would only repeat it.
   const note = signals.note?.kind === "reading" && !hasTurns && state === "reading" ? null : signals.note;
   const sourceCount = sources.citations.length;
 
   let top: ReactNode;
   if (loadFailed) {
-    top = <LoadError error={chat.loadError} onRetry={chat.retryLoad} />;
+    top = <LoadError title="Couldn't load this chat" error={chat.loadError} onRetry={chat.retryLoad} />;
   } else if (hasTurns) {
     top = (
       <Thread
@@ -187,13 +212,13 @@ function AskView({ route, onAdopt }: { route: AskRoute; onAdopt: (sessionId: str
       />
     );
   } else if (dataFailed && state !== "loading") {
-    top = <LoadError error={data.error} onRetry={data.retry} />;
+    top = <LoadError title="Couldn't load your documents" error={data.error} onRetry={data.retry} />;
   } else {
     top = (
       <div className={cx("mx-auto w-full max-w-[768px] px-4 md:px-6", centered ? "mt-auto pt-8" : "pt-6")}>
         <AskEmptyState
           state={state}
-          readyCount={data.readyCount}
+          readyCount={scopeStats.ready}
           readingDocs={data.readingDocs}
           onUpload={() => uploads.pickFiles()}
           consoleHref={consoleHref}
@@ -221,9 +246,21 @@ function AskView({ route, onAdopt }: { route: AskRoute; onAdopt: (sessionId: str
           />
         )}
         {top}
-        {showComposer && (note || (dataFailed && hasTurns) || (suggestions && mobile)) && (
-          <div className={cx("relative z-20 mx-auto w-full max-w-[768px] px-4 md:px-6", hasTurns ? "pb-3" : "mt-6")}>
-            {dataFailed && hasTurns && <ErrorState error={data.error} onRetry={data.retry} />}
+        {showComposer && (note || chat.notice || sessionCard || (dataFailed && hasTurns) || (suggestions && mobile)) && (
+          // Above the docked composer's fade in a chat. In an empty chat the composer stays on top: a short
+          // viewport scrolls these behind it, and they must never take a tap meant for Send (§5.3).
+          <div
+            className={cx(
+              "mx-auto w-full max-w-[768px] px-4 md:px-6",
+              hasTurns ? "relative z-20 pb-3" : "mt-6",
+            )}
+          >
+            {sessionCard ? (
+              <AnswerErrorCard error={sessionCard} onRetry={data.retry} />
+            ) : (
+              dataFailed && hasTurns && <ErrorState error={data.error} onRetry={data.retry} />
+            )}
+            {chat.notice && <p className="py-1 text-center text-sm text-muted">{chat.notice}</p>}
             {note && (
               <SystemRow
                 note={note}
@@ -252,16 +289,16 @@ function AskView({ route, onAdopt }: { route: AskRoute; onAdopt: (sessionId: str
               centered={centered}
               placeholder={data.readyCount === 0 && data.pendingCount === 0 ? PLACEHOLDER_EMPTY : PLACEHOLDER}
               scopeSlot={
-                data.collections.length > 0 ? (
+                data.loading ? undefined : (
                   <ScopeChip
                     collections={data.collections}
                     value={scope}
                     onChange={chat.setScope}
                     readingCount={scopeStats.pending}
                   />
-                ) : undefined
+                )
               }
-              caveat={hasTurns ? CAVEAT[mode] : undefined}
+              caveat={caveat}
               textareaRef={textareaRef}
               firstMessage={!hasTurns}
             />
@@ -284,7 +321,8 @@ function AskView({ route, onAdopt }: { route: AskRoute; onAdopt: (sessionId: str
   );
 }
 
-/** §5.2 header: the chat title, and "Sources (n)" while the shown answer has citations. */
+/** §5.2 header: the chat title, and "Sources (n)" while the shown answer has citations. One header:
+ *  these go into the shell's slim header when it is showing, and get their own bar beside the sidebar. */
 function ChatHeader({
   title,
   sourceCount,
@@ -296,8 +334,19 @@ function ChatHeader({
   sourcesOpen: boolean;
   onToggleSources: () => void;
 }) {
-  return (
-    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4 md:px-6 lg:h-14">
+  const slot = useHeaderSlot();
+  // §5.2: transparent at rest, a line once the thread has scrolled under it.
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const thread = document.querySelector("[data-thread-scroller]");
+    if (slot || !thread) return;
+    const onScroll = () => setScrolled(thread.scrollTop > 0);
+    thread.addEventListener("scroll", onScroll, { passive: true });
+    return () => thread.removeEventListener("scroll", onScroll);
+  }, [slot]);
+
+  const content = (
+    <>
       <h1 className="min-w-0 max-w-[420px] truncate text-[15px] font-medium" title={title ?? undefined}>
         {title ?? "New chat"}
       </h1>
@@ -306,7 +355,7 @@ function ChatHeader({
           type="button"
           onClick={onToggleSources}
           aria-expanded={sourcesOpen}
-          aria-controls={sourcesOpen ? "sources-panel" : undefined}
+          aria-controls="sources-panel"
           className={cx(
             "ml-auto inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border-strong px-3",
             "text-sm font-medium text-text tabular-nums transition-colors duration-150 hover:bg-panel-2 pointer-coarse:h-11",
@@ -317,14 +366,32 @@ function ChatHeader({
           Sources ({sourceCount})
         </button>
       )}
+    </>
+  );
+
+  if (slot) return createPortal(content, slot);
+  return (
+    <header
+      className={cx(
+        "flex h-14 shrink-0 items-center gap-3 border-b px-6 transition-colors duration-150",
+        "[@media(max-height:500px)]:h-11",
+        scrolled ? "border-border" : "border-transparent",
+      )}
+    >
+      {content}
     </header>
   );
 }
 
-function LoadError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+function LoadError({ title, error, onRetry }: { title: string; error: unknown; onRetry: () => void }) {
   return (
     <div className="mx-auto w-full max-w-[640px] px-4 py-12">
-      <ErrorState error={error} onRetry={onRetry} />
+      <h1 className="sr-only">{title}</h1>
+      {error instanceof ApiError && error.status === 401 ? (
+        <AnswerErrorCard error={error} onRetry={onRetry} />
+      ) : (
+        <ErrorState error={error} onRetry={onRetry} />
+      )}
     </div>
   );
 }

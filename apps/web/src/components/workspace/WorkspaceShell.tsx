@@ -14,7 +14,6 @@ import {
 } from "react";
 import { DemoStrip } from "@/components/DemoStrip";
 import { Icon } from "@/components/icons";
-import { Logo } from "@/components/Logo";
 import { homePath } from "@/components/Shell";
 import { cx, ErrorState } from "@/components/ui";
 import { announce } from "@/lib/announce";
@@ -26,11 +25,13 @@ import { ChatSidebar } from "./ChatSidebar";
 import { DropOverlay } from "./DropOverlay";
 import type { WorkspaceApi } from "./types";
 import { UploadsProvider } from "./UploadsProvider";
-import { WorkspaceContext } from "./WorkspaceContext";
+import { HeaderSlotContext, WorkspaceContext } from "./WorkspaceContext";
 
 // §5.10: fetched once here; 200 is also the API's cap.
 const SESSIONS_PATH = "/chat/sessions?limit=200";
 const DESKTOP_QUERY = "(min-width: 1024px)";
+// One failed GET /auth/demo must not leave a demo session without its strip until the next mount.
+const DEMO_RETRY_MS = [2_000, 5_000, 15_000];
 
 /** Workspace frame (§5.1–5.2): loads /auth/me (redirects to /login on 401), provides
  *  WorkspaceContext + UploadsProvider, demo strip, sidebar (persistent >=1024px, drawer below),
@@ -47,15 +48,25 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    // Demo info only decorates the UI (strip, persona), so a failure is not an error state.
-    fetchDemoInfo().then(
-      (d) => {
-        if (!cancelled) setDemo(d);
-      },
-      () => undefined,
-    );
+    let attempt = 0;
+    let timer: number | undefined;
+    // Demo info only decorates the UI (strip, persona), so a failure is retried, never an error state.
+    const load = () => {
+      fetchDemoInfo().then(
+        (d) => {
+          if (!cancelled) setDemo(d);
+        },
+        () => {
+          if (cancelled || attempt >= DEMO_RETRY_MS.length) return;
+          timer = window.setTimeout(load, DEMO_RETRY_MS[attempt]);
+          attempt += 1;
+        },
+      );
+    };
+    load();
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, []);
 
@@ -80,13 +91,16 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     setSwitched({ me: newMe, at: Date.now() });
     meQ.reload();
     router.replace(homePath(newMe.permissions));
+    router.refresh();
   };
 
   return (
     <MeContext.Provider value={user}>
       {canChat && pathname.startsWith("/ask") && <SkipLink target="composer-input">Skip to question box</SkipLink>}
       <SkipLink target="main">Skip to main content</SkipLink>
-      <div className="flex h-[var(--app-h,100dvh)] flex-col overflow-hidden bg-bg text-text">
+      {/* relative: the frame clips absolutely positioned descendants too. Without a positioned
+          ancestor, a far-down sr-only span sizes the document, and <main> scrolling chains to it. */}
+      <div className="relative flex h-[var(--app-h,100dvh)] flex-col overflow-hidden bg-bg text-text">
         <DemoStrip me={user} demo={demo} onSwitched={onSwitched} />
         {/* Keyed by user so a persona switch drops the previous user's chats, uploads and drafts. */}
         <WorkspaceFrame key={user.user_id} me={user} demo={demo} reloadMe={meQ.reload}>
@@ -119,11 +133,17 @@ function WorkspaceFrame({
   // The drawer remembers the path it was opened on, so any navigation closes it.
   const [drawerOpenAt, setDrawerOpenAt] = useState<string | null>(null);
   const [optimistic, setOptimistic] = useState<ChatSession[]>([]);
+  // The slim header's content area, or null while the header isn't rendered.
+  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
 
   const perms = me.permissions;
   const canChat = perms.includes("chat:use");
   const canUpload = perms.includes("document:upload");
-  const sessionsQ = useApi<{ items: ChatSession[] }>(canChat ? SESSIONS_PATH : null);
+  // §5.6: a reload that finds the session gone must not leave the "Your session ended." card or a
+  // typed draft for /login. Only the first /auth/me load redirects.
+  const sessionsQ = useApi<{ items: ChatSession[] }>(canChat ? SESSIONS_PATH : null, undefined, {
+    noAuthRedirect: true,
+  });
 
   const drawerOpen = !isDesktop && drawerOpenAt !== null && drawerOpenAt === pathname;
   const sidebarShown = isDesktop && !collapsed;
@@ -200,13 +220,14 @@ function WorkspaceFrame({
     <WorkspaceContext.Provider value={value}>
       <UploadsProvider canUpload={canUpload}>
         <div className="flex min-h-0 flex-1">
+          {/* The page's banner landmark while the slim header is hidden (§9 #18). */}
           {sidebarShown && (
-            <div
+            <header
               data-sidebar-region=""
-              className="flex w-[260px] shrink-0 flex-col overflow-y-auto border-r border-border bg-bg"
+              className="relative flex w-[260px] shrink-0 flex-col overflow-y-auto border-r border-border bg-bg"
             >
               <ChatSidebar onCollapse={() => setCollapsedFromButton(true)} pendingIds={pendingIds} />
-            </div>
+            </header>
           )}
           {!isDesktop && (
             <SidebarDrawer id={drawerId} open={drawerOpen} onClose={closeDrawer} pendingIds={pendingIds} />
@@ -216,7 +237,7 @@ function WorkspaceFrame({
               <WorkspaceHeader
                 mainRef={mainRef}
                 canChat={canChat}
-                homeHref={homePath(perms)}
+                slotRef={setHeaderSlot}
                 menu={
                   isDesktop
                     ? { label: "Show sidebar", onClick: () => setCollapsedFromButton(false) }
@@ -228,9 +249,13 @@ function WorkspaceFrame({
               id="main"
               ref={mainRef}
               tabIndex={-1}
-              className="flex min-h-0 flex-1 flex-col overflow-y-auto outline-none"
+              className={cx(
+                "relative flex min-h-0 flex-1 flex-col overflow-y-auto outline-none",
+                // §9 #20: a focused control never ends up under the sticky mobile composer.
+                "scroll-pb-[calc(var(--composer-h,0px)+16px)]",
+              )}
             >
-              {children}
+              <HeaderSlotContext.Provider value={headerSlot}>{children}</HeaderSlotContext.Provider>
             </main>
           </div>
         </div>
@@ -256,18 +281,18 @@ function consoleHrefFor(perms: string[]): string | null {
 }
 
 const iconButton =
-  "grid size-11 shrink-0 place-items-center rounded-md text-text transition-colors duration-150 " +
+  "grid size-11 shrink-0 place-items-center rounded-lg text-text transition-colors duration-150 " +
   "hover:bg-panel-2 lg:size-10";
 
 function WorkspaceHeader({
   mainRef,
   canChat,
-  homeHref,
+  slotRef,
   menu,
 }: {
   mainRef: RefObject<HTMLElement | null>;
   canChat: boolean;
-  homeHref: string;
+  slotRef: (el: HTMLElement | null) => void;
   menu: { label: string; onClick: () => void; expanded?: boolean; controls?: string };
 }) {
   const [scrolled, setScrolled] = useState(false);
@@ -312,13 +337,8 @@ function WorkspaceHeader({
           <PencilIcon />
         </Link>
       )}
-      <Link
-        href={homeHref}
-        className="ml-1 flex min-h-11 min-w-0 items-center gap-2 rounded-md px-1 text-[15px] font-semibold"
-      >
-        <Logo size={24} />
-        <span className="truncate">RackFlow AI</span>
-      </Link>
+      {/* §5.2: the page's title and Sources button portal in here (useHeaderSlot). */}
+      <div ref={slotRef} className="flex min-w-0 flex-1 items-center gap-2" />
     </header>
   );
 }
@@ -421,7 +441,7 @@ function SkipLink({ target, children }: { target: string; children: ReactNode })
       }}
       className={cx(
         "sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[100]",
-        "focus:rounded-md focus:bg-panel focus:px-3 focus:py-2 focus:text-sm focus:font-medium",
+        "focus:rounded-lg focus:bg-panel focus:px-3 focus:py-2 focus:text-sm focus:font-medium",
         "focus:text-text focus:shadow-elev-3",
       )}
     >
@@ -439,7 +459,7 @@ function ShellSkeleton() {
       </div>
       <div
         aria-hidden="true"
-        className="hidden w-[260px] shrink-0 flex-col gap-3 border-r border-border p-3 motion-safe:animate-pulse lg:flex"
+        className="hidden w-[260px] shrink-0 flex-col gap-3 border-r border-border p-3 motion-safe:animate-shimmer lg:flex"
       >
         <div className={cx(block, "h-8 w-36")} />
         <div className="h-10 rounded-full bg-border" />
@@ -450,7 +470,7 @@ function ShellSkeleton() {
           ))}
         </div>
       </div>
-      <div aria-hidden="true" className="flex min-w-0 flex-1 flex-col bg-panel motion-safe:animate-pulse">
+      <div aria-hidden="true" className="flex min-w-0 flex-1 flex-col bg-panel motion-safe:animate-shimmer">
         <div className="flex h-14 items-center gap-2 px-2 lg:hidden">
           <div className="size-11 rounded-md bg-panel-2" />
           <div className="h-6 w-32 rounded-md bg-panel-2" />

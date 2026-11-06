@@ -6,7 +6,7 @@ import { cx } from "@/components/ui";
 import { announce } from "@/lib/announce";
 import { api, ApiError } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
-import type { Collection, DocumentItem } from "@/lib/types";
+import type { Collection, DocumentItem, Page } from "@/lib/types";
 import { refreshDocStatus } from "@/lib/useDocStatus";
 import { LOADING_FILENAME, MY_DOCUMENTS, readyMessage } from "@/lib/workspace";
 import type { TrackedUpload } from "../types";
@@ -29,6 +29,7 @@ import {
 } from "./rows";
 import { LoadError, RefreshProblem, UploadDropzone } from "./states";
 import { LibraryToolbar } from "./Toolbar";
+import { NoteBar, useUploadNotes } from "./UploadNotes";
 import { useLibraryDocs } from "./useLibraryDocs";
 
 const SEARCH_DEBOUNCE_MS = 250;
@@ -50,12 +51,44 @@ function retryErrorText(e: unknown, filename: string): string {
   if (e instanceof ApiError) {
     if (e.status === 0) return `Couldn't try ${filename} again. ${UNREACHABLE}`;
     if (e.status === 403 || e.status === 404) return `Your role can't retry ${filename}. An Engineer or Admin can.`;
+    if (e.status === 429) return `Couldn't try ${filename} again. Too many requests right now. Wait a few seconds, then try again.`;
   }
   return `Couldn't try ${filename} again. Something went wrong on our side.`;
 }
 
 /** Already re-queued (by another tab or person), so there is nothing to report. */
 const alreadyRetrying = (e: unknown) => e instanceof ApiError && e.status === 409;
+
+type StatusChip = Exclude<StatusFilter, "all">;
+
+/** What a status chip with no rows says. It only claims something about every file when the list
+ *  really covers every file: `narrowed` is a search or collection, `partial` the 200-row limit. */
+function emptyChipCopy(filter: StatusChip, narrowed: boolean, partial: boolean) {
+  const scope = narrowed ? "here" : partial ? "recent" : null;
+  const scoped = narrowed
+    ? "This only covers your current search or collection."
+    : "This only covers the newest 200 files.";
+  switch (filter) {
+    case "attention":
+      return {
+        title: scope ? `Nothing ${scope} needs attention` : "Nothing needs attention",
+        description: scope ? scoped : "Every file was read successfully.",
+        icon: "check" as const,
+      };
+    case "ready":
+      return {
+        title: scope ? `Nothing ${scope} is ready yet` : "Nothing is ready yet",
+        description: scope ? scoped : "Files show up here once they've been read.",
+        icon: "documents" as const,
+      };
+    case "pending":
+      return {
+        title: scope ? `Nothing ${scope} is being read right now` : "Nothing is being read right now",
+        description: scope ? scoped : "Every file has finished.",
+        icon: "check" as const,
+      };
+  }
+}
 
 /** "My documents" (§6): every document this user can read, with search, status chips, a
  *  collection menu, §5.5 polling, ready flashes, and permission-gated row actions. Uploads go
@@ -115,6 +148,11 @@ export function LibraryView() {
     }
   });
   const shown = filtersOf(docs.shownPath ?? path);
+  // The list stops at the newest 200, so ask for failed files directly: an older one still needs
+  // attention. Only needed when the list was actually cut short.
+  const failedQ = useApi<Page<DocumentItem>>(
+    docs.truncated ? libraryPath(shown.q, shown.collectionId, "failed") : null,
+  );
 
   // The provider only sets the skipped-files note; on this page it is announced here (but not
   // a note that was already showing when the page opened).
@@ -142,9 +180,32 @@ export function LibraryView() {
       .filter(uploadVisible)
       .map((u) => uploadRow(u, myCollection?.name ?? MY_DOCUMENTS, now)),
     ...docs.items.map((d) => docRow(d, now)),
+    ...(docs.truncated ? (failedQ.data?.items ?? []) : []).map((d) => docRow(d, now)),
   ].filter((row) => (seenKeys.has(row.key) ? false : (seenKeys.add(row.key), true)));
   const counts = countRows(allRows);
   const rows = allRows.filter((row) => matchesFilter(row, filter));
+
+  const failedComplete = !docs.truncated || failedQ.data?.next_cursor === null;
+  const atLeast = new Set<StatusFilter>(
+    docs.truncated ? ["all", "ready", "pending", ...(failedComplete ? [] : (["attention"] as const))] : [],
+  );
+
+  // ---------- upload notes ----------
+  const namesById = new Map(allRows.flatMap((r) => (r.doc ? [[r.doc.id, r.doc.filename] as const] : [])));
+  const uploadNotes = useUploadNotes({
+    items: uploads.items,
+    rowKeys: new Set(rows.map((r) => r.key)),
+    removedIds: removed,
+    originalName: (id) => (id ? namesById.get(id) : undefined),
+    collectionName: myCollection?.name,
+  });
+  // Point at the row a duplicate upload matched, once per match. Its upload key isn't reused, so
+  // the joined ids only change when a new duplicate arrives or one is dismissed.
+  const duplicateIds = uploadNotes.duplicateIds.join(",");
+  const flashRows = docs.flash;
+  useEffect(() => {
+    if (duplicateIds) flashRows(duplicateIds.split(","));
+  }, [duplicateIds, flashRows]);
 
   // ---------- actions ----------
   /** After a row's own "⋯" button disappears, keep focus on the page instead of <body>. */
@@ -167,22 +228,27 @@ export function LibraryView() {
     if (retrying.has(doc.id)) return;
     setRetrying((s) => new Set(s).add(doc.id));
     setNotice(null);
+    // Document retry needs write access to the collection (the API answers 404 without it).
+    // Operators (job:manage) can re-queue the failed read job instead, which also puts the
+    // document back in line.
+    const job = doc.latest_job;
+    const jobRetry =
+      can("job:manage") &&
+      job !== null &&
+      job.job_type === "ingest_document" &&
+      (job.status === "failed" || job.status === "cancelled")
+        ? () => api(`/jobs/${encodeURIComponent(job.id)}/retry`, { method: "POST" })
+        : null;
     try {
-      try {
-        await api(`/documents/${encodeURIComponent(doc.id)}/retry`, { method: "POST" });
-      } catch (e) {
-        // Document retry needs write access to the collection. Operators (job:manage) can
-        // re-queue the failed read job instead, which also puts the document back in line.
-        const job = doc.latest_job;
-        const viaJob =
-          e instanceof ApiError &&
-          e.status === 404 &&
-          can("job:manage") &&
-          job !== null &&
-          job.job_type === "ingest_document" &&
-          (job.status === "failed" || job.status === "cancelled");
-        if (!viaJob || !job) throw e;
-        await api(`/jobs/${encodeURIComponent(job.id)}/retry`, { method: "POST" });
+      if (jobRetry && levels.get(doc.collection_id) === "read") {
+        await jobRetry();
+      } else {
+        try {
+          await api(`/documents/${encodeURIComponent(doc.id)}/retry`, { method: "POST" });
+        } catch (e) {
+          if (!jobRetry || !(e instanceof ApiError && e.status === 404)) throw e;
+          await jobRetry();
+        }
       }
       docs.patch(doc.id, { status: "queued" });
       announce(`Trying ${doc.filename} again.`);
@@ -195,6 +261,7 @@ export function LibraryView() {
         return next;
       });
       docs.refresh();
+      if (docs.truncated) failedQ.reload();
       // Chips in /ask that watch this document start polling again too.
       refreshDocStatus();
     }
@@ -224,6 +291,7 @@ export function LibraryView() {
     for (const u of uploads.items) if (u.documentId === target.id) uploads.remove(u.key);
     announce(`${target.filename} is being removed.`);
     docs.refresh();
+    if (docs.truncated) failedQ.reload();
   };
 
   const actionsFor = (row: LibraryRow, layout: "table" | "cards"): RowAction[] => {
@@ -237,7 +305,8 @@ export function LibraryView() {
       if (can("document:read_content")) {
         actions.push({ label: "Download", href: `/api/v1/documents/${encodeURIComponent(doc.id)}/download`, download: true });
       }
-      if (row.phase === "failed" && can("document:retry")) {
+      // A failed delete offers Delete below: reading the file again could not restore it.
+      if (row.phase === "failed" && can("document:retry") && doc.latest_job?.job_type !== "delete_document") {
         actions.push({ label: retrying.has(doc.id) ? "Trying again…" : "Try again", onSelect: () => void retry(doc) });
       }
       if (mayDelete(doc)) {
@@ -253,6 +322,17 @@ export function LibraryView() {
       return actions;
     }
     const upload = row.upload;
+    if (upload?.phase === "uploading") {
+      // §5.4. remove() aborts this file's request and sends the rest of its batch again.
+      actions.push({
+        label: "Cancel",
+        onSelect: () => {
+          uploads.remove(upload.key);
+          announce(`Cancelled ${upload.filename}.`);
+          keepFocus();
+        },
+      });
+    }
     if (upload?.phase === "rejected") {
       if (canUpload) actions.push({ label: "Choose another file", onSelect: () => uploads.pickFiles() });
       actions.push({
@@ -273,6 +353,13 @@ export function LibraryView() {
     searchRef.current?.focus();
   };
   const showAll = () => setFilter("all");
+  /** Undo everything that can hide a row, for the "isn't in this view" notes. */
+  const showEverything = () => {
+    setFilter("all");
+    setCollectionId("all");
+    setQuery("");
+    setQ("");
+  };
 
   const filterLabel = FILTERS.find((f) => f.key === filter)?.label ?? "All";
   const caption =
@@ -289,15 +376,18 @@ export function LibraryView() {
     actionsFor,
   };
 
-  const firstLoadFailed = docs.loaded && docs.error !== undefined && docs.updatedAt === undefined;
-  const filtering = query !== "" || q !== "" || shown.q !== "" || shown.collectionId !== "all" || activeCollection !== "all";
-  const showToolbar = docs.loaded && !firstLoadFailed && (allRows.length > 0 || filtering);
+  // No rows for this search or collection, because its request failed: not the same as "no matches".
+  const loadFailed = docs.loaded && docs.error !== undefined && docs.updatedAt === undefined;
+  const narrowed = shown.q !== "" || shown.collectionId !== "all";
+  const filtering = query !== "" || q !== "" || narrowed || activeCollection !== "all";
+  // Once anything has loaded, keep the toolbar so a failed search can still be edited.
+  const showToolbar = docs.everLoaded && (allRows.length > 0 || filtering);
   const shownCollectionName = collectionOptions.find((c) => c.id === shown.collectionId)?.name ?? "this collection";
 
   let body: ReactNode;
-  if (!docs.loaded) {
+  if (!docs.loaded || (filter === "attention" && rows.length === 0 && docs.truncated && failedQ.loading)) {
     body = <DelayedSkeleton />;
-  } else if (firstLoadFailed) {
+  } else if (loadFailed) {
     body = <LoadError error={docs.error} onRetry={docs.refresh} />;
   } else if (rows.length > 0) {
     body = (
@@ -307,9 +397,6 @@ export function LibraryView() {
           <LibraryTable {...listProps} />
           <LibraryCards {...listProps} />
         </div>
-        {docs.truncated && (
-          <p className="mt-3 text-xs text-muted">Showing the newest 200 files. Search by name to find older ones.</p>
-        )}
       </>
     );
   } else if (allRows.length === 0 && shown.q) {
@@ -317,7 +404,6 @@ export function LibraryView() {
       <EmptyBlock
         icon={<SearchIcon className="size-6" />}
         title={`No documents match “${shown.q}”`}
-        description="Check the spelling, or search for part of the file name."
         action={
           <button type="button" onClick={clearSearch} className={secondaryButtonClass}>
             Clear search
@@ -348,12 +434,11 @@ export function LibraryView() {
       />
     );
   } else {
-    const copy: Record<Exclude<StatusFilter, "all">, { title: string; description: string; icon: "check" | "documents" }> = {
-      attention: { title: "Nothing needs attention", description: "Every file was read successfully.", icon: "check" },
-      ready: { title: "Nothing is ready yet", description: "Files show up here once they've been read.", icon: "documents" },
-      pending: { title: "Nothing is being read right now", description: "Every file has finished.", icon: "check" },
-    };
-    const c = filter === "all" ? copy.ready : copy[filter];
+    const c = emptyChipCopy(
+      filter === "all" ? "ready" : filter,
+      narrowed,
+      filter === "attention" ? !failedComplete : docs.truncated,
+    );
     body = (
       <EmptyBlock
         icon={<Icon name={c.icon} width={24} height={24} />}
@@ -361,7 +446,7 @@ export function LibraryView() {
         description={c.description}
         action={
           <button type="button" onClick={showAll} className={secondaryButtonClass}>
-            Show all files
+            {narrowed ? "Show all statuses" : "Show all files"}
           </button>
         }
       />
@@ -372,7 +457,9 @@ export function LibraryView() {
     <>
       <div
         className={cx(
-          "mx-auto w-full max-w-[1080px] px-4 pt-6 md:px-6 md:pt-8",
+          // relative: every sr-only (position:absolute) inside stays in <main>'s scroll box, rather
+          // than stretching the document and letting the whole shell scroll away.
+          "relative mx-auto w-full max-w-[1080px] px-4 pt-6 md:px-6 md:pt-8",
           // Room under the last row for the mobile Upload button.
           canUpload ? "pb-[calc(96px_+_env(safe-area-inset-bottom))] sm:pb-10" : "pb-10",
         )}
@@ -395,35 +482,53 @@ export function LibraryView() {
         </div>
 
         {note && (
-          <div className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-warn-soft py-2 pr-1 pl-3 text-sm text-text">
-            <p className="min-w-0 flex-1 py-0.5 [overflow-wrap:anywhere]">{note}</p>
-            <button
-              type="button"
-              onClick={uploads.clearRejectedNote}
-              aria-label="Dismiss note"
-              className="grid size-6 shrink-0 place-items-center rounded-md text-muted transition-colors duration-150 hover:text-text pointer-coarse:size-11"
-            >
-              <Icon name="close" width={14} height={14} />
-            </button>
-          </div>
+          <NoteBar
+            tone="warn"
+            onDismiss={() => {
+              uploads.clearRejectedNote();
+              keepFocus();
+            }}
+          >
+            {note}
+          </NoteBar>
         )}
 
         {notice && (
-          <div
-            role="alert"
-            className="mt-4 flex items-start gap-2 rounded-lg border border-border bg-bad-soft py-2 pr-1 pl-3 text-sm text-text"
+          <NoteBar
+            tone="bad"
+            alert
+            onDismiss={() => {
+              setNotice(null);
+              keepFocus();
+            }}
           >
-            <p className="min-w-0 flex-1 py-0.5 [overflow-wrap:anywhere]">{notice}</p>
-            <button
-              type="button"
-              onClick={() => setNotice(null)}
-              aria-label="Dismiss"
-              className="grid size-6 shrink-0 place-items-center rounded-md text-muted transition-colors duration-150 hover:text-text pointer-coarse:size-11"
-            >
-              <Icon name="close" width={14} height={14} />
-            </button>
-          </div>
+            {notice}
+          </NoteBar>
         )}
+
+        {uploadNotes.notes.map((n) => (
+          <NoteBar
+            key={n.id}
+            tone={n.tone}
+            action={
+              n.offerShowAll ? (
+                <button
+                  type="button"
+                  onClick={showEverything}
+                  className="inline-flex min-h-6 shrink-0 items-center self-center px-1 text-sm font-medium underline underline-offset-2 hover:text-accent pointer-coarse:min-h-11"
+                >
+                  Show all files
+                </button>
+              ) : undefined
+            }
+            onDismiss={() => {
+              uploadNotes.dismiss(n);
+              keepFocus();
+            }}
+          >
+            {n.text}
+          </NoteBar>
+        ))}
 
         {showToolbar && (
           <LibraryToolbar
@@ -433,6 +538,7 @@ export function LibraryView() {
             filter={filter}
             onFilter={setFilter}
             counts={counts}
+            atLeast={atLeast}
             collections={collectionOptions}
             collectionId={activeCollection}
             onCollection={setCollectionId}
@@ -440,6 +546,10 @@ export function LibraryView() {
         )}
 
         {body}
+
+        {docs.truncated && !loadFailed && (
+          <p className="mt-3 text-xs text-muted">Showing the newest 200 files. Search by name to find older ones.</p>
+        )}
       </div>
 
       <ConfirmDelete

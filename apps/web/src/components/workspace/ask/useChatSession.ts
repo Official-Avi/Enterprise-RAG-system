@@ -16,7 +16,7 @@ import type { DocumentItem } from "@/lib/types";
 import { LOADING_FILENAME } from "@/lib/workspace";
 import { scopeLabel } from "../ScopeChip";
 import type { AnswerView, ScopeValue, TrackedUpload, Turn, UploadsApi, WorkspaceApi } from "../types";
-import { AskError, askQuestion, createSession, loadSession } from "./chatApi";
+import { AskError, askQuestion, createSession, loadSession, renameSession, retryWaitMs } from "./chatApi";
 import {
   answerFromResponse,
   clearDraft,
@@ -28,6 +28,7 @@ import {
   saveDraft,
   TITLE_CHARS,
   turnsFromMessages,
+  UNTITLED,
   withoutNote,
   writeScope,
   type AskRoute,
@@ -37,6 +38,8 @@ import type { AskData } from "./useAskData";
 const NOTHING_READY = "Add a document first, then ask anything about it.";
 const TOO_LONG = "Questions can be up to 4,000 characters. Shorten it and send again.";
 const STOPPED = "Stopped. Your question is back in the question box.";
+const RATE_WAIT = "You're asking faster than RackFlow can answer. Wait for the countdown, then try again.";
+const STILL_BUSY = "Wait for the current question to finish, then try again.";
 
 /** What a turn sends, kept so Try again resends the same text and scope (§5.6). */
 interface TurnRequest {
@@ -46,10 +49,14 @@ interface TurnRequest {
   waitKeys: string[];
   /** Documents being read elsewhere, held for when nothing was Ready yet (state C). */
   waitDocs: string[];
+  /** "Answered without report.pdf (couldn't read it)." It stays with the question through a retry. */
+  note?: string;
 }
 
 export interface AskTurn extends Turn {
   req?: TurnRequest;
+  /** Rate limited: when the card's countdown ends and the question may go out again. */
+  retryAt?: number;
 }
 
 /** "new": /ask. "loading"/"ready"/"not_found"/"error": a saved chat from /ask/c/{id}. */
@@ -68,6 +75,7 @@ interface Options {
 }
 
 const isActive = (t: Turn) => t.status === "held" || t.status === "waiting";
+const isCountingDown = (t: AskTurn) => t.retryAt !== undefined && t.retryAt > Date.now();
 const unknownError = () => new AskError(500, "UNKNOWN", "Something went wrong.", null);
 const shownName = (name: string) => (name === LOADING_FILENAME ? "your file" : name);
 
@@ -101,9 +109,40 @@ export function useChatSession(options: Options) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   const [draft, setDraft] = useState("");
   // §5.8: every chat starts on All documents; narrowing is per chat.
-  const [scope, setScopeState] = useState<ScopeValue>("all");
+  const [scope, setScope] = useState<ScopeValue>("all");
+  // Shown beside the composer while the draft it was about is unchanged.
+  const [notice, setNotice] = useState<{ text: string; draft: string } | null>(null);
+
+  // §5.8: a collection deleted or revoked since it was chosen leaves the scope, so the chip and the
+  // meta line say what is really searched.
+  const readableScope = data.readableScope(scope);
+  if (readableScope !== scope) setScope(readableScope);
+
+  // §5.5: files added in this chat go to My documents, and a narrowed chat starts searching it too.
+  // Adjusted during render: a row counts once, and the pending add waits for the collection to exist.
+  const [uploadWatch, setUploadWatch] = useState(() => ({
+    seen: new Set(uploads.items.map((u) => u.key)),
+    addMine: false,
+  }));
+  const freshRows = uploads.items.filter((u) => !uploadWatch.seen.has(u.key));
+  const mine = uploads.myCollection?.id;
+  const addMine = uploadWatch.addMine || freshRows.some((u) => u.phase === "uploading");
+  if (freshRows.length > 0 || (addMine && mine)) {
+    setUploadWatch({
+      seen: new Set([...uploadWatch.seen, ...freshRows.map((u) => u.key)]),
+      addMine: addMine && !mine,
+    });
+    if (addMine && mine && scope !== "all" && !scope.includes(mine)) setScope([...scope, mine]);
+  }
+
+  // Every scope change reaches storage from here, whichever path made it.
+  useEffect(() => {
+    if (sessionId) writeScope(sessionId, scope);
+  }, [sessionId, scope]);
 
   const sessionRef = useRef<string | null>(null);
+  // The session's title while no question in it has been answered yet (it may need renaming).
+  const unconfirmedTitle = useRef<string | null>(null);
   const controllers = useRef(new Map<string, AbortController>());
   const alive = useRef(true);
   // Async work reads the latest props and state through this.
@@ -134,7 +173,15 @@ export function useChatSession(options: Options) {
         setSessionId(detail.session.id);
         setSessionTitle(detail.session.title);
         setTurns(turnsFromMessages(detail.messages));
-        setScopeState(readScope(detail.session.id) ?? "all");
+        setScope(readScope(detail.session.id) ?? "all");
+        if (detail.messages.length === 0) {
+          // Its first question never got an answer: the name is all that is left of it, so offer it again.
+          const named = detail.session.title.trim();
+          if (named && named !== UNTITLED) {
+            unconfirmedTitle.current = named;
+            setDraft((d) => (d.trim() ? d : named));
+          }
+        }
         setLoad("ready");
       },
       (e: unknown) => {
@@ -174,30 +221,48 @@ export function useChatSession(options: Options) {
       if (window.matchMedia("(pointer: fine)").matches) textareaRef.current?.focus();
     });
 
-  /** Chips are staged for the next question; once it goes out, the finished ones have been used. */
-  const consumeChips = () => {
-    const u = live.current.uploads;
-    for (const row of u.items) if (TERMINAL_PHASES.has(row.phase)) u.remove(row.key);
+  const say = (text: string, forDraft: string) => {
+    setNotice({ text, draft: forDraft.trim() });
+    live.current.workspace.announce(text);
   };
 
-  const dispatch = async (turnId: string, req: TurnRequest, note?: string) => {
+  /** Chips are staged for the next question; once it goes out, the ready ones have been used.
+   *  A failed or rejected chip stays: it is where the user sees and recovers from the problem. */
+  const consumeChips = () => {
+    const u = live.current.uploads;
+    for (const row of u.items) {
+      if (TERMINAL_PHASES.has(row.phase) && row.phase !== "failed" && row.phase !== "rejected") u.remove(row.key);
+    }
+  };
+
+  /** The URL names the chat once it exists, so a reload or "Sign in again" comes back to it (§4.2). */
+  const adoptUrl = (sid: string) => {
+    const path = `/ask/c/${sid}`;
+    if (window.location.pathname === path) return;
+    live.current.onAdopt(sid);
+    window.history.replaceState(null, "", path);
+  };
+
+  const dispatch = async (turnId: string, req: TurnRequest) => {
     if (controllers.current.has(turnId)) return;
     const controller = new AbortController();
     controllers.current.set(turnId, controller);
     consumeChips();
-    patchTurn(turnId, { status: "waiting", startedAt: Date.now(), error: undefined, heldFor: undefined, req });
+    setNotice(null);
+    patchTurn(turnId, { status: "waiting", startedAt: Date.now(), error: undefined, heldFor: undefined, retryAt: undefined, req });
+    let signedOut = false;
     try {
       const ids = live.current.data.collectionIdsFor(req.scope);
       if (!ids.length) throw new AskError(500, "NOTHING_TO_SEARCH", "There is nothing to search yet.", null);
       let sid = sessionRef.current;
       if (!sid) {
         // §5.8: the session is created on first send, never on page load.
-        const session = await createSession(ids, controller.signal);
+        const session = await createSession(ids, req.text.slice(0, TITLE_CHARS), controller.signal);
         sid = session.id;
         sessionRef.current = sid;
+        unconfirmedTitle.current = session.title;
         setSessionId(sid);
-        writeScope(sid, live.current.scope);
-        live.current.workspace.addOptimisticSession({ ...session, title: req.text.slice(0, TITLE_CHARS) });
+        live.current.workspace.addOptimisticSession(session);
       }
       const res = await askQuestion(sid, req.text, ids, controller.signal);
       if (!alive.current) return;
@@ -209,27 +274,77 @@ export function useChatSession(options: Options) {
         status: "answered",
         answer,
         error: undefined,
-        scopeLabel: [note, searched].filter(Boolean).join(" ") || undefined,
+        scopeLabel: [req.note, searched].filter(Boolean).join(" ") || undefined,
+        searchedNarrowed: req.scope !== "all" && now.data.collections.some((c) => !req.scope.includes(c.id)),
       });
-      const path = `/ask/c/${sid}`;
-      if (window.location.pathname !== path) {
-        now.onAdopt(sid);
-        window.history.replaceState(null, "", path);
+      adoptUrl(sid);
+      // A stopped or failed question named the chat, then a different one got the first answer.
+      const named = unconfirmedTitle.current;
+      unconfirmedTitle.current = null;
+      const title = req.text.slice(0, TITLE_CHARS);
+      if (named !== null && named !== title) {
+        setSessionTitle(title);
+        void renameSession(sid, title)
+          .catch(() => undefined)
+          .finally(() => live.current.workspace.sessions.reload());
       }
-      now.workspace.sessions.reload();
       clearDraft();
       now.onAnswer(answer, hadCitations);
     } catch (e) {
-      if (controller.signal.aborted || !alive.current) return;
+      if (!alive.current) return;
+      if (controller.signal.aborted) {
+        if (sessionRef.current) adoptUrl(sessionRef.current);
+        return;
+      }
       const error = e instanceof ApiError ? e : unknownError();
       // §5.6: "Your session ended." The question survives the sign-in round trip.
-      if (error.status === 401) saveDraft(req.text);
+      if (error.status === 401) {
+        saveDraft(req.text);
+        signedOut = true;
+      }
       if (error.code === "COLLECTION_NOT_FOUND") live.current.data.reloadCollections();
-      patchTurn(turnId, { status: "error", error });
+      if (sessionRef.current) adoptUrl(sessionRef.current);
+      const wait = retryWaitMs(error);
+      patchTurn(turnId, {
+        status: "error",
+        error,
+        scopeLabel: req.note,
+        retryAt: wait ? Date.now() + wait : undefined,
+      });
       restoreDraft(req.text);
     } finally {
       controllers.current.delete(turnId);
+      // §5.10: every way out reconciles the optimistic row, including Stop and leaving mid-request.
+      // Not when signed out: that reload would answer 401 and take the user away from the card.
+      if (sessionRef.current && !signedOut && !live.current.data.sessionError) {
+        live.current.workspace.sessions.reload();
+      }
     }
+  };
+
+  /** Try again: the same text and scope (history turns use the current scope). */
+  const retry = (turnId: string) => {
+    const L = live.current;
+    if (L.turns.some(isActive) || controllers.current.size > 0) {
+      say(STILL_BUSY, L.draft);
+      return;
+    }
+    const t = L.turns.find((x) => x.id === turnId);
+    if (!t) return;
+    if (isCountingDown(t)) {
+      say(RATE_WAIT, L.draft);
+      return;
+    }
+    const req: TurnRequest = {
+      text: t.req?.text ?? t.question,
+      scope: t.req?.scope ?? L.scope,
+      waitKeys: [],
+      waitDocs: [],
+      note: t.req?.note,
+    };
+    // The failed question was put back in the composer; it is being sent again instead.
+    setDraft((d) => (d.trim() === req.text ? "" : d));
+    void dispatch(turnId, req);
   };
 
   /** Composer Send, suggestion chips, the landing hand-off and "Search all documents". */
@@ -239,7 +354,7 @@ export function useChatSession(options: Options) {
     if (!text || L.turns.some(isActive) || controllers.current.size > 0) return;
     if (text.length > MAX_MESSAGE_CHARS) {
       setDraft(text);
-      L.workspace.announce(TOO_LONG);
+      say(TOO_LONG, text);
       return;
     }
     const waitKeys = L.uploads.items.filter((u) => isHoldPhase(u.phase)).map((u) => u.key);
@@ -248,7 +363,14 @@ export function useChatSession(options: Options) {
     if (nothingReady && waitKeys.length === 0 && waitDocs.length === 0) {
       // Nothing to search yet (state A): keep the question in the composer (§3.2 ask box).
       setDraft(text);
-      L.workspace.announce(NOTHING_READY);
+      say(NOTHING_READY, text);
+      return;
+    }
+    // The question put back after an error is still that question, not a new one: one bubble, one
+    // card (§5.6). While its countdown runs it waits, whichever way it is sent.
+    const kept = L.turns.findLast((t) => t.status === "error" && (t.req?.text ?? t.question) === text);
+    if (kept) {
+      retry(kept.id);
       return;
     }
     const req: TurnRequest = { text, scope: opts.scope ?? L.scope, waitKeys, waitDocs };
@@ -257,7 +379,8 @@ export function useChatSession(options: Options) {
     // Visible to a second send in the same tick, before the layout effect refreshes `live`.
     live.current = { ...L, turns: [...L.turns, turn] };
     setTurns((ts) => [...ts, turn]);
-    setDraft("");
+    // A suggestion chip sends something other than the draft: what the user typed stays.
+    setDraft((d) => (d.trim() === text ? "" : d));
     if (!held) void dispatch(turn.id, req);
   };
 
@@ -278,7 +401,7 @@ export function useChatSession(options: Options) {
           .filter((d): d is DocumentItem => d?.status === "failed")
           .map((d) => d.filename),
       ];
-      void dispatch(t.id, t.req, failed.length ? withoutNote(failed) : undefined);
+      void dispatch(t.id, { ...t.req, note: failed.length ? withoutNote(failed) : undefined });
     }
   });
   useEffect(() => {
@@ -306,18 +429,6 @@ export function useChatSession(options: Options) {
     live.current.workspace.announce(STOPPED);
   };
 
-  /** Try again: the same text and scope (history turns use the current scope). */
-  const retry = (turnId: string) => {
-    const L = live.current;
-    if (L.turns.some(isActive) || controllers.current.size > 0) return;
-    const t = L.turns.find((x) => x.id === turnId);
-    if (!t) return;
-    const req: TurnRequest = { text: t.req?.text ?? t.question, scope: t.req?.scope ?? L.scope, waitKeys: [], waitDocs: [] };
-    // The failed question was put back in the composer; it is being sent again instead.
-    setDraft((d) => (d.trim() === req.text ? "" : d));
-    void dispatch(turnId, req);
-  };
-
   /** Not found → Rephrase: the question goes back into the composer, selected (§5.6). */
   const rephrase = (question: string) => {
     setDraft(question);
@@ -331,35 +442,22 @@ export function useChatSession(options: Options) {
 
   // ---------- Scope (§5.8) ----------
 
-  const setScope = useCallback((value: ScopeValue) => {
-    setScopeState(value);
-    if (sessionRef.current) writeScope(sessionRef.current, value);
-  }, []);
-
-  const searchAll = () => {
+  /** Re-asks the card's question when it is given, else the newest not-found one. A plain click
+   *  handler passes its event here, hence the check. */
+  const searchAll = (question?: unknown) => {
     setScope("all");
-    const last = [...live.current.turns].reverse().find((t) => t.answer?.evidence_status === "insufficient");
-    if (last) send(last.question, { scope: "all" });
+    const text =
+      typeof question === "string"
+        ? question
+        : live.current.turns.findLast((t) => t.answer?.evidence_status === "insufficient")?.question;
+    if (text) send(text, { scope: "all" });
   };
 
-  // §5.5: files added in this chat go to My documents, and a narrowed chat starts searching it too.
-  const seenKeys = useRef<Set<string> | null>(null);
-  const addMine = useRef(false);
+  // The polls found the session gone: keep what is typed, whichever way the user leaves (§5.6).
+  const sessionEnded = data.sessionError !== undefined;
   useEffect(() => {
-    if (!seenKeys.current) {
-      seenKeys.current = new Set(uploads.items.map((u) => u.key));
-      return;
-    }
-    for (const u of uploads.items) {
-      if (seenKeys.current.has(u.key)) continue;
-      seenKeys.current.add(u.key);
-      if (u.phase === "uploading") addMine.current = true;
-    }
-    const mine = uploads.myCollection?.id;
-    if (!addMine.current || !mine) return;
-    addMine.current = false;
-    if (scope !== "all" && !scope.includes(mine)) setScope([...scope, mine]);
-  }, [uploads.items, uploads.myCollection, scope, setScope]);
+    if (sessionEnded && draft.trim()) saveDraft(draft);
+  }, [sessionEnded, draft]);
 
   // Held turns show the files they wait for by their current names (a ?doc= row starts as "Loading…").
   const viewTurns = useMemo<AskTurn[]>(() => {
@@ -386,6 +484,7 @@ export function useChatSession(options: Options) {
     busy: turns.some(isActive),
     draft,
     setDraft,
+    notice: notice && notice.draft === draft.trim() ? notice.text : null,
     scope,
     setScope,
     send,

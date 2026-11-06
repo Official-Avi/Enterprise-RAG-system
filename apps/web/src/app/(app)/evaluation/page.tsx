@@ -38,16 +38,29 @@ function fmt(value: EvalMetricValue | undefined, percent?: boolean): string {
   return percent ? `${Math.round(value * 100)}%` : value.toFixed(2);
 }
 
+const errorCount = (r: EvalRun) => (typeof r.metrics.errors === "number" ? r.metrics.errors : 0);
+/** Runs from before the completed_with_errors status finished as plain "completed", so the count
+ *  in their metrics is what gives them away. */
+const hasErrors = (r: EvalRun) => r.status === "completed_with_errors" || (r.status === "completed" && errorCount(r) > 0);
+const isFinished = (r: EvalRun) => r.status === "completed" || r.status === "completed_with_errors";
+const isActive = (r: EvalRun) => r.status === "queued" || r.status === "running";
+
+function RunStatus({ run }: { run: EvalRun }) {
+  // "stale" is the amber warning badge: errors must never read as a green check.
+  if (hasErrors(run)) return <StatusBadge status="stale" label="Completed with errors" />;
+  return <StatusBadge status={run.status === "completed" ? "succeeded" : run.status} label={run.status} />;
+}
+
 function RunDetailDialog({ runId, onClose }: { runId: string; onClose: () => void }) {
   const run = useApi<EvalRunDetail>(`/evaluation/runs/${runId}`);
   return (
     <Dialog open wide title="Evaluation run" onClose={onClose}>
       {run.loading && <Loading />}
-      {run.error && <ErrorState error={run.error} />}
+      {run.error && <ErrorState error={run.error} onRetry={run.reload} />}
       {run.data && (
         <div className="space-y-4 text-sm">
           <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={run.data.status === "completed" ? "succeeded" : run.data.status} label={run.data.status} />
+            <RunStatus run={run.data} />
             <Badge>dataset {run.data.dataset_version}</Badge>
             <Badge tone="info">{run.data.model.provider} · {run.data.model.model}</Badge>
           </div>
@@ -92,31 +105,60 @@ export default function EvaluationPage() {
   const canCreateCollections = useCan("collection:create");
   const canSeed = canRun && canCreateCollections;
   const [message, setMessage] = useState<string | null>(null);
+  const [startedRunId, setStartedRunId] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
 
   const evalCollections = (collections.data ?? []).filter((c) => c.name.startsWith("Evaluation") && c.access_level);
+  const canStart = evalCollections.length > 0;
+
   const seed = async () => {
+    if (seeding) return;
+    setSeeding(true);
     setError(null);
     try {
       const res = await api<{ queued: number; duplicates: number }>("/evaluation/datasets/v1/seed", { method: "POST" });
-      setMessage(`Corpus prepared: ${res.queued} documents queued, ${res.duplicates} already present. Wait for indexing before running.`);
+      setStartedRunId(null);
+      setMessage(
+        res.queued
+          ? `Corpus prepared: ${res.queued} documents queued for indexing, ${res.duplicates} already present. Wait until Documents shows them as indexed before running.`
+          : `Corpus is ready: all ${res.duplicates} documents are already present.`,
+      );
       collections.reload();
     } catch (e) {
       setError(errorText(e));
+    } finally {
+      setSeeding(false);
     }
   };
   const start = async () => {
+    if (starting || !canStart) return;
+    setStarting(true);
     setError(null);
     try {
-      await api("/evaluation/runs", { method: "POST", json: { dataset_version: "v1", collection_ids: evalCollections.map((c) => c.id) } });
-      setMessage("Evaluation queued — a worker will run it.");
+      const run = await api<EvalRun>("/evaluation/runs", { method: "POST", json: { dataset_version: "v1", collection_ids: evalCollections.map((c) => c.id) } });
+      setMessage(null);
+      setStartedRunId(run.id);
       runs.reload();
     } catch (e) {
       setError(errorText(e));
+    } finally {
+      setStarting(false);
     }
   };
-  const latest = runs.data?.find((r) => r.status === "completed");
+  // Tied to the run itself, so the note goes away when the run finishes. Until the list has caught
+  // up with the new run, it is still waiting.
+  const startedRun = runs.data?.find((r) => r.id === startedRunId);
+  const waiting = startedRunId !== null && (!startedRun || isActive(startedRun));
+
+  const finished = runs.data?.filter(isFinished) ?? [];
+  // The headline is the newest run that answered every question. A run with errors counts failed
+  // questions as misses, so its figures aren't comparable: it only leads when nothing else exists.
+  const clean = finished.find((r) => !hasErrors(r));
+  const latest = clean ?? finished[0];
+  const newestWithErrors = finished[0] && hasErrors(finished[0]) ? finished[0] : undefined;
 
   return (
     <RequirePermission permission="eval:read">
@@ -125,16 +167,24 @@ export default function EvaluationPage() {
         description="Repeatable retrieval and answer-quality runs against a versioned, labelled question set. Deterministic checks — no LLM judge."
         actions={
           <>
-            {canSeed && <Button onClick={seed}>Prepare corpus</Button>}
-            {canRun && <Button variant="primary" onClick={start} disabled={!evalCollections.length}>Run evaluation</Button>}
+            {canSeed && <Button aria-disabled={seeding || undefined} onClick={() => void seed()}>{seeding ? "Preparing…" : "Prepare corpus"}</Button>}
+            {canRun && <Button variant="primary" aria-disabled={starting || !canStart || undefined} onClick={() => void start()}>{starting ? "Starting…" : "Run evaluation"}</Button>}
           </>
         }
       />
-      {message && <p role="status" className="mb-3 rounded-md bg-info-soft px-3 py-2 text-sm text-info">{message}</p>}
+      {/* One always-mounted status region, so changes in it are announced. */}
+      <div role="status">
+        {(message || waiting) && (
+          <p className="mb-3 rounded-md bg-info-soft px-3 py-2 text-sm text-info">
+            {waiting ? "Evaluation queued. A worker will run it, and the result appears below." : message}
+          </p>
+        )}
+      </div>
       {error && <p role="alert" className="mb-3 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">{error}</p>}
       <div className="grid gap-4 lg:grid-cols-3">
         <Card title="Datasets">
-          {datasets.error && <ErrorState error={datasets.error} />}
+          {datasets.loading && <Loading />}
+          {datasets.error && <ErrorState error={datasets.error} onRetry={datasets.reload} />}
           {datasets.data?.map((d) => (
             <div key={d.version} className="text-sm">
               <div className="font-medium">{d.version} · {d.questions} questions</div>
@@ -144,12 +194,27 @@ export default function EvaluationPage() {
               </div>
             </div>
           ))}
-          {canRun && !evalCollections.length && <p className="mt-3 text-xs text-muted">No evaluation collections visible to you yet. An org admin can prepare the corpus.</p>}
+          {canRun && collections.data && !evalCollections.length && <p className="mt-3 text-xs text-muted">No evaluation collections visible to you yet. An org admin can prepare the corpus.</p>}
+          {/* Run evaluation stays unavailable without this list, so the failure needs saying. */}
+          {canRun && collections.error && <div className="mt-3"><ErrorState error={collections.error} onRetry={collections.reload} /></div>}
         </Card>
         <Card title={latest ? `Latest results · ${formatTime(latest.finished_at)}` : "Latest results"} className="lg:col-span-2">
-          {!latest && <p className="text-sm text-muted">No completed runs yet.</p>}
+          {runs.loading && <Loading />}
+          {runs.error && !runs.data && <p className="text-sm text-muted">Unavailable until the run history below loads.</p>}
+          {runs.data && !latest && <p className="text-sm text-muted">No completed runs yet.</p>}
           {latest && (
             <>
+              {hasErrors(latest) ? (
+                <p role="note" className="mb-3 rounded-md bg-warn-soft px-3 py-2 text-sm text-warn">
+                  Every run so far had errors, so treat these figures with care: this run had {errorCount(latest) || "some"} question{errorCount(latest) === 1 ? "" : "s"} fail, and these figures leave those out.
+                </p>
+              ) : (
+                newestWithErrors && (
+                  <p role="note" className="mb-3 rounded-md bg-warn-soft px-3 py-2 text-sm text-warn">
+                    The newest run ({formatTime(newestWithErrors.finished_at)}) finished with errors, so these figures come from the latest run without any.
+                  </p>
+                )
+              )}
               <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
                 {METRICS.map((m) => <Kpi key={m.key} label={m.label} value={fmt(latest.metrics[m.key], m.percent)} hint={m.help} />)}
               </div>
@@ -170,8 +235,8 @@ export default function EvaluationPage() {
           <tbody>
             {runs.data.map((r) => (
               <tr key={r.id} className="hover:bg-panel-2">
-                <Td><button className="underline" onClick={() => setOpen(r.id)}>{formatTime(r.created_at)}</button></Td>
-                <Td><StatusBadge status={r.status === "completed" ? "succeeded" : r.status} label={r.status} /></Td>
+                <Td><button className="inline-flex min-h-6 items-center underline" onClick={() => setOpen(r.id)}>{formatTime(r.created_at)}</button></Td>
+                <Td><RunStatus run={r} /></Td>
                 <Td className="text-xs">{r.model.provider} · {r.model.model}</Td>
                 <Td>{fmt(r.metrics.retrieval_hit_rate, true)}</Td>
                 <Td>{fmt(r.metrics.citation_correctness, true)}</Td>

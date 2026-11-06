@@ -5,7 +5,8 @@ import type { NotFoundContext } from "./types";
 
 const actionClass =
   "inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border-strong bg-panel px-3 " +
-  "text-sm font-medium text-text transition-colors duration-150 hover:bg-bg active:scale-[.98] " +
+  "text-sm font-medium text-text transition-[background-color,scale] duration-150 hover:bg-bg " +
+  "active:scale-[.98] active:duration-100 " +
   "max-sm:min-h-11";
 
 function plural(n: number, one: string, many: string): string {
@@ -44,14 +45,19 @@ export function NotFoundCard({
   onRephrase: () => void;
 }) {
   const { documentCount, readingCount, narrowed, canUpload, onSearchAll, onUpload } = context;
+  // null: rebuilt from a saved chat, which doesn't say how many passages were found. Don't claim
+  // either way, and don't quote today's document count for a search made earlier.
+  const unknown = retrievedCount === null;
   const related = (retrievedCount ?? 0) > 0;
 
-  const title = related ? "Your documents don't answer this" : "Not found in your documents";
-  const body = related
-    ? "I found related passages, but none answer the question directly."
-    : documentCount > 0
-      ? `I searched ${plural(documentCount, "document", "documents")} and found nothing about this.`
-      : "I searched your documents and found nothing about this.";
+  const title = unknown || related ? "Your documents don't answer this" : "Not found in your documents";
+  const body = unknown
+    ? "I couldn't find an answer to this in your documents."
+    : related
+      ? "I found related passages, but none answer the question directly."
+      : documentCount > 0
+        ? `I searched ${plural(documentCount, "document", "documents")} and found nothing about this.`
+        : "I searched your documents and found nothing about this.";
 
   return (
     <div className="rounded-xl border border-border bg-panel-2 p-4">
@@ -72,7 +78,7 @@ export function NotFoundCard({
               Rephrase
             </button>
             {narrowed && (
-              <button type="button" className={actionClass} onClick={onSearchAll}>
+              <button type="button" className={actionClass} onClick={() => onSearchAll()}>
                 Search all documents
               </button>
             )}

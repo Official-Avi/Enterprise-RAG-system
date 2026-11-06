@@ -10,3 +10,11 @@ export function useWorkspace(): WorkspaceApi {
   if (!v) throw new Error("useWorkspace used outside WorkspaceShell");
   return v;
 }
+
+export const HeaderSlotContext = createContext<HTMLElement | null>(null);
+
+/** The slim header's content area for a createPortal of the page's title and actions (§5.1–5.2).
+ *  Null when the header isn't rendered (>=1024px with the sidebar open): render them in the page. */
+export function useHeaderSlot(): HTMLElement | null {
+  return useContext(HeaderSlotContext);
+}

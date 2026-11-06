@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useRef, useState, type DragEvent } from "react";
+import { flushSync } from "react-dom";
 import { Icon } from "@/components/icons";
 import {
   Button,
   Card,
   cx,
+  Dialog,
   Empty,
   ErrorState,
   inputClass,
@@ -19,26 +21,61 @@ import {
   Th,
   UpdatedAt,
 } from "@/components/ui";
-import { api, ApiError, errorText, uploadFiles } from "@/lib/api";
+import { announce } from "@/lib/announce";
+import { api, ApiError, errorText } from "@/lib/api";
 import { formatBytes, formatTime } from "@/lib/format";
-import { useApi, useCan } from "@/lib/hooks";
+import { useApi, useCan, useMe } from "@/lib/hooks";
 import type { Collection, DocumentItem, Page, UploadItem } from "@/lib/types";
+import { ACCEPT_ATTR, checkFile, MY_DOCUMENTS, uploadInGroups } from "@/lib/workspace";
 
-const ALLOWED = [".pdf", ".docx", ".txt", ".md", ".markdown"];
-const MAX_BYTES = 25 * 1024 * 1024;
 const ACTIVE = new Set(["queued", "processing", "deleting"]);
+const LINK_BUTTON =
+  "inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-3 py-1.5 text-sm font-medium " +
+  "text-text transition-colors hover:bg-panel-2";
 
-function precheck(file: File): string | null {
-  const name = file.name.toLowerCase();
-  if (!ALLOWED.some((ext) => name.endsWith(ext))) return "Unsupported file type";
-  if (file.size > MAX_BYTES) return "Larger than 25 MiB";
-  if (file.size === 0) return "File is empty";
-  return null;
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function resultSummary(items: UploadItem[]): string {
+  const rejected = items.filter((r) => r.status === "rejected").length;
+  const duplicates = items.filter((r) => r.status === "duplicate").length;
+  const parts = [`${plural(items.length - rejected - duplicates, "file")} uploaded`];
+  if (duplicates) parts.push(`${plural(duplicates, "duplicate")} skipped`);
+  if (rejected) parts.push(`${rejected} rejected`);
+  return `${parts.join(", ")}.`;
 }
 
-function UploadPanel({ collections, onUploaded }: { collections: Collection[]; onUploaded: () => void }) {
+/** The results row follows the document once the list below knows it. A document outside the
+ *  current filters stays "Uploaded", which remains true whatever happens to it next. */
+function ResultBadge({ result, live }: { result: UploadItem; live?: DocumentItem }) {
+  if (result.status === "rejected") return <StatusBadge status="failed" label="Rejected" />;
+  if (result.status === "duplicate") return <StatusBadge status="skipped" label="Duplicate" />;
+  return live ? <StatusBadge status={live.status} /> : <StatusBadge status="queued" label="Uploaded" />;
+}
+
+function UploadPanel({
+  collections,
+  documents,
+  filterCollection,
+  onUploaded,
+}: {
+  collections: Collection[];
+  documents: DocumentItem[];
+  filterCollection: string;
+  onUploaded: () => void;
+}) {
   const writable = collections.filter((c) => c.access_level === "write" || c.access_level === "manage");
-  const [collectionId, setCollectionId] = useState(writable[0]?.id ?? "");
+  // A pick holds until the filter changes. The default is never the evaluation corpus while there
+  // is anywhere else to put a file: its documents feed the evaluation runs.
+  const [picked, setPicked] = useState<{ id: string; filter: string } | null>(null);
+  const preferred =
+    writable.find((c) => c.id === filterCollection) ??
+    writable.find((c) => c.name === MY_DOCUMENTS) ??
+    writable.find((c) => !c.name.startsWith("Evaluation")) ??
+    writable[0];
+  const collectionId =
+    picked?.filter === filterCollection && writable.some((c) => c.id === picked.id)
+      ? picked.id
+      : (preferred?.id ?? "");
   const [progress, setProgress] = useState<number | null>(null);
   const [results, setResults] = useState<UploadItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -51,23 +88,30 @@ function UploadPanel({ collections, onUploaded }: { collections: Collection[]; o
     const local: UploadItem[] = [];
     const accepted: File[] = [];
     for (const f of files) {
-      const problem = precheck(f);
+      const problem = checkFile(f);
       if (problem) {
         local.push({ filename: f.name, status: "rejected", document_id: null, job_id: null, duplicate: false, error: { code: "CLIENT_CHECK", message: problem } });
       } else accepted.push(f);
     }
     setError(null);
     setResults(local);
-    if (!accepted.length) return;
+    if (!accepted.length) {
+      announce(resultSummary(local));
+      return;
+    }
     setProgress(0);
     try {
-      const res = await uploadFiles<{ items: UploadItem[] }>(`/collections/${collectionId}/documents`, accepted, setProgress);
-      setResults([...local, ...res.items]);
-      onUploaded();
+      // Split into requests that fit the /api proxy's body limit (next.config.ts).
+      const items = await uploadInGroups(collectionId, accepted, setProgress);
+      const all = [...local, ...items];
+      setResults(all);
+      announce(resultSummary(all));
     } catch (e) {
       setError(errorText(e));
     } finally {
       setProgress(null);
+      // Even after a failure: the requests before it may have added documents.
+      onUploaded();
     }
   };
 
@@ -89,7 +133,7 @@ function UploadPanel({ collections, onUploaded }: { collections: Collection[]; o
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-56">
           <label htmlFor="upload-collection" className="mb-1 block text-sm font-medium">Into collection</label>
-          <select id="upload-collection" value={collectionId} onChange={(e) => setCollectionId(e.target.value)} className={inputClass}>
+          <select id="upload-collection" value={collectionId} onChange={(e) => setPicked({ id: e.target.value, filter: filterCollection })} className={inputClass}>
             {writable.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
@@ -104,7 +148,8 @@ function UploadPanel({ collections, onUploaded }: { collections: Collection[]; o
         )}
       >
         <Icon name="upload" width={22} height={22} className="mx-auto text-muted" />
-        <p className="mt-2 text-sm">Drag files here, or</p>
+        <p className="mt-2 text-sm pointer-coarse:hidden">Drag files here, or</p>
+        <p className="mt-2 hidden text-sm pointer-coarse:block">Tap to choose a file</p>
         {/* aria-disabled, not disabled: the button keeps focus while the upload runs (§9 #5). */}
         <Button
           className="mt-2"
@@ -119,7 +164,7 @@ function UploadPanel({ collections, onUploaded }: { collections: Collection[]; o
           ref={inputRef}
           type="file"
           multiple
-          accept={ALLOWED.join(",")}
+          accept={ACCEPT_ATTR}
           className="sr-only"
           aria-label="Choose files to upload"
           onChange={(e) => { void send(Array.from(e.target.files ?? [])); e.target.value = ""; }}
@@ -139,25 +184,31 @@ function UploadPanel({ collections, onUploaded }: { collections: Collection[]; o
           <p className="mt-1 text-xs text-muted">Uploading… {Math.round(progress * 100)}%</p>
         </div>
       )}
-      <div aria-live="polite">
-        {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
-        {results.length > 0 && (
-          <ul className="mt-3 divide-y divide-border rounded-md border border-border text-sm">
-            {results.map((r, i) => (
-              <li key={`${r.filename}-${i}`} className="flex items-center justify-between gap-3 px-3 py-1.5">
-                <span className="truncate">{r.filename}</span>
-                <span className="flex items-center gap-2">
-                  {r.error && <span className="text-xs text-bad">{r.error.message}</span>}
-                  {r.duplicate && <span className="text-xs text-muted">Already in this collection</span>}
-                  <StatusBadge status={r.status === "rejected" ? "failed" : r.status === "duplicate" ? "skipped" : "queued"} label={r.status === "rejected" ? "Rejected" : r.status === "duplicate" ? "Duplicate" : "Queued"} />
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {/* Results are announced once through #sr-announcer (§9 #2). */}
+      {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
+      {results.length > 0 && (
+        <ul className="mt-3 divide-y divide-border rounded-md border border-border text-sm">
+          {results.map((r, i) => (
+            <li key={`${r.filename}-${i}`} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-1.5">
+              <span className="min-w-0 truncate">{r.filename}</span>
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                {r.error && <span className="text-xs text-bad">{r.error.message}</span>}
+                {r.duplicate && <span className="text-xs text-muted">Already in this collection</span>}
+                <ResultBadge result={r} live={documents.find((d) => d.id === r.document_id)} />
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </Card>
   );
+}
+
+function retryErrorText(e: unknown, filename: string): string {
+  if (e instanceof ApiError && (e.status === 403 || e.status === 404)) {
+    return `Your role can't retry ${filename}. An Engineer or Admin can.`;
+  }
+  return `Couldn't retry ${filename}. ${errorText(e)}`;
 }
 
 function DocumentsInner() {
@@ -166,7 +217,7 @@ function DocumentsInner() {
   const collection = params.get("collection") ?? "";
   const status = params.get("status") ?? "";
   const [q, setQ] = useState(params.get("q") ?? "");
-  const collections = useApi<Collection[]>("/collections");
+  const collections = useApi<Collection[]>("/collections?limit=500");
   const qs = new URLSearchParams();
   if (collection) qs.set("collection_id", collection);
   if (status) qs.set("status", status);
@@ -175,9 +226,17 @@ function DocumentsInner() {
   const docs = useApi<Page<DocumentItem>>(`/documents?${qs}`, (d) =>
     d.items.some((x) => ACTIVE.has(x.status)) ? 2500 : 15000,
   );
+  const me = useMe();
   const canUpload = useCan("document:upload");
   const canDelete = useCan("document:delete");
   const canRetry = useCan("document:retry");
+  const canManageJobs = useCan("job:manage");
+  const canDownload = useCan("document:read_content");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<DocumentItem | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const setParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
@@ -186,20 +245,85 @@ function DocumentsInner() {
     router.replace(`/documents?${next}`);
   };
 
-  const act = async (doc: DocumentItem, action: "retry" | "delete") => {
-    if (action === "delete" && !window.confirm(`Delete "${doc.filename}"? Its chunks and vectors will be removed.`)) return;
+  // Unknown levels (the list hasn't loaded, or failed) are left to the API to decide.
+  const levelOf = (doc: DocumentItem) => collections.data?.find((c) => c.id === doc.collection_id)?.access_level;
+  const hasWriteAccess = (doc: DocumentItem) => {
+    const level = levelOf(doc);
+    return level === "write" || level === "manage";
+  };
+  /** Document retry needs write access to the collection. Operators (job:manage) have read access,
+   *  so they re-queue the failed read job instead, which also puts the document back in line. */
+  const retryableJob = (doc: DocumentItem) => {
+    const job = doc.latest_job;
+    const usable = canManageJobs && job?.job_type === "ingest_document" && (job.status === "failed" || job.status === "cancelled");
+    return usable ? job : null;
+  };
+  const mayRetry = (doc: DocumentItem) =>
+    canRetry &&
+    doc.status === "failed" &&
+    // A failed delete offers Delete instead: reading the file again could not restore it.
+    doc.latest_job?.job_type !== "delete_document" &&
+    (levelOf(doc) === undefined || hasWriteAccess(doc) || retryableJob(doc) !== null);
+  const mayDelete = (doc: DocumentItem) => {
+    if (!canDelete || ["deleting", "deleted"].includes(doc.status)) return false;
+    const level = levelOf(doc);
+    return me.role === "org_admin" || doc.uploaded_by === me.user_id || level === undefined || level === "manage";
+  };
+  const mayDownload = (doc: DocumentItem) =>
+    canDownload && !["deleting", "deleted"].includes(doc.status) && levelOf(doc) !== null;
+
+  /** The row's button goes away with the status change, so keep focus on the same row. */
+  const focusRow = (id: string) => document.getElementById(`doc-${id}`)?.focus();
+
+  const retry = async (doc: DocumentItem) => {
+    if (retrying) return;
+    setRetrying(doc.id);
+    setNotice(null);
     try {
-      await api(`/documents/${doc.id}${action === "retry" ? "/retry" : ""}`, { method: action === "retry" ? "POST" : "DELETE" });
+      const job = hasWriteAccess(doc) ? null : retryableJob(doc);
+      await api(job ? `/jobs/${job.id}/retry` : `/documents/${doc.id}/retry`, { method: "POST" });
+      announce(`Retrying ${doc.filename}.`);
+      focusRow(doc.id);
+    } catch (e) {
+      // 409: someone else already re-queued it, and the reload below shows that.
+      if (!(e instanceof ApiError && e.status === 409)) setNotice(retryErrorText(e, doc.filename));
+    } finally {
+      setRetrying(null);
+      docs.reload();
+    }
+  };
+
+  const confirmDelete = async () => {
+    const doc = pendingDelete;
+    if (!doc || deleteBusy) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await api(`/documents/${doc.id}`, { method: "DELETE" });
+      // Closed before focus moves: everything behind a modal dialog is inert.
+      flushSync(() => setPendingDelete(null));
+      announce(`Deleting ${doc.filename}.`);
+      focusRow(doc.id);
       docs.reload();
     } catch (e) {
-      window.alert(e instanceof ApiError ? e.message : "Action failed.");
+      setDeleteError(errorText(e));
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
   return (
     <>
-      <PageHeader title="Documents" description="Upload, track processing and manage indexed knowledge." actions={<UpdatedAt at={docs.updatedAt} />} />
-      {canUpload && collections.data && <div className="mb-4"><UploadPanel collections={collections.data} onUploaded={docs.reload} /></div>}
+      <PageHeader
+        title="Documents"
+        description={canUpload ? "Upload, track processing and manage indexed knowledge." : "Track processing and review indexed knowledge."}
+        actions={<UpdatedAt at={docs.updatedAt} />}
+      />
+      {canUpload && collections.data && (
+        <div className="mb-4">
+          <UploadPanel collections={collections.data} documents={docs.data?.items ?? []} filterCollection={collection} onUploaded={docs.reload} />
+        </div>
+      )}
       <div className="mb-3 flex flex-wrap items-end gap-3">
         <div>
           <label htmlFor="f-col" className="mb-1 block text-xs font-medium text-muted">Collection</label>
@@ -223,19 +347,20 @@ function DocumentsInner() {
           <Button type="submit">Search</Button>
         </form>
       </div>
+      {notice && <p role="alert" className="mb-3 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">{notice}</p>}
       {docs.loading && <Loading />}
       {docs.error && <ErrorState error={docs.error} onRetry={docs.reload} />}
-      {docs.data && docs.data.items.length === 0 && <Empty title="No documents match">Upload files or adjust the filters.</Empty>}
+      {docs.data && docs.data.items.length === 0 && <Empty title="No documents match">{canUpload ? "Upload files or adjust the filters." : "Adjust the filters."}</Empty>}
       {docs.data && docs.data.items.length > 0 && (
         <TableWrap>
           <thead>
-            <tr><Th>File</Th><Th>Collection</Th><Th>Status</Th><Th>Pages / chunks</Th><Th>Size</Th><Th>Uploaded</Th><Th><span className="sr-only">Actions</span></Th></tr>
+            <tr><Th>File</Th><Th>Collection</Th><Th>Status</Th><Th>Pages / chunks</Th><Th>Size</Th><Th>Uploaded</Th><Th className="relative"><span className="sr-only">Actions</span></Th></tr>
           </thead>
           <tbody>
             {docs.data.items.map((d) => (
               <tr key={d.id} className="hover:bg-panel-2">
                 <Td>
-                  <Link href={`/documents/${d.id}`} className="font-medium hover:underline">{d.filename}</Link>
+                  <Link id={`doc-${d.id}`} href={`/documents/${d.id}`} className="font-medium hover:underline">{d.filename}</Link>
                   <div className="text-xs uppercase text-muted">{d.file_type}{d.extraction_method === "ocr" || d.extraction_method === "mixed" ? " · OCR" : ""}</div>
                 </Td>
                 <Td className="text-muted">{d.collection_name}</Td>
@@ -251,14 +376,50 @@ function DocumentsInner() {
                 <Td className="tabular-nums text-muted">{formatBytes(d.size_bytes)}</Td>
                 <Td className="text-muted">{formatTime(d.created_at)}</Td>
                 <Td className="whitespace-nowrap text-right">
-                  {canRetry && d.status === "failed" && <Button onClick={() => act(d, "retry")}>Retry</Button>}{" "}
-                  {canDelete && !["deleting", "deleted"].includes(d.status) && <Button variant="danger" onClick={() => act(d, "delete")}>Delete</Button>}
+                  <span className="inline-flex gap-1.5">
+                    {mayDownload(d) && (
+                      <a href={`/api/v1/documents/${d.id}/download`} download aria-label={`Download ${d.filename}`} className={LINK_BUTTON}>Download</a>
+                    )}
+                    {mayRetry(d) && (
+                      <Button
+                        aria-label={`Retry ${d.filename}`}
+                        aria-disabled={retrying === d.id || undefined}
+                        onClick={() => void retry(d)}
+                      >
+                        {retrying === d.id ? "Retrying…" : "Retry"}
+                      </Button>
+                    )}
+                    {mayDelete(d) && (
+                      <Button
+                        variant="danger"
+                        aria-label={`Delete ${d.filename}`}
+                        onClick={() => {
+                          setDeleteError(null);
+                          setPendingDelete(d);
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    )}
+                  </span>
                 </Td>
               </tr>
             ))}
           </tbody>
         </TableWrap>
       )}
+      <Dialog open={pendingDelete !== null} title="Delete this document?" onClose={() => setPendingDelete(null)}>
+        <p className="text-sm [overflow-wrap:anywhere]">
+          <span className="font-medium">{pendingDelete?.filename}</span> will be deleted, along with its chunks and vectors.
+        </p>
+        {deleteError && <p role="alert" className="mt-3 text-sm text-bad">{deleteError}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <Button data-autofocus onClick={() => setPendingDelete(null)}>Cancel</Button>
+          <Button variant="danger" aria-disabled={deleteBusy || undefined} onClick={() => void confirmDelete()}>
+            {deleteBusy ? "Deleting…" : "Delete"}
+          </Button>
+        </div>
+      </Dialog>
     </>
   );
 }

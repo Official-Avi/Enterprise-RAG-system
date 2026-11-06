@@ -19,7 +19,7 @@ function Throughput({ metrics }: { metrics: OpsMetrics }) {
           </div>
         ))}
       </div>
-      <div className="mt-2 flex gap-4 text-xs text-muted">
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
         <span><span aria-hidden="true" className="mr-1 inline-block h-2 w-2 rounded-sm bg-accent" />Succeeded</span>
         <span><span aria-hidden="true" className="mr-1 inline-block h-2 w-2 rounded-sm bg-bad" />Failed</span>
         <span>Avg duration {formatMs(metrics.avg_job_duration_ms)} · p95 {formatMs(metrics.p95_job_duration_ms)}</span>
@@ -50,17 +50,19 @@ export default function OverviewPage() {
           <Kpi label="Indexed chunks" value={summary.data.indexed_chunks} />
           <Kpi label="Queue depth" value={summary.data.queue_depth} hint={`Oldest ${formatAge(summary.data.oldest_queued_age_seconds)}`} />
           <Kpi label="Running jobs" value={summary.data.jobs.running} />
-          <Kpi label="Failed jobs" value={summary.data.jobs.failed} hint={<Link href="/jobs?status=failed" className="underline">Inspect failures</Link>} />
+          <Kpi label="Failed jobs" value={summary.data.jobs.failed} hint={<Link href="/jobs?status=failed" className="inline-flex min-h-6 items-center underline">Inspect failures</Link>} />
           <Kpi label="Workers healthy" value={`${summary.data.workers.healthy}/${summary.data.workers.total}`} hint={summary.data.workers.stale ? `${summary.data.workers.stale} stale` : undefined} />
         </div>
       )}
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <Card title="Job throughput (last hour)" className="lg:col-span-2">
-          {metrics.error && <ErrorState error={metrics.error} />}
+          {metrics.loading && <Loading />}
+          {metrics.error && <ErrorState error={metrics.error} onRetry={metrics.reload} />}
           {metrics.data && <Throughput metrics={metrics.data} />}
         </Card>
         <Card title="Model endpoint">
-          {model.error && <ErrorState error={model.error} />}
+          {model.loading && <Loading />}
+          {model.error && <ErrorState error={model.error} onRetry={model.reload} />}
           {model.data && (
             <>
               <dl className="space-y-1.5 text-sm">
@@ -75,19 +77,22 @@ export default function OverviewPage() {
           )}
         </Card>
         <Card title="Pipeline status" className="lg:col-span-1">
+          {summary.loading && <Loading />}
+          {summary.error && !summary.data && <p className="text-sm text-muted">Unavailable until the summary above loads.</p>}
           {summary.data && (
             <ul className="space-y-1.5 text-sm">
               {(["queued", "running", "retry_wait", "succeeded", "failed", "cancelled"] as const).map((s) => (
                 <li key={s} className="flex items-center justify-between">
                   <StatusBadge status={s} />
-                  <Link className="tabular-nums hover:underline" href={`/jobs?status=${s}`}>{summary.data!.jobs[s]}</Link>
+                  <Link className="inline-flex min-h-6 min-w-6 items-center justify-end tabular-nums hover:underline" href={`/jobs?status=${s}`}>{summary.data!.jobs[s]}</Link>
                 </li>
               ))}
             </ul>
           )}
         </Card>
         <Card title="Workers" className="lg:col-span-2">
-          {workers.error && <ErrorState error={workers.error} />}
+          {workers.loading && <Loading />}
+          {workers.error && <ErrorState error={workers.error} onRetry={workers.reload} />}
           {workers.data && workers.data.items.length === 0 && (
             <p className="text-sm text-muted">No workers have reported in the last 24 hours. Start one with <code className="font-mono">rackflow-worker</code>.</p>
           )}

@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 
@@ -35,6 +36,12 @@ def _principal(ctx: JobContext, user_id: uuid.UUID | None) -> Principal:
     user, membership = row
     return Principal(user_id=user.id, tenant_id=ctx.tenant_id, role=membership.role,
                      session_id=None, email=user.email, display_name=user.display_name)
+
+
+def run_status(results: list[dict[str, Any]]) -> str:
+    """A run where any question errored must not read as a clean pass (BUG-10): the job did
+    finish, but its figures leave those questions out, so they are not safe to headline."""
+    return "completed_with_errors" if any("error" in r for r in results) else "completed"
 
 
 def run_evaluation(ctx: JobContext) -> None:
@@ -82,7 +89,7 @@ def run_evaluation(ctx: JobContext) -> None:
     run = refreshed
     run.results = results
     run.metrics = aggregate(results)
-    run.status = "completed"
+    run.status = run_status(results)
     run.finished_at = datetime.now(UTC)
     db.commit()
     log.info("evaluation_completed", extra={"run_id": str(run.id), "questions": len(results)})

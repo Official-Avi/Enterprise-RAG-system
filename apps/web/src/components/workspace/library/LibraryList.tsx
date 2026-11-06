@@ -26,7 +26,9 @@ function FileName({ name, max, className }: { name: string; max: number; classNa
   const short = middleTruncate(name, max);
   if (short === name) return <p className={className}>{name}</p>;
   return (
-    <p className={className} title={name}>
+    // relative: sr-only is position:absolute, and without a positioned ancestor here it would sit
+    // outside <main>'s scroll box and stretch the whole document.
+    <p className={cx("relative", className)} title={name}>
       <span aria-hidden="true">{short}</span>
       <span className="sr-only">{name}</span>
     </p>
@@ -87,7 +89,8 @@ function AskLink({ id, filename }: { id: string; filename: string }) {
 /** The ≥ 768px table (§6). */
 export function LibraryTable({ rows, caption, now, flashing, canAsk, showAdminDetails, actionsFor }: LibraryListProps) {
   return (
-    <div className="hidden overflow-x-auto rounded-xl border border-border bg-panel md:block">
+    // relative keeps the sr-only caption, header and link text inside this scroll box.
+    <div className="relative hidden overflow-x-auto rounded-xl border border-border bg-panel md:block">
       <table className="w-full text-sm">
         <caption className="sr-only">{caption}</caption>
         <thead>
@@ -147,18 +150,21 @@ export function LibraryCards({ rows, caption, now, flashing, showAdminDetails, a
       {rows.map((row) => (
         <li
           key={row.key}
-          className={cx("flex min-h-[72px] items-center gap-3 py-2 pl-3 pr-1", flashing.has(row.key) && FLASH)}
+          className={cx("flex min-h-[72px] items-center gap-3 py-1 pl-3 pr-1", flashing.has(row.key) && FLASH)}
         >
           <TypeTile kind={row.kind} />
           <div className="min-w-0 flex-1">
             <FileName name={row.filename} max={60} className="line-clamp-2 text-sm font-medium [overflow-wrap:anywhere]" />
-            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-              <StatusPill phase={row.phase} ctx={row.ctx} />
-              <span className="text-xs text-muted">
+            {/* One line, so a 2-line name still fits the 72px row (§6). The pill never shrinks. */}
+            <div className="mt-0.5 flex items-center gap-x-2">
+              <span className="min-w-0 flex-1 truncate text-xs text-muted">
                 {KIND_LABEL[row.kind]}
                 {row.pageCount ? ` · ${row.pageCount} ${row.pageCount === 1 ? "page" : "pages"}` : ""}
                 {" · "}
                 <RelativeTime ms={row.addedAt} now={now} />
+              </span>
+              <span className="shrink-0">
+                <StatusPill phase={row.phase} ctx={row.ctx} />
               </span>
             </div>
             {row.phase === "uploading" && <UploadBar progress={row.ctx.progress} />}

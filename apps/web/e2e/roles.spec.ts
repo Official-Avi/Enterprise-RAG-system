@@ -1,6 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 import { join } from "node:path";
-import { authFile, demoInfo, demoPassword, loginAsPersona, PERSONAS, SHOTS, type PersonaKey } from "./helpers";
+import {
+  authFile,
+  demoInfo,
+  knownDemoPassword,
+  loginAsPersona,
+  PASSWORD_HELP,
+  PERSONAS,
+  SHOTS,
+  type PersonaKey,
+} from "./helpers";
 
 // Role gating across the workspace and the console (spec §2.2, §2.3, §4.4, §7, §9 #22).
 
@@ -15,6 +24,12 @@ const attach = (page: Page) => composer(page).getByRole("button", { name: /^(Add
 const demoStrip = (page: Page) => page.getByRole("region", { name: "Demo account" });
 
 test("unauthenticated users are sent to login and bad passwords are rejected", async ({ page }) => {
+  const password = knownDemoPassword();
+  if (!password) {
+    test.skip(true, `The demo password isn't available on this machine. ${PASSWORD_HELP}`);
+    return;
+  }
+
   await page.goto("/documents");
   await expect(page).toHaveURL(/\/login\?next=%2Fdocuments/);
   await page.getByLabel("Work email").fill(PERSONAS.engineer.email);
@@ -22,7 +37,7 @@ test("unauthenticated users are sent to login and bad passwords are rejected", a
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   // (Next.js also renders an empty role=alert route announcer, so match the message itself.)
   await expect(page.getByText("Email or password is incorrect.")).toBeVisible();
-  await page.getByLabel("Password", { exact: true }).fill(demoPassword());
+  await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   // ?next= wins when the role can open it (§2.2).
   await expect(page).toHaveURL(/\/documents$/);
@@ -130,25 +145,38 @@ test.describe("Auditor", () => {
 
     await page.goto("/admin/audit");
     await expect(page.getByRole("table")).toBeVisible();
-    await expect(page.getByText(/auth\.(demo_)?login/).first()).toBeVisible();
+    // In the table: the action filter's <option>s carry the same text.
+    await expect(page.getByRole("table").getByText(/auth\.(demo_)?login/).first()).toBeVisible();
     await page.screenshot({ path: join(SHOTS, "06-audit-log.png"), fullPage: true });
   });
 });
 
+/** Created by `rackflow-admin seed-infra` (backend/src/rackflow/cli.py); not part of seed-demo. */
+const SIM_RACK = "sim-rack-a1";
+
 test.describe("Operator", () => {
   test.use({ storageState: authFile("operator") });
 
-  test("works with infrastructure, jobs, workers, models and evaluation", async ({ page }) => {
-    await page.goto("/overview");
+  test("opens a simulated rack from Racks & workloads", async ({ page }) => {
+    const res = await page.request.get("/api/v1/infrastructure/racks");
+    const racks = res.ok() ? ((await res.json()) as { items: { name: string }[] }).items : [];
+    test.skip(
+      !racks.some((r) => r.name === SIM_RACK),
+      `${SIM_RACK} isn't registered. Seed it from backend/ with: rackflow-admin seed-infra --tenant acme`,
+    );
 
+    await page.goto("/overview");
     await mainNav(page).getByRole("link", { name: "Racks & workloads" }).click();
     await expect(page.getByText(/No hardware is discovered or controlled/)).toBeVisible();
-    await expect(page.getByText("Simulated").first()).toBeVisible();
     await page.screenshot({ path: join(SHOTS, "07-infrastructure.png"), fullPage: true });
-    await page.getByRole("link", { name: /sim-rack-a1/ }).click();
+    await page.getByRole("link", { name: new RegExp(SIM_RACK) }).click();
     await expect(page.getByText("Simulated rack: all values are demo data")).toBeVisible();
     await expect(page.getByRole("list", { name: "Rack units from top" })).toBeVisible();
     await page.screenshot({ path: join(SHOTS, "08-rack-detail.png"), fullPage: true });
+  });
+
+  test("works with jobs, workers, models and evaluation", async ({ page }) => {
+    await page.goto("/overview");
 
     await mainNav(page).getByRole("link", { name: "Job queue" }).click();
     await page.getByRole("row").nth(1).getByRole("button").first().click();
@@ -195,6 +223,8 @@ test.describe("demo strip (§4.3, §4.4)", () => {
     await expect(addFiles(page)).toHaveCount(0);
     await expect(adminConsole(page)).toBeVisible();
     await expect(page.locator("#sr-announcer")).toContainText("You're now Operator");
+    // Sighted users get the same words in the toast (§4.4 step 4).
+    await expect(page.getByText(/^You're now Operator\./).and(page.locator(":not(#sr-announcer)"))).toBeVisible();
   });
 
   test("Exit demo signs out and returns to the landing page", async ({ page }) => {

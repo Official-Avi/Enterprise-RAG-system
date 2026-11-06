@@ -20,8 +20,9 @@ export const metadata: Metadata = {
     "Upload a PDF, Word or text file and ask in plain words. Every answer quotes the passage and page it came from.",
 };
 
+// The display scale's 32px floor (§8.2) can't hold two lines (§3.1) on a 320px screen, below the QA widths.
 const H1 =
-  "font-display text-[length:clamp(2rem,1.25rem_+_2.5vw,2.75rem)] font-bold leading-[1.1] tracking-[-0.02em] text-balance";
+  "font-display text-[length:clamp(2rem,1.25rem_+_2.5vw,2.75rem)] max-[359px]:text-[length:1.75rem] font-bold leading-[1.1] tracking-[-0.02em] text-balance";
 const H2 =
   "font-display text-[length:clamp(1.75rem,1.4rem_+_1.2vw,2.25rem)] font-bold leading-[1.15] tracking-[-0.018em] text-balance";
 
@@ -53,7 +54,8 @@ export default function LandingPage() {
           {/* Hero: the working tool is the hero (§1.1). */}
           <section aria-labelledby="hero-title" className="mx-auto max-w-[872px] px-4 pt-8 text-center sm:pt-12">
             <h1 id="hero-title" className={H1}>
-              Ask your documents. <span className="text-accent">See the exact page.</span>
+              <span className="inline-block">Ask your documents.</span>{" "}
+              <span className="inline-block text-accent">See the exact page.</span>
             </h1>
             <p className="mx-auto mt-3 max-w-[600px] text-lg leading-7 text-muted">
               Upload a PDF, Word or text file and ask in plain words. Every answer quotes the passage and page it came
@@ -87,7 +89,10 @@ export default function LandingPage() {
               </div>
               <p className="mt-6 text-center text-[13px] text-muted">
                 Have your own account?{" "}
-                <Link href="/login" className="font-semibold text-accent underline-offset-2 hover:underline">
+                <Link
+                  href="/login"
+                  className="inline-flex min-h-11 items-center font-semibold text-accent underline-offset-2 hover:underline sm:min-h-0"
+                >
                   Sign in
                 </Link>
               </p>

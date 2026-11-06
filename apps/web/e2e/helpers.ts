@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -64,18 +65,26 @@ export const authFile = (key: PersonaKey) => join(__dirname, ".auth", `${key}.js
 
 // ---------- sign-in ----------
 
-const PASSWORD_FILE = join(__dirname, "..", "..", "..", ".data", "demo-password.txt");
+/** E2E_PASSWORD_FILE, else the file the local setup writes. Docs/ holds no usable password. */
+const DEFAULT_PASSWORD_FILE = join(__dirname, "..", "..", "..", ".data", "demo-password.txt");
 
-export function demoPassword(): string {
-  if (process.env.E2E_PASSWORD) return process.env.E2E_PASSWORD;
-  return readFileSync(PASSWORD_FILE, "utf8").trim();
-}
+export const PASSWORD_HELP = "Set E2E_PASSWORD, or E2E_PASSWORD_FILE to a file that holds it";
 
-/** The demo password when it is known on this machine, else null (for "never shown" checks). */
+/** The demo password when it is known on this machine, else null. Throws if E2E_PASSWORD_FILE
+ *  names a file that isn't there: that is a mistake to fix, not a reason to skip a test. */
 export function knownDemoPassword(): string | null {
   if (process.env.E2E_PASSWORD) return process.env.E2E_PASSWORD;
-  if (!existsSync(PASSWORD_FILE)) return null;
-  return readFileSync(PASSWORD_FILE, "utf8").trim() || null;
+  const configured = process.env.E2E_PASSWORD_FILE;
+  if (configured && !existsSync(configured)) throw new Error(`E2E_PASSWORD_FILE does not exist: ${configured}`);
+  const file = configured || DEFAULT_PASSWORD_FILE;
+  if (!existsSync(file)) return null;
+  return readFileSync(file, "utf8").trim() || null;
+}
+
+export function demoPassword(): string {
+  const password = knownDemoPassword();
+  if (!password) throw new Error(`The demo password isn't available. ${PASSWORD_HELP}.`);
+  return password;
 }
 
 export interface DemoInfo {
@@ -112,7 +121,7 @@ export async function loginAsPersona(
   await expect(page.locator("main#main")).toBeVisible();
 }
 
-/** Fallback: email and password, with the password from E2E_PASSWORD or .data/demo-password.txt. */
+/** Fallback: email and password, with the password from knownDemoPassword(). */
 export async function loginWithPassword(page: Page, email: string): Promise<void> {
   await page.goto("/login");
   await page.getByLabel("Work email").fill(email);
@@ -184,6 +193,19 @@ export async function newestDocument(page: Page): Promise<DocumentSummary | null
 
 export function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** §9 #1: the WCAG 2.2 AA rule tags the spec names. Best-practice rules aren't part of the gate. */
+const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
+
+/** Scans the whole document, so a dialog is checked along with the page behind it. Call it once the
+ *  state has rendered. The failure message names each rule, the element and what to fix. */
+export async function expectNoAxeViolations(page: Page, state: string): Promise<void> {
+  const { violations } = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
+  const found = violations.flatMap((rule) =>
+    rule.nodes.map((node) => `[${rule.impact}] ${rule.id} on ${node.target.join(" ")}: ${node.failureSummary ?? rule.help}`),
+  );
+  expect(found, `axe violations on ${state} (${page.url()})`).toEqual([]);
 }
 
 /** §9 #15: no sideways page scroll. Call it once the page's content has loaded. `scroller` also

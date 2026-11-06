@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { authFile, demoInfo } from "./helpers";
 
 // Keyboard, landmark and motion checks from spec §9 (#2, #6, #9, #10, #11, #16, #18).
-// Automated axe scans (§9 #1) need @axe-core/playwright, which isn't installed yet.
+// The axe scans (§9 #1) and the dialog and source-panel keyboard gates are in a11y-gates.spec.ts.
 
 /** Put the sequential-focus starting point at the top of the document, as on a fresh load,
  *  even if the page has already moved focus (e.g. into the question box). */

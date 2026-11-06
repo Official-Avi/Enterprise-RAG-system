@@ -3,9 +3,8 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type FormEvent } from "react";
 import { DemoPersonaCards } from "@/components/landing/DemoPersonaCards";
-import { useVisitor, VisitorProvider } from "@/components/landing/Visitor";
+import { signedInPath, useVisitor, VisitorProvider } from "@/components/landing/Visitor";
 import { Logo } from "@/components/Logo";
-import { homePath } from "@/components/Shell";
 import { cx } from "@/components/ui";
 import { announce } from "@/lib/announce";
 import { api, ApiError } from "@/lib/api";
@@ -16,33 +15,6 @@ const fieldClass =
   "block h-11 w-full rounded-lg border border-border-strong bg-panel px-3 text-base text-text " +
   "placeholder:text-muted transition-colors duration-150 aria-[invalid=true]:border-bad";
 
-function safeNext(next: string | null): string | null {
-  // Only allow same-site relative paths (no open redirects). Browsers read "/\host" and
-  // "/<tab>/host" as "//host", so the parsed origin is checked as well as the prefix.
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) return null;
-  try {
-    const url = new URL(next, window.location.origin);
-    if (url.origin !== window.location.origin || url.pathname.startsWith("/login")) return null;
-    return url.pathname + url.search + url.hash;
-  } catch {
-    return null;
-  }
-}
-
-/** §2.2: honour ?next= only for a route the role can open. The console gates its own pages. */
-function canOpen(path: string, permissions: string[]): boolean {
-  const has = (p: string) => permissions.includes(p);
-  const under = (prefix: string) => path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}?`);
-  if (under("/ask") || under("/chat")) return has("chat:use");
-  if (under("/library")) return has("collection:read") && (has("chat:use") || has("document:upload"));
-  return true;
-}
-
-function destination(next: string | null, permissions: string[]): string {
-  const safe = safeNext(next);
-  return safe && canOpen(safe, permissions) ? safe : homePath(permissions);
-}
-
 function loginError(e: unknown): string {
   if (!(e instanceof ApiError)) return "Sign-in failed.";
   if (e.status === 429) return "Too many attempts. Wait a minute and try again.";
@@ -51,18 +23,9 @@ function loginError(e: unknown): string {
 }
 
 function DemoBlock() {
-  const { ready, demo } = useVisitor();
-  if (!ready) {
-    // Reserve the block's height so the email form does not jump once demo info arrives.
-    return (
-      <div aria-hidden="true" className="mb-6 space-y-3">
-        <div className="h-5 w-40 rounded bg-panel-2" />
-        <div className="h-[248px] animate-pulse rounded-xl bg-panel-2 motion-reduce:animate-none" />
-        <div className="h-5" />
-      </div>
-    );
-  }
-  if (!demo?.enabled || demo.personas.length === 0) return null;
+  const { ready, demo, unreachable } = useVisitor();
+  // While loading, and when the server can't be reached, the cards show their skeletons or notice.
+  if (ready && !unreachable && (!demo?.enabled || demo.personas.length === 0)) return null;
   return (
     <section aria-labelledby="demo-heading" className="mb-6">
       <h2 id="demo-heading" className="mb-3 text-sm font-semibold">
@@ -125,7 +88,7 @@ function LoginForm() {
       });
       announce(`Signed in as ${me.display_name}`);
       // With resume=1 the pending file or question stays in pendingStore; /ask takes it.
-      router.replace(destination(params.get("next"), me.permissions));
+      router.replace(signedInPath(params.get("next"), me.permissions));
     } catch (e) {
       const invalid = e instanceof ApiError && e.status === 401;
       setError({ text: loginError(e), invalid });
@@ -185,8 +148,11 @@ function LoginForm() {
             aria-label="Show password"
             onClick={() => setShowPassword((s) => !s)}
             className={cx(
-              "absolute inset-y-px right-px inline-flex min-w-11 items-center justify-center rounded-r-lg px-3",
-              "text-sm font-medium text-accent transition-colors duration-150 hover:bg-panel-2",
+              // A clear border keeps the fill inside the field's border while the target stays 44px tall.
+              "absolute inset-y-0 right-0 inline-flex min-w-11 items-center justify-center rounded-r-lg border",
+              "border-transparent bg-clip-padding px-3 text-sm font-medium text-accent",
+              "transition-colors duration-150 hover:bg-panel-2",
+              "aria-pressed:bg-accent-soft aria-pressed:font-semibold",
             )}
           >
             Show
@@ -262,10 +228,6 @@ function FormFallback() {
 }
 
 export default function LoginPage() {
-  useEffect(() => {
-    document.title = "Sign in · RackFlow AI";
-  }, []);
-
   return (
     <main id="main" className="flex min-h-dvh items-center justify-center px-4 py-10 sm:py-16">
       <div className="w-full max-w-[440px] rounded-2xl border border-border bg-panel p-6 sm:p-8">

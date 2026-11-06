@@ -8,9 +8,19 @@ A library that cannot be loaded (see `is_dependency_failure`) is permanent with 
 
 from __future__ import annotations
 
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+)
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+
 DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
 DEPENDENCY_MESSAGE = ("A required processing component could not be loaded. "
                       "An administrator needs to check the server.")
+DATABASE_UNAVAILABLE = "DATABASE_UNAVAILABLE"
+DATABASE_MESSAGE = "The database was unavailable while this job was running."
 # Windows loader errors: module not found, procedure not found, bad image, DLL init failed.
 _DLL_LOAD_WINERRORS = frozenset({126, 127, 193, 1114})
 
@@ -46,6 +56,15 @@ class DependencyUnavailable(PermanentJobError):
 
 class JobCancelled(Exception):
     """Raised by `JobContext.check_cancelled()` when cancellation was requested."""
+
+
+def is_database_outage(exc: BaseException) -> bool:
+    """True when the database could not be reached or dropped the connection. That is transient
+    and says nothing about the job. A schema or data error is not an outage: it stays fatal so a
+    broken deployment fails loudly instead of retrying forever."""
+    if isinstance(exc, OperationalError | InterfaceError | DisconnectionError | PoolTimeoutError):
+        return True
+    return isinstance(exc, DBAPIError) and exc.connection_invalidated
 
 
 def is_dependency_failure(exc: BaseException) -> bool:

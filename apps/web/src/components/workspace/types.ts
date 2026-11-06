@@ -27,7 +27,8 @@ export interface UploadsApi {
   add(files: File[]): Promise<void>;
   /** Watch documents uploaded elsewhere (e.g. `?doc=` from the landing page). */
   track(documentIds: string[]): void;
-  /** Stop showing a chip. Never deletes the document. */
+  /** Stop showing a chip. An upload still in flight is cancelled, and a copy stored too late to
+   *  abort is deleted. An upload that already finished is never deleted. */
   remove(key: string): void;
   /** Open the native file picker (the keyboard-accessible path for every dropzone). */
   pickFiles(): void;
@@ -67,8 +68,10 @@ export interface AnswerView {
   citations: Citation[];
   model: ModelRef | null;
   latency_ms: number | null;
-  /** Number of retrieved passages; null when loaded from history. */
+  /** Number of retrieved passages; null for an older saved answer that didn't record it. */
   retrieved_count: number | null;
+  /** Rebuilt from a saved chat, so it isn't announced or animated as new. */
+  fromHistory?: boolean;
 }
 
 export type TurnStatus = "held" | "waiting" | "answered" | "error";
@@ -84,6 +87,8 @@ export interface Turn {
   startedAt: number;
   /** e.g. "Searched 9 documents in HR Policies, Safety". */
   scopeLabel?: string;
+  /** This turn searched only some collections. Unknown for turns rebuilt from history. */
+  searchedNarrowed?: boolean;
 }
 
 export interface ScopeCollection {
@@ -110,7 +115,8 @@ export interface NotFoundContext {
   readingCount: number;
   narrowed: boolean;
   canUpload: boolean;
-  onSearchAll(): void;
+  /** Search everything again for `question` (default: the latest not-found question). */
+  onSearchAll(question?: string): void;
   onUpload(): void;
 }
 

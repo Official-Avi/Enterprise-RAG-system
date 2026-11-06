@@ -21,6 +21,7 @@ import { api, errorText } from "@/lib/api";
 import { formatBytes, formatTime } from "@/lib/format";
 import { useApi, useCan } from "@/lib/hooks";
 import type { InfraOverview, NodeResource, Rack, Workload } from "@/lib/types";
+import { NodeActions, plural, SourceRadios, WorkloadActions } from "./parts";
 
 function SourceBadge({ source }: { source: string }) {
   return <StatusBadge status={source} />;
@@ -66,11 +67,7 @@ function NewRack({ onCreated }: { onCreated: () => void }) {
             <div><label htmlFor="r-units" className="mb-1 block text-sm font-medium">Height (U)</label><input id="r-units" name="units" type="number" min={1} max={60} placeholder="42" className={inputClass} /></div>
           </div>
           <div><label htmlFor="r-loc" className="mb-1 block text-sm font-medium">Location label</label><input id="r-loc" name="location" maxLength={200} placeholder="DC-1 / Row A" className={inputClass} /></div>
-          <fieldset>
-            <legend className="mb-1 text-sm font-medium">Data source</legend>
-            <label className="flex items-center gap-2 text-sm"><input type="radio" name="source" value="manual" defaultChecked /> Configured (real rack, entered manually)</label>
-            <label className="flex items-center gap-2 text-sm"><input type="radio" name="source" value="simulated" /> Simulated (demo/test data)</label>
-          </fieldset>
+          <SourceRadios manualHint="real rack, entered manually" simulatedHint="demo/test data" />
           <p className="text-xs text-muted">This registers inventory only. RackFlow does not discover, monitor or control physical hardware.</p>
           {error && <p role="alert" className="text-sm text-bad">{error}</p>}
           <div className="flex justify-end gap-2"><Button type="button" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" variant="primary">Register</Button></div>
@@ -126,11 +123,7 @@ function NewWorkload({ nodes, onCreated }: { nodes: NodeResource[]; onCreated: (
             <div><label htmlFor="w-mem" className="mb-1 block text-sm font-medium">Memory GiB</label><input id="w-mem" name="memory" type="number" min={0} className={inputClass} /></div>
             <div><label htmlFor="w-gpu" className="mb-1 block text-sm font-medium">GPUs</label><input id="w-gpu" name="gpu" type="number" min={0} className={inputClass} /></div>
           </div>
-          <fieldset>
-            <legend className="mb-1 text-sm font-medium">Data source</legend>
-            <label className="flex items-center gap-2 text-sm"><input type="radio" name="source" value="manual" defaultChecked /> Configured</label>
-            <label className="flex items-center gap-2 text-sm"><input type="radio" name="source" value="simulated" /> Simulated</label>
-          </fieldset>
+          <SourceRadios />
           <p className="text-xs text-muted">Registers a workload record; nothing is deployed or started. Configured workloads show observed state “unknown” because no telemetry exists.</p>
           {error && <p role="alert" className="text-sm text-bad">{error}</p>}
           <div className="flex justify-end gap-2"><Button type="button" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" variant="primary">Register</Button></div>
@@ -142,11 +135,13 @@ function NewWorkload({ nodes, onCreated }: { nodes: NodeResource[]; onCreated: (
 
 export default function InfrastructurePage() {
   const overview = useApi<InfraOverview>("/infrastructure/overview", 10000);
-  const racks = useApi<{ items: Rack[] }>("/infrastructure/racks");
-  const nodes = useApi<{ items: NodeResource[] }>("/infrastructure/nodes");
-  const workloads = useApi<{ items: Workload[] }>("/infrastructure/workloads");
+  // All on the same interval, so the counts and the lists below them agree.
+  const racks = useApi<{ items: Rack[] }>("/infrastructure/racks", 10000);
+  const nodes = useApi<{ items: NodeResource[] }>("/infrastructure/nodes", 10000);
+  const workloads = useApi<{ items: Workload[] }>("/infrastructure/workloads", 10000);
   const canManage = useCan("infra:manage");
   const reload = () => { racks.reload(); nodes.reload(); workloads.reload(); overview.reload(); };
+  const unracked = nodes.data?.items.filter((n) => n.rack_id === null) ?? [];
 
   return (
     <RequirePermission permission="infra:read">
@@ -156,11 +151,11 @@ export default function InfrastructurePage() {
         actions={canManage && (<><NewWorkload nodes={nodes.data?.items ?? []} onCreated={reload} /><NewRack onCreated={reload} /></>)}
       />
       {overview.data && (
-        <div role="note" className="mb-4 rounded-md border border-border bg-panel px-4 py-3 text-sm">
+        <div role="note" className="mb-4 rounded-lg border border-border bg-panel px-4 py-3 text-sm">
           <p>{overview.data.note}</p>
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             {(["manual", "simulated", "integration"] as const).map((s) => (
-              <span key={s} className="flex items-center gap-1"><SourceBadge source={s} /> {overview.data!.racks[s]} racks · {overview.data!.nodes[s]} nodes · {overview.data!.workloads[s]} workloads</span>
+              <span key={s} className="flex flex-wrap items-center gap-1"><SourceBadge source={s} /> {plural(overview.data!.racks[s], "rack")} · {plural(overview.data!.nodes[s], "node")} · {plural(overview.data!.workloads[s], "workload")}</span>
             ))}
           </div>
         </div>
@@ -170,9 +165,9 @@ export default function InfrastructurePage() {
       {racks.data?.items.length === 0 && (
         <Empty title="No racks registered">Register a rack, or seed clearly labelled demo data with <code className="font-mono">rackflow-admin seed-infra --tenant &lt;slug&gt;</code>.</Empty>
       )}
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {racks.data?.items.map((r) => (
-          <Link key={r.id} href={`/infrastructure/${r.id}`} className="rounded-lg border border-border bg-panel p-4 hover:border-accent">
+          <Link key={r.id} href={`/infrastructure/${r.id}`} className="min-w-0 rounded-lg border border-border bg-panel p-4 hover:border-accent">
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="font-semibold">{r.name}</div>
@@ -180,7 +175,7 @@ export default function InfrastructurePage() {
               </div>
               <SourceBadge source={r.state_source} />
             </div>
-            <div className="mt-3 flex items-center gap-2"><StatusBadge status={healthStatus(r.status)} label={r.status} /><span className="text-xs text-muted">{r.node_count} nodes</span></div>
+            <div className="mt-3 flex items-center gap-2"><StatusBadge status={healthStatus(r.status)} label={r.status} /><span className="text-xs text-muted">{plural(r.node_count, "node")}</span></div>
             <dl className="mt-3 grid grid-cols-4 gap-2 text-xs">
               <div><dt className="text-muted">CPU</dt><dd className="font-medium">{r.capacity.cpu_cores}</dd></div>
               <div><dt className="text-muted">Memory</dt><dd className="font-medium">{formatBytes(r.capacity.memory_bytes)}</dd></div>
@@ -190,12 +185,27 @@ export default function InfrastructurePage() {
           </Link>
         ))}
       </div>
-      <div className="mt-6 grid gap-4 lg:grid-cols-3">
+      {unracked.length > 0 && (
+        <Card title="Nodes not in a rack" className="mt-6">
+          <ul className="divide-y divide-border">
+            {unracked.map((n) => (
+              <li key={n.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm first:pt-0 last:pb-0">
+                <span className="min-w-0 wrap-anywhere"><span className="font-medium">{n.name}</span> <span className="text-xs text-muted">{n.resource_type} · {plural(n.workload_count, "workload")}</span></span>
+                <span className="flex flex-wrap items-center gap-2">
+                  <SourceBadge source={n.state_source} />
+                  {canManage && n.state_source !== "integration" && <NodeActions node={n} racks={racks.data?.items ?? []} onChanged={reload} />}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card title="Workload placement" className="lg:col-span-2">
           {workloads.data?.items.length === 0 && <p className="text-sm text-muted">No workloads registered.</p>}
           {workloads.data && workloads.data.items.length > 0 && (
-            <TableWrap>
-              <thead><tr><Th>Workload</Th><Th>Type</Th><Th>Node</Th><Th>Desired / observed</Th><Th>Request</Th><Th>Source</Th></tr></thead>
+            <TableWrap label="Workload placement">
+              <thead><tr><Th>Workload</Th><Th>Type</Th><Th>Node</Th><Th>Desired / observed</Th><Th>Request</Th><Th>Source</Th>{canManage && <Th><span className="sr-only">Actions</span></Th>}</tr></thead>
               <tbody>
                 {workloads.data.items.map((w) => (
                   <tr key={w.id}>
@@ -205,6 +215,13 @@ export default function InfrastructurePage() {
                     <Td className="text-xs">{w.desired_state} / <span className={w.observed_state === "unknown" ? "text-muted" : ""}>{w.observed_state}</span></Td>
                     <Td className="text-xs text-muted">{w.resource_request.cpu_cores ?? 0} CPU · {formatBytes(w.resource_request.memory_bytes ?? 0)}{w.resource_request.accelerators ? ` · ${w.resource_request.accelerators} GPU` : ""}</Td>
                     <Td><SourceBadge source={w.state_source} /></Td>
+                    {canManage && (
+                      <Td>
+                        {w.state_source !== "integration" && (
+                          <div className="flex gap-1.5"><WorkloadActions workload={w} nodes={nodes.data?.items ?? []} onChanged={reload} /></div>
+                        )}
+                      </Td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -217,8 +234,8 @@ export default function InfrastructurePage() {
           <ul className="space-y-1.5">
             {overview.data?.platform_processes.map((p) => (
               <li key={p.worker_id} className="flex items-center justify-between gap-2 text-xs">
-                <span className="truncate font-mono">{p.worker_id}</span>
-                <span className="flex items-center gap-1"><StatusBadge status={p.health} /><span className="text-muted">{formatTime(p.last_heartbeat_at)}</span></span>
+                <span className="min-w-0 truncate font-mono">{p.worker_id}</span>
+                <span className="flex shrink-0 items-center gap-1"><StatusBadge status={p.health} /><span className="text-muted">{formatTime(p.last_heartbeat_at)}</span></span>
               </li>
             ))}
           </ul>

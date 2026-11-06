@@ -66,7 +66,7 @@ export function WaitingIndicator({
           type="button"
           onClick={onStop}
           className={
-            "inline-flex h-8 items-center rounded-md border border-border-strong bg-panel px-3 text-[13px] " +
+            "inline-flex h-8 items-center rounded-lg border border-border-strong bg-panel px-3 text-[13px] " +
             "font-medium text-text transition-colors duration-150 hover:bg-panel-2 pointer-coarse:h-11"
           }
         >

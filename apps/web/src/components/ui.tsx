@@ -1,15 +1,19 @@
 "use client";
 
+import Link from "next/link";
 import {
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
   useRef,
+  useState,
   type ButtonHTMLAttributes,
   type ReactNode,
   type RefObject,
 } from "react";
 import { ApiError } from "@/lib/api";
+import { MeContext } from "@/lib/hooks";
 import { Icon } from "./icons";
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
@@ -32,7 +36,7 @@ export function Button({
   return (
     <button
       className={cx(
-        "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
+        "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
         // aria-disabled keeps a focused control focusable (§9 #5); the caller guards the click.
         "disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50",
         styles[variant],
@@ -44,9 +48,9 @@ export function Button({
 }
 
 // --border-strong keeps the control boundary at >= 3:1 (§9 #14); 16px text below md stops
-// iOS zooming into a focused field (§10).
+// iOS zooming into a focused field (§10); touch tablets keep 16px at md too.
 export const inputClass =
-  "w-full rounded-md border border-border-strong bg-panel px-3 py-1.5 text-base text-text md:text-sm " +
+  "w-full rounded-lg border border-border-strong bg-panel px-3 py-1.5 text-base text-text pointer-fine:md:text-sm " +
   "placeholder:text-muted";
 
 type Tone = "ok" | "warn" | "bad" | "info" | "neutral" | "accent";
@@ -120,11 +124,11 @@ export function PageHeader({
 }) {
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+      <div className="min-w-0">
+        <h1 className="text-xl font-semibold tracking-tight wrap-anywhere">{title}</h1>
         {description && <p className="mt-0.5 text-sm text-muted">{description}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
   );
 }
@@ -141,7 +145,9 @@ export function Card({
   className?: string;
 }) {
   return (
-    <section className={cx("rounded-lg border border-border bg-panel", className)}>
+    // min-w-0: as a grid item this must be able to shrink, so a wide table scrolls inside it
+    // instead of pushing the page sideways.
+    <section className={cx("min-w-0 rounded-lg border border-border bg-panel", className)}>
       {title && (
         <header className="flex items-center justify-between border-b border-border px-4 py-2.5">
           <h2 className="text-sm font-semibold">{title}</h2>
@@ -216,17 +222,34 @@ export function Empty({
 }
 
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+  const me = useContext(MeContext);
   const e = error instanceof ApiError ? error : null;
-  const denied = e?.status === 403;
+  if (e?.status === 403) {
+    // The page loaded fine and the API refused this role, so this is not an alert (§7 #4).
+    const can = (p: string) => !!me?.permissions.includes(p);
+    return (
+      <div className="rounded-lg border border-border bg-panel px-4 py-3 text-sm">
+        <p className="font-medium">Your role can&apos;t see this.</p>
+        <p className="mt-0.5 text-muted">An admin can change your role if you need it.</p>
+        {can("chat:use") ? (
+          <Link href="/ask" className="mt-2 inline-flex min-h-9 items-center gap-1.5 font-medium text-accent hover:underline">
+            <Icon name="arrowLeft" /> Back to Ask
+          </Link>
+        ) : can("ops:read") ? (
+          <Link href="/overview" className="mt-2 inline-flex min-h-9 items-center gap-1.5 font-medium text-accent hover:underline">
+            Go to Overview <Icon name="arrowRight" />
+          </Link>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div role="alert" className="rounded-lg border border-border bg-bad-soft px-4 py-3 text-sm">
-      <p className="font-medium text-bad">
-        {denied ? "You don't have permission to view this." : (e?.message ?? "Something went wrong.")}
-      </p>
+      <p className="font-medium text-bad">{e?.message ?? "Something went wrong."}</p>
       {e?.correlationId && (
         <p className="mt-0.5 font-mono text-xs text-muted">Correlation ID: {e.correlationId}</p>
       )}
-      {onRetry && !denied && (
+      {onRetry && (
         <Button className="mt-2" onClick={onRetry}>
           <Icon name="refresh" /> Retry
         </Button>
@@ -323,7 +346,7 @@ export function Dialog({
           aria-label="Close dialog"
           onClick={onClose}
           className={cx(
-            "inline-flex size-10 shrink-0 items-center justify-center rounded-md text-muted",
+            "inline-flex size-10 shrink-0 items-center justify-center rounded-lg text-muted",
             "transition-colors hover:bg-panel-2 hover:text-text max-sm:size-11",
           )}
         >
@@ -332,6 +355,75 @@ export function Dialog({
       </header>
       {open && <div className="p-4">{children}</div>}
     </dialog>
+  );
+}
+
+function ConfirmBody({
+  children,
+  confirmLabel,
+  variant,
+  onConfirm,
+  onCancel,
+}: {
+  children: ReactNode;
+  confirmLabel: string;
+  variant: Variant;
+  onConfirm: () => void | Promise<void>;
+  onCancel: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onConfirm();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-3 text-sm">
+      <div>{children}</div>
+      {error && <p role="alert" className="text-bad">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <Button type="button" data-autofocus onClick={onCancel}>Cancel</Button>
+        <Button type="button" variant={variant} aria-disabled={busy || undefined} onClick={run}>
+          {confirmLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Confirm step for consequential actions (§9 #1, #10): a native dialog with Cancel focused.
+ *  `onConfirm` closes it by clearing `open`; if it throws, the error shows here and it stays open. */
+export function ConfirmDialog({
+  open,
+  title,
+  children,
+  confirmLabel,
+  variant = "danger",
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  title: string;
+  children: ReactNode;
+  confirmLabel: string;
+  variant?: Variant;
+  onConfirm: () => void | Promise<void>;
+  onCancel: () => void;
+}) {
+  return (
+    <Dialog open={open} title={title} onClose={onCancel}>
+      <ConfirmBody confirmLabel={confirmLabel} variant={variant} onConfirm={onConfirm} onCancel={onCancel}>
+        {children}
+      </ConfirmBody>
+    </Dialog>
   );
 }
 
@@ -354,9 +446,30 @@ export function Td({ children, className }: { children?: ReactNode; className?: 
   return <td className={cx("border-b border-border px-3 py-2 align-top", className)}>{children}</td>;
 }
 
-export function TableWrap({ children }: { children: ReactNode }) {
+/** `relative` makes this box the containing block for anything position:absolute inside it, such
+ *  as an sr-only "Actions" header; otherwise that text escapes the overflow clip and widens the
+ *  page. While the table overflows, the box takes focus so arrow keys can scroll it (WCAG 2.1.1). */
+export function TableWrap({ children, label = "Scrollable table" }: { children: ReactNode; label?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [scrolls, setScrolls] = useState(false);
+  useEffect(() => {
+    const box = ref.current;
+    const table = box?.firstElementChild;
+    if (!box || !table) return;
+    // A ResizeObserver reports once on observe, so this also covers the first measurement.
+    const observer = new ResizeObserver(() => setScrolls(box.scrollWidth > box.clientWidth));
+    observer.observe(box);
+    observer.observe(table);
+    return () => observer.disconnect();
+  }, []);
   return (
-    <div className="overflow-x-auto rounded-lg border border-border bg-panel">
+    <div
+      ref={ref}
+      role={scrolls ? "region" : undefined}
+      aria-label={scrolls ? label : undefined}
+      tabIndex={scrolls ? 0 : undefined}
+      className="relative overflow-x-auto rounded-lg border border-border bg-panel"
+    >
       <table className="w-full text-sm">{children}</table>
     </div>
   );

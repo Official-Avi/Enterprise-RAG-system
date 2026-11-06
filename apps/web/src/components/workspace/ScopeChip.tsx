@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { announce } from "@/lib/announce";
 import { Sheet } from "../Sheet";
 import { Button, cx } from "../ui";
@@ -10,7 +10,10 @@ const TITLE = "Choose what to search";
 const AT_LEAST_ONE = "Pick at least one collection";
 const SEARCH_THRESHOLD = 8;
 const ALL = "\u0000all";
-const NARROW_QUERY = "(max-width: 639.98px)";
+// The workspace's mobile breakpoint: the composer is docked there, with content stacked over it.
+const NARROW_QUERY = "(max-width: 767.98px)";
+const POPOVER_GAP = 8;
+const SCREEN_EDGE = 8;
 
 function plural(n: number, word: string): string {
   return `${n} ${n === 1 ? word : `${word}s`}`;
@@ -22,7 +25,7 @@ function subscribeNarrow(onChange: () => void) {
   return () => mq.removeEventListener("change", onChange);
 }
 
-/** Below the sm breakpoint the picker is a bottom sheet instead of a popover (§10). */
+/** Below the md breakpoint the picker is a bottom sheet instead of a popover (§10). */
 function useNarrow(): boolean {
   return useSyncExternalStore(
     subscribeNarrow,
@@ -36,6 +39,44 @@ function selectedIds(collections: ScopeCollection[], value: ScopeValue): Set<str
   if (value === "all") return new Set(collections.map((c) => c.id));
   const wanted = new Set(value);
   return new Set(collections.filter((c) => wanted.has(c.id)).map((c) => c.id));
+}
+
+/** Where a popover can actually paint: the visual viewport, cut by every clipping ancestor. */
+function visibleArea(el: HTMLElement) {
+  const vv = window.visualViewport;
+  const area = {
+    top: vv?.offsetTop ?? 0,
+    bottom: (vv?.offsetTop ?? 0) + (vv?.height ?? window.innerHeight),
+    left: 0,
+    right: document.documentElement.clientWidth,
+  };
+  for (let a = el.parentElement; a; a = a.parentElement) {
+    const style = getComputedStyle(a);
+    if (style.overflowX === "visible" && style.overflowY === "visible") continue;
+    const r = a.getBoundingClientRect();
+    area.top = Math.max(area.top, r.top);
+    area.bottom = Math.min(area.bottom, r.bottom);
+    area.left = Math.max(area.left, r.left);
+    area.right = Math.min(area.right, r.right);
+  }
+  return area;
+}
+
+/** Opens upward when the picker fits there, else on whichever side has more room, and never
+ *  taller than that side (§5.8: on the centred empty layout the chip can sit mid-screen). */
+function placePopover(pop: HTMLElement, wrap: HTMLElement) {
+  const area = visibleArea(wrap);
+  const anchor = wrap.getBoundingClientRect();
+  const above = anchor.top - area.top - POPOVER_GAP - SCREEN_EDGE;
+  const below = area.bottom - anchor.bottom - POPOVER_GAP - SCREEN_EDGE;
+  pop.style.maxHeight = "";
+  const natural = pop.offsetHeight;
+  const up = natural <= above || above >= below;
+  pop.style.bottom = up ? "100%" : "auto";
+  pop.style.top = up ? "auto" : "100%";
+  pop.style.maxHeight = `${Math.max(0, up ? above : below)}px`;
+  const overflowRight = anchor.left + pop.offsetWidth - (area.right - SCREEN_EDGE);
+  pop.style.left = `${-Math.max(0, Math.min(overflowRight, anchor.left - area.left - SCREEN_EDGE))}px`;
 }
 
 interface Summary {
@@ -81,6 +122,7 @@ export function ScopeChip({
   const [openCount, setOpenCount] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
   const chipRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const refocusChip = useRef(false);
   const dialogId = useId();
   const summary = summarize(collections, value);
@@ -112,15 +154,28 @@ export function ScopeChip({
   }, [open, narrow]);
 
   const reading = readingCount > 0 ? `${readingCount} getting ready` : null;
-  const accessibleName = [
-    `Searching: ${summary.name}`,
-    summary.docs !== null && plural(summary.docs, "document"),
-    reading,
-  ]
-    .filter(Boolean)
-    .join(", ");
-
   const popoverOpen = open && !narrow;
+  const collectionCount = collections.length;
+
+  // Before paint, so the popover never flashes off-screen; before the picker's autofocus too.
+  useLayoutEffect(() => {
+    const pop = popoverRef.current;
+    const wrap = wrapRef.current;
+    if (!popoverOpen || !pop || !wrap) return;
+    const place = () => placePopover(pop, wrap);
+    const onScroll = (e: Event) => {
+      if (!(e.target instanceof Node && pop.contains(e.target))) place();
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("resize", place);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("resize", place);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [popoverOpen, collectionCount]);
 
   return (
     <div
@@ -131,6 +186,9 @@ export function ScopeChip({
           e.stopPropagation();
           close(true);
         }
+        // The picker sits inside the composer's <form>: without this, Enter on its search box or
+        // checkboxes is an implicit submit and sends the draft. Buttons keep their own Enter.
+        if (e.key === "Enter" && e.target instanceof HTMLInputElement) e.preventDefault();
       }}
     >
       <button
@@ -139,7 +197,6 @@ export function ScopeChip({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={popoverOpen ? dialogId : undefined}
-        aria-label={accessibleName}
         onClick={() => (open ? close(false) : show())}
         className={cx(
           "relative inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full border px-3",
@@ -152,11 +209,17 @@ export function ScopeChip({
             : "border-border-strong bg-panel text-text hover:bg-panel-2",
         )}
       >
-        <span className="min-w-0 truncate">Searching: {summary.name}</span>
+        <span className="min-w-0 truncate">
+          Searching: {summary.name}
+          <span className="sr-only">, </span>
+        </span>
         {summary.docs !== null && (
           <>
             <span aria-hidden="true">·</span>
-            <span className="shrink-0 tabular-nums">{summary.docs}</span>
+            <span className="shrink-0 tabular-nums">
+              {summary.docs}
+              <span className="sr-only"> {summary.docs === 1 ? "document" : "documents"}, </span>
+            </span>
           </>
         )}
         {reading && (
@@ -171,6 +234,7 @@ export function ScopeChip({
 
       {popoverOpen && (
         <div
+          ref={popoverRef}
           id={dialogId}
           role="dialog"
           aria-label={TITLE}
@@ -181,13 +245,14 @@ export function ScopeChip({
             if (next instanceof Node && !wrapRef.current?.contains(next)) setOpen(false);
           }}
           className={cx(
-            "absolute bottom-full left-0 z-30 mb-2 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col",
-            "overflow-hidden rounded-xl border border-border bg-panel text-text shadow-elev-3 outline-none",
+            // placePopover sets the side and the height limit; very short screens scroll the whole picker.
+            "absolute bottom-full left-0 z-30 my-2 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col",
+            "overflow-x-hidden overflow-y-auto rounded-xl border border-border bg-panel text-text shadow-elev-3 outline-none",
             "transition-[opacity,translate] duration-200 ease-[var(--ease-snappy)]",
             "starting:opacity-0 motion-safe:starting:translate-y-1",
           )}
         >
-          <div className="border-b border-border px-4 py-3">
+          <div className="shrink-0 border-b border-border px-4 py-3">
             <h2 className="text-base font-semibold">{TITLE}</h2>
           </div>
           <ScopePicker
@@ -291,7 +356,7 @@ function ScopePicker({
   return (
     <div className="flex min-h-0 flex-col">
       {showSearch && (
-        <div className="px-4 pt-3">
+        <div className="shrink-0 px-4 pt-3">
           <label htmlFor={`${baseId}-search`} className="sr-only">
             Find a collection
           </label>
@@ -313,13 +378,13 @@ function ScopePicker({
             }}
             className={cx(
               "h-9 w-full rounded-lg border border-border-strong bg-panel px-3 text-base text-text",
-              "placeholder:text-muted sm:text-sm pointer-coarse:h-11",
+              "placeholder:text-muted pointer-fine:sm:text-sm pointer-coarse:h-11",
             )}
           />
         </div>
       )}
 
-      <div className="border-b border-border px-2 py-1">
+      <div className="shrink-0 border-b border-border px-2 py-1">
         <label
           className={cx(
             "flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5",
@@ -344,7 +409,7 @@ function ScopePicker({
         </label>
       </div>
 
-      <div className="max-h-[min(50vh,22rem)] overflow-y-auto px-2 py-1">
+      <div className="max-h-[min(50vh,22rem)] min-h-22 overflow-y-auto px-2 py-1">
         {collections.length === 0 ? (
           <p className="px-2 py-3 text-sm text-muted">No collections to search yet.</p>
         ) : visible.length === 0 ? (
@@ -365,7 +430,7 @@ function ScopePicker({
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-4 py-3">
         <p className="min-w-0 text-xs text-muted tabular-nums">
           Searching {plural(chosenDocs, "document")} in {plural(ids.size, "collection")}
         </p>

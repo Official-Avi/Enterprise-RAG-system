@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { Icon } from "@/components/icons";
 import { cx } from "@/components/ui";
 import { ROLE_LABEL } from "@/lib/demo";
@@ -37,6 +37,16 @@ export function DropOverlay() {
     enabled: uploads.canUpload,
     onFiles: (files) => void uploads.add(files),
   });
+
+  // dropEffect "none" means no drop event, so the drag ending is the only signal an Operator gets.
+  // Without upload rights pickFiles() leaves the explanation in the composer, where "Switch to
+  // Engineer" can be a real control (nothing in this pointer-events-none overlay can be).
+  const { canUpload: mayUpload, pickFiles } = uploads;
+  const wasDragging = useRef(false);
+  useEffect(() => {
+    if (wasDragging.current && !dragging && !mayUpload) pickFiles();
+    wasDragging.current = dragging;
+  }, [dragging, mayUpload, pickFiles]);
 
   // Files still land on touch devices (e.g. iPad drag from Files); only the visual is skipped.
   if (coarse) return null;

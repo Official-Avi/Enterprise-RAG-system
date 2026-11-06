@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useId } from "react";
+import { openPersonaMenu } from "@/components/DemoStrip";
 import { Icon } from "@/components/icons";
 import { cx } from "@/components/ui";
 import type { ApiError } from "@/lib/api";
@@ -108,7 +109,14 @@ export function AuditorState({ isDemo }: { isDemo: boolean }) {
               Open Documents
             </Link>
             {isDemo && (
-              <Link href="/#demo" className={secondaryButtonClass}>
+              <Link
+                href="/#demo"
+                // In place when the strip is showing (§4.4); the link is the fallback when it isn't.
+                onClick={(e) => {
+                  if (openPersonaMenu()) e.preventDefault();
+                }}
+                className={secondaryButtonClass}
+              >
                 Switch persona
               </Link>
             )}
@@ -169,7 +177,7 @@ export function LoadError({ error, onRetry }: { error: ApiError | undefined; onR
 
 /** A later poll failed: the list stays, with a quiet line above it. */
 export function RefreshProblem({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
-  const retrying = error.status === 0 || error.status >= 500;
+  const retrying = error.status === 0 || error.status === 429 || error.status >= 500;
   return (
     <p className="mt-4 flex flex-wrap items-center gap-x-2 text-xs text-warn">
       <span>

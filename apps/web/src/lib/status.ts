@@ -44,10 +44,15 @@ const REASONS: Record<string, string> = {
   EMPTY_DOCUMENT: "This file is empty.",
   CORRUPT_FILE: "This file seems damaged. Try saving it again.",
   UNREADABLE_TEXT: "We couldn't find readable text, even with text recognition.",
+  // The code the ingestion pipeline raises when extraction and OCR find no text.
+  NO_EXTRACTABLE_TEXT: "We couldn't find readable text, even with text recognition.",
   ARCHIVE_BOMB: "This file is too complex to open safely.",
   ARCHIVE_TOO_COMPLEX: "This file is too complex to open safely.",
   QUOTA_EXCEEDED: "Your workspace is full. Remove a file to make room.",
   DEPENDENCY_UNAVAILABLE: "The server can't read files right now. An administrator needs to check it.",
+  STORAGE_UNAVAILABLE: "File storage was unavailable. Try again in a moment.",
+  DATABASE_UNAVAILABLE: "The database was unavailable while this job was running.",
+  DELETE_FAILED: "We couldn't delete this file. Try deleting it again.",
 };
 
 export function reasonCopy(code?: string | null): string {

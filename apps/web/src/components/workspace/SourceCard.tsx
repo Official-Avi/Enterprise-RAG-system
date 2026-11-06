@@ -1,19 +1,27 @@
 "use client";
 
-import { useContext, useEffect, useRef, useState, type MouseEvent } from "react";
+import { useContext, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { announce } from "@/lib/announce";
 import { MeContext } from "@/lib/hooks";
-import { middleTruncate } from "@/lib/status";
 import { Icon } from "@/components/icons";
 import { cx } from "@/components/ui";
+import {
+  chipTone,
+  citationName,
+  citationPlace,
+  isDocumentDeleted,
+  SOURCE_GONE,
+  useCitationActivations,
+  useCitationHover,
+} from "./CitationChip";
 import type { Citation } from "./types";
 import { WorkspaceContext } from "./WorkspaceContext";
 
-const SECTION_EXT = /\.(txt|md|markdown)$/i;
-
-function pageText(citation: Citation): string | null {
-  if (SECTION_EXT.test(citation.filename) || citation.page == null) return null;
-  return `Page ${citation.page}`;
+/** Splits a name so its end stays on screen: only the first part truncates, at any width. */
+function splitName(name: string): [string, string] {
+  const dot = name.lastIndexOf(".");
+  const cut = dot > 0 ? Math.max(0, dot - 4) : name.length;
+  return [name.slice(0, cut), name.slice(cut)];
 }
 
 // Works under either shell: the console provides MeContext, the workspace WorkspaceContext.
@@ -63,18 +71,27 @@ const actionClass = cx(
   "transition-colors hover:bg-panel-2 hover:text-text pointer-coarse:h-11",
 );
 
-/** One source card: chip, filename, page, highlighted quote, Best match, Copy quote, Download. */
+/** One source card: chip, filename, page, highlighted quote, Best match, Copy quote, Download.
+ *  A deleted document keeps its number and any quote we still have, but offers no download. */
 export function SourceCard({
   citation,
+  number,
   active,
   isBest,
   onSelect,
+  footer,
 }: {
   citation: Citation;
+  number: number;
   active: boolean;
   isBest: boolean;
   onSelect: () => void;
+  footer?: ReactNode;
 }) {
+  const deleted = isDocumentDeleted(citation);
+  const name = citationName(citation);
+  const quote: string = citation.quote || "";
+  const { hovered, hoverProps } = useCitationHover(citation);
   const canDownload = useCanReadContent();
   const cardRef = useRef<HTMLDivElement>(null);
   const quoteRef = useRef<HTMLParagraphElement>(null);
@@ -86,9 +103,13 @@ export function SourceCard({
   const [flash, setFlash] = useState(0);
   const [flashDone, setFlashDone] = useState(0);
   const [wasActive, setWasActive] = useState(false);
-  if (active !== wasActive) {
+  // A chip pressed again changes nothing else, but still runs the flash and centring (§5.7).
+  const activations = useCitationActivations(citation);
+  const [seenActivations, setSeenActivations] = useState(activations);
+  if (active !== wasActive || activations !== seenActivations) {
     setWasActive(active);
-    if (active) setFlash((n) => n + 1);
+    setSeenActivations(activations);
+    if ((active && !wasActive) || activations !== seenActivations) setFlash((n) => n + 1);
   }
 
   useEffect(() => {
@@ -113,7 +134,7 @@ export function SourceCard({
     const observer = new ResizeObserver(() => setOverflows(el.scrollHeight > el.clientHeight + 1));
     observer.observe(el);
     return () => observer.disconnect();
-  }, [expanded, citation.quote]);
+  }, [expanded, quote]);
 
   useEffect(() => {
     if (!copied) return;
@@ -122,7 +143,7 @@ export function SourceCard({
   }, [copied]);
 
   const onCopy = async () => {
-    if (await copyText(citation.quote)) {
+    if (await copyText(quote)) {
       setCopied(true);
       announce("Quote copied");
     } else {
@@ -136,17 +157,20 @@ export function SourceCard({
     if (!active) onSelect();
   };
 
-  const page = pageText(citation);
-  const shortName = middleTruncate(citation.filename, 40);
+  const place = citationPlace(citation);
+  const shownPlace = place === "section" ? "Section" : `Page ${citation.page}`;
+  const [nameStart, nameEnd] = splitName(name);
 
   return (
     <div
       ref={cardRef}
+      {...hoverProps}
       data-marker={citation.marker}
+      data-deleted={deleted ? "" : undefined}
       onClick={onCardClick}
       className={cx(
         "relative isolate rounded-xl border bg-panel p-3 transition-colors",
-        active ? "border-accent" : "border-border",
+        active ? "border-accent" : hovered ? "border-border-strong" : "border-border",
       )}
     >
       {flash > flashDone && (
@@ -160,66 +184,97 @@ export function SourceCard({
       <h3
         tabIndex={-1}
         data-card-heading
-        className="flex min-w-0 items-center gap-2 rounded-md text-[13px]/5 font-medium"
+        className="flex min-w-0 items-center gap-2 rounded-lg text-[13px]/5 font-medium"
       >
         <span
           aria-hidden="true"
           className={cx(
             "cite-chip inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full px-[5px]",
             "text-[11px]/[18px] font-semibold tabular-nums",
-            active ? "bg-cite-chip-active-bg text-cite-chip-active-fg" : "bg-cite-chip-bg text-cite-chip-fg",
+            chipTone(citation, active),
           )}
         >
-          {citation.marker}
+          {number}
         </span>
         <span className="sr-only">
-          {`Source ${citation.marker} · ${citation.filename}${page ? ` · ${page.toLowerCase()}` : ""}`}
+          {deleted
+            ? `Source ${number} · ${SOURCE_GONE}${name ? ` · ${name}` : ""}`
+            : `Source ${number} · ${name} · ${place}`}
         </span>
-        <span aria-hidden="true" title={citation.filename} className="min-w-0 truncate text-text">
-          {shortName}
-        </span>
-        <span aria-hidden="true" className="ml-auto shrink-0 font-normal text-muted">
-          {page ?? "Section"}
-        </span>
+        {deleted ? (
+          <span aria-hidden="true" className="min-w-0 text-muted">
+            {SOURCE_GONE}
+          </span>
+        ) : (
+          <>
+            <span aria-hidden="true" title={name} className="flex min-w-0 text-text">
+              <span className="min-w-0 overflow-hidden text-ellipsis whitespace-pre">{nameStart}</span>
+              <span className="shrink-0 whitespace-pre">{nameEnd}</span>
+            </span>
+            <span aria-hidden="true" className="ml-auto shrink-0 font-normal text-muted">
+              {shownPlace}
+            </span>
+          </>
+        )}
       </h3>
+      {deleted && name && (
+        <p title={name} className="mt-1 truncate text-[13px]/5 text-muted">
+          {name}
+        </p>
+      )}
 
-      <p
-        ref={quoteRef}
-        className={cx("mt-2 whitespace-pre-line text-sm/[22px] text-text", !expanded && "line-clamp-6")}
-      >
-        <span className="sr-only">Quoted passage: </span>
-        <mark
+      {quote && (
+        <p
+          ref={quoteRef}
           className={cx(
-            "box-decoration-clone rounded-[4px] px-0.5 text-text transition-colors",
-            active ? "bg-cite-hl-active" : "bg-cite-hl",
+            "mt-2 whitespace-pre-line text-sm/[22px]",
+            deleted ? "text-muted" : "text-text",
+            !expanded && "line-clamp-6",
           )}
         >
-          {citation.quote}
-        </mark>
-      </p>
+          <span className="sr-only">Quoted passage: </span>
+          {deleted ? (
+            quote
+          ) : (
+            <mark
+              className={cx(
+                "box-decoration-clone rounded-[4px] px-0.5 text-text transition-colors",
+                active || hovered ? "bg-cite-hl-active" : "bg-cite-hl",
+              )}
+            >
+              {quote}
+            </mark>
+          )}
+        </p>
+      )}
+      {!quote && deleted && (
+        <p className="mt-2 text-sm/[22px] text-muted">The document was removed, so this passage can&apos;t be shown.</p>
+      )}
       {(overflows || expanded) && (
         <button
           type="button"
           aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
-          className="mt-1 rounded-md text-[13px] font-medium text-accent hover:underline pointer-coarse:min-h-11"
+          className="mt-1 inline-flex min-h-6 items-center rounded-lg text-[13px] font-medium text-accent hover:underline pointer-coarse:min-h-11"
         >
           {expanded ? "Show less" : "Show more"}
         </button>
       )}
 
-      <div className="mt-2 flex flex-wrap items-center gap-1">
-        {isBest && (
-          <span className="mr-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent">
+      <div className="mt-2 flex flex-wrap items-center gap-1 empty:hidden">
+        {isBest && !deleted && (
+          <span className="badge mr-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent">
             <Icon name="check" width={12} height={12} />
             Best match
           </span>
         )}
-        <button type="button" onClick={() => void onCopy()} className={actionClass}>
-          <Icon name={copied ? "check" : "quote"} />
-          {copied ? "Copied" : "Copy quote"}
-        </button>
-        {canDownload && (
+        {quote && (
+          <button type="button" onClick={() => void onCopy()} className={actionClass}>
+            <Icon name={copied ? "check" : "quote"} />
+            {copied ? "Copied" : "Copy quote"}
+          </button>
+        )}
+        {canDownload && !deleted && citation.document_id && (
           <a
             href={`/api/v1/documents/${encodeURIComponent(citation.document_id)}/download`}
             download
@@ -230,6 +285,7 @@ export function SourceCard({
           </a>
         )}
       </div>
+      {footer}
     </div>
   );
 }

@@ -5,7 +5,15 @@ import { announce } from "@/lib/announce";
 import { middleTruncate } from "@/lib/status";
 import { Icon } from "../icons";
 import { cx } from "../ui";
-import { CitationChip } from "./CitationChip";
+import {
+  citationName,
+  citationPlace,
+  CitationChip,
+  isDocumentDeleted,
+  SOURCE_GONE,
+  sourceNumbers,
+  useCitationHover,
+} from "./CitationChip";
 import type { AnswerMode, AnswerView, Citation, ModelRef } from "./types";
 
 const MARKER_RE = /\[(\d{1,3})\]/g;
@@ -13,7 +21,7 @@ const UNMATCHED_RE = /[ \t]*\[(\d{1,3})\]/g;
 
 const bodyText = "text-[16px] leading-[26px] text-text";
 const smallButton =
-  "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-muted " +
+  "inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] font-medium text-muted " +
   "transition-colors duration-150 hover:bg-panel-2 hover:text-text pointer-coarse:h-11";
 
 /** Keyboard activation of a <button> fires a click with detail 0. */
@@ -26,11 +34,14 @@ function stripUnmatched(text: string, byMarker: Map<number, Citation>): string {
 
 interface QuoteGroup {
   citation: Citation | null;
+  /** The sentence's [n] has no citation any more: its source was removed from this answer. */
+  lost: boolean;
   sentences: string[];
 }
 
 /** Extractive answers read "sentence [1] sentence [1] sentence [2]": each sentence belongs to the
- *  marker that follows it. Groups keep the order in which their source first appears. */
+ *  marker that follows it. Groups keep the order in which their source first appears. A marker with
+ *  no citation still ends its sentence, so that text never joins the next source's quote. */
 function groupQuotes(text: string, byMarker: Map<number, Citation>): QuoteGroup[] {
   const groups = new Map<number, QuoteGroup>();
   const order: QuoteGroup[] = [];
@@ -39,21 +50,21 @@ function groupQuotes(text: string, byMarker: Map<number, Citation>): QuoteGroup[
   for (const m of text.matchAll(MARKER_RE)) {
     pending += text.slice(last, m.index);
     last = m.index + m[0].length;
-    const citation = byMarker.get(Number(m[1]));
-    if (!citation) continue; // unmatched: drop the marker, its text joins the next source
+    const marker = Number(m[1]);
+    const citation = byMarker.get(marker) ?? null;
     const sentence = pending.trim();
     pending = "";
     if (!sentence) continue;
-    let group = groups.get(citation.marker);
+    let group = groups.get(marker);
     if (!group) {
-      group = { citation, sentences: [] };
-      groups.set(citation.marker, group);
+      group = { citation, lost: !citation, sentences: [] };
+      groups.set(marker, group);
       order.push(group);
     }
     group.sentences.push(sentence);
   }
   const tail = (pending + text.slice(last)).trim();
-  if (tail) order.push({ citation: null, sentences: [tail] });
+  if (tail) order.push({ citation: null, lost: false, sentences: [tail] });
   return order;
 }
 
@@ -72,8 +83,9 @@ function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-function sourceLine(c: Citation): string {
-  return `[${c.marker}] ${c.filename}${c.page !== null ? `, p. ${c.page}` : ""}`;
+function sourceLine(c: Citation, number: number): string {
+  if (isDocumentDeleted(c)) return `[${number}] ${SOURCE_GONE}`;
+  return `[${number}] ${citationName(c)}${citationPlace(c) === "section" ? "" : `, p. ${c.page}`}`;
 }
 
 async function writeClipboard(text: string): Promise<void> {
@@ -117,54 +129,100 @@ function CopyIcon() {
   );
 }
 
+function QuoteText({ tinted, muted, children }: { tinted?: boolean; muted?: boolean; children: ReactNode }) {
+  return (
+    <blockquote
+      className={cx(
+        bodyText,
+        "whitespace-pre-line wrap-anywhere rounded-r-lg border-l-[3px] px-4 py-3",
+        "transition-colors duration-150",
+        muted ? "border-border-strong" : "border-accent",
+        tinted && "bg-cite-hl",
+      )}
+    >
+      {children}
+    </blockquote>
+  );
+}
+
+/** A quote and the link to its source, which cross-highlights with the source card. */
+function CitedQuote({
+  citation,
+  number,
+  sentences,
+  active,
+  onCite,
+}: {
+  citation: Citation;
+  number: number;
+  sentences: string[];
+  active: boolean;
+  onCite: (citation: Citation, viaKeyboard: boolean) => void;
+}) {
+  const { hovered, hoverProps } = useCitationHover(citation);
+  const deleted = isDocumentDeleted(citation);
+  const name = citationName(citation);
+  return (
+    <figure>
+      <QuoteText tinted={active || hovered} muted={deleted}>
+        {sentences.join(" ")}
+      </QuoteText>
+      <figcaption className="mt-1 pl-4">
+        <button
+          type="button"
+          {...hoverProps}
+          aria-current={active ? "true" : undefined}
+          title={deleted ? SOURCE_GONE : name}
+          onClick={(e) => onCite(citation, viaKeyboard(e))}
+          className={cx(
+            "inline-flex min-h-6 items-center rounded-lg text-left text-[13px] leading-5 underline-offset-2",
+            "hover:underline pointer-coarse:min-h-11",
+            deleted ? "text-muted" : "text-accent",
+            (active || hovered) && "underline",
+            active && "font-semibold",
+          )}
+        >
+          <span className="sr-only">{`Source ${number}: `}</span>
+          <span>
+            {name && middleTruncate(name, 48)}
+            {deleted ? `${name ? " · " : ""}${SOURCE_GONE}` : ` · ${citationPlace(citation)}`}
+          </span>
+        </button>
+      </figcaption>
+    </figure>
+  );
+}
+
 function QuoteBlocks({
   groups,
+  numbers,
   activeMarker,
   onCite,
 }: {
   groups: QuoteGroup[];
+  numbers: Map<number, number>;
   activeMarker: number | null;
   onCite: (citation: Citation, viaKeyboard: boolean) => void;
 }) {
   return (
     <div className="flex flex-col gap-4">
-      {groups.map((g, i) => {
-        const c = g.citation;
-        const active = c !== null && c.marker === activeMarker;
-        return (
-          <figure key={c ? `m${c.marker}` : `t${i}`}>
-            <blockquote
-              className={cx(
-                bodyText,
-                "whitespace-pre-line wrap-anywhere rounded-r-md border-l-[3px] border-accent px-4 py-3",
-                "transition-colors duration-150",
-                active && "bg-cite-hl",
-              )}
-            >
-              {g.sentences.join(" ")}
-            </blockquote>
-            {c && (
-              <figcaption className="mt-1 pl-4">
-                <button
-                  type="button"
-                  aria-current={active ? "true" : undefined}
-                  title={c.filename}
-                  onClick={(e) => onCite(c, viaKeyboard(e))}
-                  className={cx(
-                    "rounded text-left text-[13px] leading-5 text-accent underline-offset-2 hover:underline",
-                    "pointer-coarse:min-h-11",
-                    active && "font-semibold underline",
-                  )}
-                >
-                  <span className="sr-only">{`Source ${c.marker}: `}</span>
-                  {middleTruncate(c.filename, 48)}
-                  {c.page !== null && ` · page ${c.page}`}
-                </button>
-              </figcaption>
-            )}
+      {groups.map((g, i) =>
+        g.citation ? (
+          <CitedQuote
+            key={`m${g.citation.marker}`}
+            citation={g.citation}
+            number={numbers.get(g.citation.marker) ?? g.citation.marker}
+            sentences={g.sentences}
+            active={g.citation.marker === activeMarker}
+            onCite={onCite}
+          />
+        ) : (
+          <figure key={`t${i}`}>
+            <QuoteText muted={g.lost}>{g.sentences.join(" ")}</QuoteText>
+            {g.lost && <figcaption className="mt-1 pl-4 text-[13px] leading-5 text-muted">{SOURCE_GONE}</figcaption>}
           </figure>
-        );
-      })}
+        ),
+      )}
     </div>
   );
 }
@@ -172,11 +230,13 @@ function QuoteBlocks({
 function TextWithChips({
   text,
   byMarker,
+  numbers,
   activeMarker,
   onCite,
 }: {
   text: string;
   byMarker: Map<number, Citation>;
+  numbers: Map<number, number>;
   activeMarker: number | null;
   onCite: (citation: Citation, viaKeyboard: boolean) => void;
 }) {
@@ -187,7 +247,13 @@ function TextWithChips({
     if (!citation) continue;
     if (m.index > last) parts.push(text.slice(last, m.index));
     parts.push(
-      <CitationChip key={`c${m.index}`} citation={citation} active={citation.marker === activeMarker} onActivate={onCite} />,
+      <CitationChip
+        key={`c${m.index}`}
+        citation={citation}
+        number={numbers.get(citation.marker) ?? citation.marker}
+        active={citation.marker === activeMarker}
+        onActivate={onCite}
+      />,
     );
     last = m.index + m[0].length;
   }
@@ -196,12 +262,11 @@ function TextWithChips({
 }
 
 /** One answer (§5.6): provenance badges, quote blocks (extractive) or text with chips, sources
- *  row, action row, meta line. */
+ *  row, action row. Thread renders the meta line, so not-found and error turns get it too. */
 export function AnswerBlock({
   answer,
   activeMarker,
   isLatest,
-  scopeLabel,
   onCite,
   onOpenSources,
   mode,
@@ -209,7 +274,6 @@ export function AnswerBlock({
   answer: AnswerView;
   activeMarker: number | null;
   isLatest: boolean;
-  scopeLabel?: string;
   onCite: (citation: Citation, viaKeyboard: boolean) => void;
   onOpenSources: () => void;
   /** Fallback for answers whose model is unknown (older history rows). */
@@ -221,12 +285,17 @@ export function AnswerBlock({
 
   const citations = answer.citations;
   const byMarker = new Map(citations.map((c) => [c.marker, c]));
+  const numbers = sourceNumbers(citations);
   const text = stripUnmatched(answer.text, byMarker);
   const badge = modeBadge(answer.model, mode);
   const extractive = badge?.extractive ?? false;
-  const fresh = answer.retrieved_count !== null;
+  const fresh = !answer.fromHistory;
 
-  const docs = [...new Map(citations.map((c) => [c.document_id, c])).values()];
+  // A deleted document may have lost its id, so it counts as its own document.
+  const docs = [...new Map(citations.map((c) => [c.document_id ?? `m${c.marker}`, c])).values()];
+  const goneCount = citations.filter(isDocumentDeleted).length;
+  // Every source is gone (or was dropped from the saved answer): nothing backs "Found" any more.
+  const sourcesGone = goneCount === citations.length && (goneCount > 0 || text !== answer.text);
   const meta = answer.model
     ? [answer.model.provider, answer.model.name, answer.latency_ms !== null ? `${answer.latency_ms} ms` : null]
         .filter(Boolean)
@@ -234,7 +303,13 @@ export function AnswerBlock({
     : undefined;
 
   async function copy() {
-    const payload = citations.length ? `${text}\n\nSources: ${citations.map(sourceLine).join("; ")}` : text;
+    const ordered = [...citations].sort((a, b) => a.marker - b.marker);
+    const body = text.replace(MARKER_RE, (m, n: string) => {
+      const number = numbers.get(Number(n));
+      return number ? `[${number}]` : m;
+    });
+    const lines = ordered.map((c, i) => sourceLine(c, i + 1));
+    const payload = lines.length ? `${body}\n\nSources: ${lines.join("; ")}` : body;
     let next: "copied" | "failed" = "copied";
     try {
       await writeClipboard(payload);
@@ -256,11 +331,16 @@ export function AnswerBlock({
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
-        {answer.evidence_status === "supported" && (
-          <Badge tone="ok" icon={<Icon name="check" width={14} height={14} />}>
-            Found in your documents
-          </Badge>
-        )}
+        {answer.evidence_status === "supported" &&
+          (sourcesGone ? (
+            <Badge tone="neutral" icon={<Icon name="file" width={14} height={14} />}>
+              {SOURCE_GONE}
+            </Badge>
+          ) : (
+            <Badge tone="ok" icon={<Icon name="check" width={14} height={14} />}>
+              Found in your documents
+            </Badge>
+          ))}
         {badge && (
           <Badge
             tone="neutral"
@@ -273,9 +353,14 @@ export function AnswerBlock({
       </div>
 
       {extractive ? (
-        <QuoteBlocks groups={groupQuotes(text, byMarker)} activeMarker={activeMarker} onCite={onCite} />
+        <QuoteBlocks
+          groups={groupQuotes(answer.text, byMarker)}
+          numbers={numbers}
+          activeMarker={activeMarker}
+          onCite={onCite}
+        />
       ) : (
-        <TextWithChips text={text} byMarker={byMarker} activeMarker={activeMarker} onCite={onCite} />
+        <TextWithChips text={text} byMarker={byMarker} numbers={numbers} activeMarker={activeMarker} onCite={onCite} />
       )}
 
       {citations.length > 0 && (
@@ -283,16 +368,16 @@ export function AnswerBlock({
           type="button"
           onClick={onOpenSources}
           className={cx(
-            "inline-flex min-h-8 items-center gap-2 self-start rounded-md text-[13px] text-muted",
+            "inline-flex min-h-8 items-center gap-2 self-start rounded-lg text-[13px] text-muted",
             "transition-colors duration-150 hover:text-text pointer-coarse:min-h-11",
           )}
         >
           <span aria-hidden="true" className="flex items-center">
             {docs.slice(0, 3).map((d, i) => (
               <span
-                key={d.document_id}
+                key={d.document_id ?? `m${d.marker}`}
                 className={cx(
-                  "grid size-5 place-items-center rounded-md border border-border bg-panel text-muted",
+                  "grid size-5 place-items-center rounded-lg border border-border bg-panel text-muted",
                   i > 0 && "-ml-1.5",
                 )}
               >
@@ -302,6 +387,7 @@ export function AnswerBlock({
           </span>
           <span>
             {plural(citations.length, "passage", "passages")} from {plural(docs.length, "document", "documents")}
+            {goneCount > 0 && ` · ${goneCount} no longer available`}
             <span aria-hidden="true"> ›</span>
           </span>
         </button>
@@ -325,8 +411,6 @@ export function AnswerBlock({
           </button>
         )}
       </div>
-
-      {scopeLabel && <p className="text-xs text-muted">{scopeLabel}</p>}
     </div>
   );
 }

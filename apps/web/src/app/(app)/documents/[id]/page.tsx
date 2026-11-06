@@ -2,10 +2,13 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Badge, Card, Empty, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
+import { useEffect, useState } from "react";
+import { Badge, Button, Card, Empty, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
+import { announce } from "@/lib/announce";
+import { api, ApiError, errorText } from "@/lib/api";
 import { formatBytes, formatMs, formatTime, shortId } from "@/lib/format";
 import { useApi, useCan } from "@/lib/hooks";
-import type { ChunkItem, DocumentItem, Page, Pipeline } from "@/lib/types";
+import type { ChunkItem, Collection, DocumentItem, Page, Pipeline } from "@/lib/types";
 
 const ACTIVE = new Set(["queued", "processing", "deleting"]);
 
@@ -24,16 +27,99 @@ export default function DocumentDetailPage() {
   const pipeline = useApi<Pipeline>(`/documents/${id}/pipeline`, (p) => (ACTIVE.has(p.status) ? 2000 : null));
   const canReadContent = useCan("document:read_content");
   const chunks = useApi<Page<ChunkItem>>(canReadContent && doc.data?.status === "indexed" ? `/documents/${id}/chunks?limit=50` : null);
+  const collection = useApi<Collection>(doc.data ? `/collections/${doc.data.collection_id}` : null);
+  const canRetry = useCan("document:retry");
+  const canManageJobs = useCan("job:manage");
+  const [retrying, setRetrying] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const filename = doc.data?.filename;
+
+  useEffect(() => {
+    document.title = `${filename ?? "Document"} · RackFlow AI`;
+  }, [filename]);
 
   if (doc.loading) return <Loading />;
-  if (doc.error || !doc.data) return <ErrorState error={doc.error} onRetry={doc.reload} />;
+  // 422: the id in the URL isn't even a valid id. Either way there is nothing here to retry.
+  if (doc.error instanceof ApiError && (doc.error.status === 404 || doc.error.status === 422)) {
+    return (
+      <>
+        <nav aria-label="Breadcrumb" className="mb-2 text-xs text-muted">
+          <Link href="/documents" className="hover:underline">Documents</Link> / Not found
+        </nav>
+        <h1 className="sr-only">Document not found</h1>
+        <Empty
+          title="Document not found"
+          description="It may have been deleted, or you may not have access to it."
+          primary={<Link href="/documents" className="underline">Back to Documents</Link>}
+        />
+      </>
+    );
+  }
+  if (!doc.data) return <ErrorState error={doc.error} onRetry={doc.reload} />;
   const d = doc.data;
+  const level = collection.data?.access_level;
+  const hasWriteAccess = level === "write" || level === "manage";
+  // Document retry needs write access to the collection. Operators (job:manage) have read access,
+  // so they re-queue the failed read job instead, which also puts the document back in line.
+  const job = d.latest_job;
+  const retryableJob =
+    canManageJobs && job?.job_type === "ingest_document" && (job.status === "failed" || job.status === "cancelled") ? job : null;
+  // Unknown levels (still loading, or the lookup failed) are left to the API to decide.
+  const mayRetry = canRetry && d.status === "failed" && (level === undefined || hasWriteAccess || retryableJob !== null);
+  const mayDownload = canReadContent && !["deleting", "deleted"].includes(d.status) && level !== null;
+
+  const retry = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    setNotice(null);
+    try {
+      const viaJob = hasWriteAccess ? null : retryableJob;
+      await api(viaJob ? `/jobs/${viaJob.id}/retry` : `/documents/${d.id}/retry`, { method: "POST" });
+      announce(`Retrying ${d.filename}.`);
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 403 || e.status === 404)) {
+        setNotice(`Your role can't retry ${d.filename}. An Engineer or Admin can.`);
+      } else if (!(e instanceof ApiError && e.status === 409)) {
+        // 409: someone else already re-queued it, and the reload below shows that.
+        setNotice(`Couldn't retry ${d.filename}. ${errorText(e)}`);
+      }
+    } finally {
+      setRetrying(false);
+      doc.reload();
+      pipeline.reload();
+    }
+  };
+
   return (
     <>
       <nav aria-label="Breadcrumb" className="mb-2 text-xs text-muted">
         <Link href="/documents" className="hover:underline">Documents</Link> / {d.filename}
       </nav>
-      <PageHeader title={d.filename} description={`${d.collection_name} · ${d.file_type.toUpperCase()} · ${formatBytes(d.size_bytes)}`} actions={<StatusBadge status={d.status} />} />
+      <PageHeader
+        title={d.filename}
+        description={`${d.collection_name} · ${d.file_type.toUpperCase()} · ${formatBytes(d.size_bytes)}`}
+        actions={
+          <>
+            <StatusBadge status={d.status} />
+            {mayRetry && (
+              <Button aria-disabled={retrying || undefined} onClick={() => void retry()}>
+                {retrying ? "Retrying…" : "Retry"}
+              </Button>
+            )}
+            {mayDownload && (
+              <a
+                href={`/api/v1/documents/${d.id}/download`}
+                download
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-3 py-1.5 text-sm font-medium text-text transition-colors hover:bg-panel-2"
+              >
+                Download
+              </a>
+            )}
+          </>
+        }
+      />
+      {notice && <p role="alert" className="mb-3 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">{notice}</p>}
+      {doc.error && <div className="mb-3"><ErrorState error={doc.error} onRetry={doc.reload} /></div>}
       <div className="grid gap-4 lg:grid-cols-3">
         <Card title="Details">
           <dl>
@@ -55,7 +141,8 @@ export default function DocumentDetailPage() {
           )}
         </Card>
         <Card title="Processing pipeline" className="lg:col-span-2">
-          {pipeline.error && <ErrorState error={pipeline.error} />}
+          {pipeline.loading && <Loading />}
+          {pipeline.error && <ErrorState error={pipeline.error} onRetry={pipeline.reload} />}
           {pipeline.data?.jobs.length === 0 && <p className="text-sm text-muted">No processing jobs.</p>}
           <div className="space-y-5">
             {pipeline.data?.jobs.map((job) => (
@@ -111,7 +198,7 @@ export default function DocumentDetailPage() {
         <Card title="Indexed chunks" className="lg:col-span-3">
           {!canReadContent && <p className="text-sm text-muted">Your role can view metadata only, not document content.</p>}
           {canReadContent && d.status !== "indexed" && <p className="text-sm text-muted">Chunks appear once indexing completes.</p>}
-          {chunks.error && <ErrorState error={chunks.error} />}
+          {chunks.error && <ErrorState error={chunks.error} onRetry={chunks.reload} />}
           {chunks.data && chunks.data.items.length === 0 && <Empty title="No chunks" />}
           <ol className="space-y-2">
             {chunks.data?.items.map((c) => (

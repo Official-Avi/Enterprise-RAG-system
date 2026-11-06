@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { api, type ApiError } from "@/lib/api";
 import { phaseFromDocument, TERMINAL_PHASES } from "@/lib/status";
 import type { DocumentItem, Page } from "@/lib/types";
@@ -20,6 +20,8 @@ interface State {
   truncated: boolean;
   error?: ApiError;
   updatedAt?: number;
+  /** Any request has succeeded since the page opened, for any filter. */
+  everLoaded: boolean;
 }
 
 /** GET /documents with §5.5 polling: back off while any row isn't terminal, stop when all are,
@@ -29,12 +31,21 @@ export function useLibraryDocs(
   kick: string,
   onBecameReady: (docs: DocumentItem[]) => void,
 ) {
-  const [state, setState] = useState<State>({ path: null, items: [], truncated: false });
+  const [state, setState] = useState<State>({ path: null, items: [], truncated: false, everLoaded: false });
   const [flashing, setFlashing] = useState<ReadonlySet<string>>(() => new Set());
   const [tick, setTick] = useState(0);
   // Last status seen per id, across filter changes, so only real transitions flash.
   const seen = useRef(new Map<string, string>());
   const becameReady = useEffectEvent((docs: DocumentItem[]) => onBecameReady(docs));
+
+  /** Flash rows once (§6). Stable, so it can be called from effects. */
+  const flash = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    setFlashing((prev) => new Set([...prev, ...ids]));
+    window.setTimeout(() => {
+      setFlashing((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
+    }, FLASH_MS);
+  }, []);
 
   useEffect(() => {
     if (path === null) return;
@@ -65,13 +76,9 @@ export function useLibraryDocs(
           if (before !== undefined && before !== "indexed" && d.status === "indexed") ready.push(d);
           seen.current.set(d.id, d.status);
         }
-        setState({ path, items: page.items, truncated: page.next_cursor !== null, updatedAt: Date.now() });
+        setState({ path, items: page.items, truncated: page.next_cursor !== null, updatedAt: Date.now(), everLoaded: true });
         if (ready.length) {
-          const ids = ready.map((d) => d.id);
-          setFlashing((prev) => new Set([...prev, ...ids]));
-          window.setTimeout(() => {
-            setFlashing((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
-          }, FLASH_MS);
+          flash(ready.map((d) => d.id));
           becameReady(ready);
         }
         if (page.items.every(settled)) step = 0;
@@ -80,9 +87,15 @@ export function useLibraryDocs(
         if (cancelled) return;
         const err = e as ApiError;
         // Never show another filter's rows as if they answered this one.
-        setState((s) => (s.path === path ? { ...s, error: err } : { path, items: [], truncated: false, error: err }));
-        // Keep trying through network blips and server errors; 4xx won't fix itself.
-        if (err.status === 0 || err.status >= 500) later(MAX_BACKOFF_MS);
+        setState((s) =>
+          s.path === path
+            ? { ...s, error: err }
+            : { path, items: [], truncated: false, error: err, everLoaded: s.everLoaded },
+        );
+        // Keep trying through network blips, server errors and rate limits; other 4xx won't fix
+        // themselves.
+        if (err.status === 429) later(Math.max(MAX_BACKOFF_MS, (err.retryAfter ?? 0) * 1000));
+        else if (err.status === 0 || err.status >= 500) later(MAX_BACKOFF_MS);
       } finally {
         inFlight = false;
       }
@@ -103,13 +116,15 @@ export function useLibraryDocs(
       document.removeEventListener("visibilitychange", wake);
       window.removeEventListener("focus", wake);
     };
-  }, [path, kick, tick]);
+  }, [path, kick, tick, flash]);
 
   return {
     items: state.items,
     truncated: state.truncated,
     error: state.error,
     updatedAt: state.updatedAt,
+    everLoaded: state.everLoaded,
+    flash,
     /** The path the shown items belong to (null until the first response). */
     shownPath: state.path,
     /** True once any response (or error) has arrived. */

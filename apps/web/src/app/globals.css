@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+/* `dark:` follows the same two selectors as the dark tokens below. */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+}
+
 /* Design tokens: restrained neutral foundation, one accent, explicit status colours.
    Status is never conveyed by colour alone (badges always carry text + glyph). */
 :root {
@@ -206,7 +218,8 @@ body {
   font-feature-settings: "cv05", "cv08";
   font-family: var(--font-sans);
   font-size: 14px;
-  line-height: 1.5;
+  /* §8.2 base 14/22. Unitless, so larger text doesn't inherit a fixed 22px. */
+  line-height: calc(22 / 14);
 }
 
 @media (prefers-reduced-motion: no-preference) {

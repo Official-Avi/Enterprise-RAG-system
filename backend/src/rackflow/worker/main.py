@@ -1,6 +1,10 @@
 """Background worker process:  rackflow-worker  (or  python -m rackflow.worker.main).
 
 Scale horizontally by starting more processes; the SKIP LOCKED queue distributes jobs safely.
+
+A long-running worker survives a database outage: it waits with backoff and carries on when the
+database returns. One-shot runs (--once, --exit-when-idle) still fail at once, so a script or CI
+step is told about the outage instead of hanging on it.
 """
 
 from __future__ import annotations
@@ -25,10 +29,13 @@ from rackflow.core.logging import configure_logging
 from rackflow.db.models import JobType, WorkerHeartbeat
 from rackflow.db.session import get_sessionmaker
 from rackflow.jobs import queue
+from rackflow.jobs.errors import is_database_outage
 from rackflow.jobs.runner import run_claimed_job
 
 log = logging.getLogger("rackflow.worker")
 HEARTBEAT_SECONDS = 5.0
+OUTAGE_RETRY_BASE_SECONDS = 1.0
+OUTAGE_RETRY_MAX_SECONDS = 30.0
 
 
 class WorkerState:
@@ -68,12 +75,22 @@ def write_heartbeat(state: WorkerState) -> None:
         db.commit()
 
 
+def _try_heartbeat(state: WorkerState) -> None:
+    try:
+        write_heartbeat(state)
+    except Exception as exc:  # noqa: BLE001 — never kill the worker over a heartbeat
+        log.warning("heartbeat_failed", extra={"exc_type": type(exc).__name__})
+
+
 def _heartbeat_loop(state: WorkerState, stop: threading.Event) -> None:
     while not stop.wait(HEARTBEAT_SECONDS):
-        try:
-            write_heartbeat(state)
-        except Exception:  # noqa: BLE001 — never kill the worker over a heartbeat
-            log.warning("heartbeat_failed")
+        _try_heartbeat(state)
+
+
+def outage_delay(consecutive_failures: int) -> float:
+    """Seconds to wait after this many failed database attempts in a row."""
+    exponent = min(10, max(0, consecutive_failures - 1))
+    return min(OUTAGE_RETRY_MAX_SECONDS, OUTAGE_RETRY_BASE_SECONDS * 2 ** exponent)
 
 
 def _load_plugins() -> None:
@@ -108,16 +125,36 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), _stop)
 
-    write_heartbeat(state)
+    one_shot = args.once or args.exit_when_idle
+    if one_shot:
+        write_heartbeat(state)
+    else:
+        _try_heartbeat(state)
     hb_stop = threading.Event()
     threading.Thread(target=_heartbeat_loop, args=(state, hb_stop), daemon=True).start()
     log.info("worker_started", extra={"worker_id": worker_id})
     processed = 0
+    outages = 0
     try:
         while not stop.is_set():
-            with get_sessionmaker()() as db:
-                claim = queue.claim_next(db, worker_id, lease_seconds=settings.job_lease_seconds,
-                                         job_types=job_types)
+            try:
+                with get_sessionmaker()() as db:
+                    claim = queue.claim_next(db, worker_id,
+                                             lease_seconds=settings.job_lease_seconds,
+                                             job_types=job_types)
+            except Exception as exc:
+                if one_shot or not is_database_outage(exc):
+                    raise
+                outages += 1
+                delay = outage_delay(outages)
+                log.warning("worker_database_unavailable", extra={
+                    "exc_type": type(exc).__name__, "retry_in_seconds": delay,
+                    "failed_attempts": outages})
+                stop.wait(delay)
+                continue
+            if outages:
+                log.info("worker_database_recovered", extra={"failed_attempts": outages})
+                outages = 0
             if claim is None:
                 if args.once or args.exit_when_idle:
                     break
@@ -125,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             with state.lock:
                 state.status, state.current_job_id = "busy", claim.job_id
-            write_heartbeat(state)
+            _try_heartbeat(state)
             outcome = run_claimed_job(claim, worker_id, lease_seconds=settings.job_lease_seconds)
             with state.lock:
                 state.status, state.current_job_id = "idle", None

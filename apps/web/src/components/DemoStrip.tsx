@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { announce } from "@/lib/announce";
 import { api, ApiError, errorText } from "@/lib/api";
 import { personaFor } from "@/lib/demo";
+import { pendingStore } from "@/lib/pendingStore";
 import type { DemoInfo, DemoPersona, Me } from "@/lib/types";
-import { demoLogin } from "@/lib/workspace";
+import { demoLogin, fetchDemoInfo } from "@/lib/workspace";
 import { Icon } from "./icons";
 import { cx } from "./ui";
 
@@ -18,6 +20,38 @@ const SWITCH_COPY: Record<DemoPersona["key"], string> = {
 };
 
 const RATE_LIMIT_MS = 60_000;
+const TOAST_MS = 6_000;
+const TOAST_GAP_PX = 16;
+const DEMO_RETRY_MS = 3_000;
+const DEMO_RETRY_MAX_MS = 60_000;
+
+// Module state: a switch can change shell (/ask to /overview), which remounts the strip.
+let toast: string | null = null;
+let toastTimer: number | undefined;
+const toastListeners = new Set<() => void>();
+
+function setToast(text: string | null) {
+  toast = text;
+  window.clearTimeout(toastTimer);
+  if (text) toastTimer = window.setTimeout(() => setToast(null), TOAST_MS);
+  toastListeners.forEach((l) => l());
+}
+
+function subscribeToast(listener: () => void) {
+  toastListeners.add(listener);
+  return () => {
+    toastListeners.delete(listener);
+  };
+}
+
+const menuOpeners = new Set<() => void>();
+
+/** Opens the §4.4 persona menu in place, for "Switch persona" entries outside the strip.
+ *  Returns false when no strip is showing (not a demo session, or the demo list hasn't loaded). */
+export function openPersonaMenu(): boolean {
+  menuOpeners.forEach((open) => open());
+  return menuOpeners.size > 0;
+}
 
 interface StripError {
   text: string;
@@ -32,8 +66,20 @@ const stripButton = cx(
 
 /** 32px demo indicator on every signed-in page (§4.3) with Switch persona menu and Exit (§4.4).
  *  Renders nothing unless `me` is a demo persona. Calls onSwitched(newMe) after a switch. */
-export function DemoStrip({ me, demo, onSwitched }: { me: Me; demo: DemoInfo | null; onSwitched: (me: Me) => void }) {
+export function DemoStrip({
+  me,
+  demo: shellDemo,
+  onSwitched,
+}: {
+  me: Me;
+  demo: DemoInfo | null;
+  onSwitched: (me: Me) => void;
+}) {
+  const router = useRouter();
+  const [retriedDemo, setRetriedDemo] = useState<DemoInfo | null>(null);
+  const demo = shellDemo ?? retriedDemo;
   const persona = personaFor(me, demo);
+  const isDemo = persona !== null;
   const [open, setOpen] = useState(false);
   const [busyKey, setBusyKey] = useState<DemoPersona["key"] | null>(null);
   const [exiting, setExiting] = useState(false);
@@ -67,6 +113,42 @@ export function DemoStrip({ me, demo, onSwitched }: { me: Me; demo: DemoInfo | n
   }, [open]);
 
   useEffect(() => () => window.clearTimeout(rateTimer.current), []);
+
+  // The shells fetch the demo list once. §4.3: the strip can't go missing because that one call failed.
+  useEffect(() => {
+    if (demo) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const attempt = (delay: number) => {
+      timer = window.setTimeout(() => {
+        fetchDemoInfo().then(
+          (info) => {
+            if (!cancelled) setRetriedDemo(info);
+          },
+          () => {
+            if (!cancelled) attempt(Math.min(delay * 2, DEMO_RETRY_MAX_MS));
+          },
+        );
+      }, delay);
+    };
+    attempt(DEMO_RETRY_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [demo]);
+
+  useEffect(() => {
+    if (!isDemo) return;
+    const open = () => {
+      focusOnOpen.current = "first";
+      setOpen(true);
+    };
+    menuOpeners.add(open);
+    return () => {
+      menuOpeners.delete(open);
+    };
+  }, [isDemo]);
 
   if (!persona || !demo) return null;
 
@@ -121,7 +203,10 @@ export function DemoStrip({ me, demo, onSwitched }: { me: Me; demo: DemoInfo | n
     // Only take focus back if the user is still in the menu (they may have pressed Escape and moved on).
     closeMenu(wrapRef.current?.contains(document.activeElement) ?? false);
     onSwitched(next);
-    announce(`You're now ${target.title}. ${SWITCH_COPY[target.key] ?? ""}`.trim());
+    router.refresh();
+    const message = `You're now ${target.title}. ${SWITCH_COPY[target.key] ?? ""}`.trim();
+    setToast(message);
+    announce(message);
   };
 
   const choose = (target: DemoPersona) => {
@@ -148,9 +233,11 @@ export function DemoStrip({ me, demo, onSwitched }: { me: Me; demo: DemoInfo | n
         return;
       }
     }
-    // Full reload on purpose: drop every cached query and in-memory state of the demo session.
-    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-    window.location.assign("/");
+    // Client nav (§4.4). Leaving the shell unmounts its cached queries and `/` reloads the visitor;
+    // a toast or hand-off still held in module state must not outlive the demo session.
+    setToast(null);
+    pendingStore.take();
+    router.replace("/");
   };
 
   const onButtonKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
@@ -210,6 +297,7 @@ export function DemoStrip({ me, demo, onSwitched }: { me: Me; demo: DemoInfo | n
         "text-[13px] leading-5 text-demo-fg",
       )}
     >
+      <SwitchToast />
       <div className="flex min-w-0 flex-1 items-baseline gap-1.5 py-1">
         <strong className="shrink-0 font-semibold">
           <span className="hidden md:inline">Demo account</span>
@@ -325,6 +413,39 @@ export function DemoStrip({ me, demo, onSwitched }: { me: Me; demo: DemoInfo | n
         <span className="hidden md:inline">Exit demo</span>
         <span className="md:hidden">Exit</span>
       </button>
+    </div>
+  );
+}
+
+/** §4.4 polite toast. Visual only: announce() already speaks the same words (§9 #2). */
+function SwitchToast() {
+  const text = useSyncExternalStore(subscribeToast, () => toast, () => null);
+  const [bottom, setBottom] = useState(TOAST_GAP_PX);
+
+  // §10: above the composer. It moves as the new persona's page loads, so keep measuring while shown.
+  useEffect(() => {
+    if (!text) return;
+    const place = () => {
+      const composer = document.getElementById("composer-input")?.closest("form");
+      setBottom(composer ? window.innerHeight - composer.getBoundingClientRect().top + TOAST_GAP_PX : TOAST_GAP_PX);
+    };
+    place();
+    const timer = window.setInterval(place, 200);
+    return () => window.clearInterval(timer);
+  }, [text]);
+
+  if (!text) return null;
+  return (
+    <div className="pointer-events-none fixed inset-x-4 z-50 flex justify-center" style={{ bottom }}>
+      <p
+        className={cx(
+          "max-w-md rounded-xl border border-border bg-panel px-4 py-2.5 text-sm text-text shadow-elev-3",
+          "transition-[opacity,translate] duration-200 ease-(--ease-snappy)",
+          "starting:opacity-0 motion-safe:starting:translate-y-1",
+        )}
+      >
+        {text}
+      </p>
     </div>
   );
 }

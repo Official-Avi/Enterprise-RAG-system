@@ -3,12 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type Ref } from "react";
 import { Icon } from "@/components/icons";
-import { homePath } from "@/components/Shell";
 import { cx } from "@/components/ui";
 import { ApiError, errorText } from "@/lib/api";
 import { announce } from "@/lib/announce";
 import type { DemoPersona } from "@/lib/types";
-import { isUnreachable, useVisitor } from "./Visitor";
+import { isUnreachable, signedInPath, useVisitor } from "./Visitor";
 
 type Variant = "landing" | "compact";
 
@@ -16,30 +15,6 @@ type Variant = "landing" | "compact";
 type CardState = "idle" | "busy" | "spinning" | "locked";
 
 type Notice = { kind: "throttled" } | { kind: "unreachable"; retry: () => void } | { kind: "error"; message: string };
-
-// Final card copy from spec §4.1. Delete once auth/demo.py serves the same strings (BE MUST).
-const SPEC_COPY: Partial<Record<string, Pick<DemoPersona, "summary" | "can" | "cannot">>> = {
-  engineer: {
-    summary: "Upload files and ask questions about them.",
-    can: ["Upload files", "Ask questions with cited answers", "Make collections"],
-    cannot: ["Open the admin console"],
-  },
-  operator: {
-    summary: "Keeps file processing running smoothly.",
-    can: ["Ask questions", "Watch the processing queue", "Retry failed files"],
-    cannot: ["Upload files"],
-  },
-  admin: {
-    summary: "Does everything, including people and settings.",
-    can: ["Upload and ask", "Manage users and roles", "Change settings"],
-    cannot: [],
-  },
-  auditor: {
-    summary: "Checks who did what, without seeing content.",
-    can: ["Read the audit log", "See file names and statuses"],
-    cannot: ["Open documents or ask questions"],
-  },
-};
 
 const THROTTLED = "Too many demo sign-ins from this network. Try again in a minute.";
 const UNREACHABLE = "Can't reach RackFlow. Check that the server is running.";
@@ -50,8 +25,6 @@ const GRID = "mx-auto grid max-w-[1040px] grid-cols-1 gap-4 sm:grid-cols-2 lg:gr
 const MINUS = "M6 12h12";
 const CHEVRON = "M9 6l6 6-6 6";
 
-const withCopy = (p: DemoPersona): DemoPersona => ({ ...p, ...SPEC_COPY[p.key] });
-
 // The auditor has no chat permission, so it lands in the console (§2.2).
 const destination = (p: DemoPersona) => (p.key === "auditor" ? "Opens the admin console" : "Opens Ask");
 
@@ -59,6 +32,9 @@ const noticeText = (n: Notice) =>
   n.kind === "throttled" ? THROTTLED : n.kind === "unreachable" ? UNREACHABLE : n.message;
 
 const noSubscribe = () => () => {};
+
+/** ?next= from the current URL. Read on click so the landing page's markup stays static. */
+const nextParam = () => new URLSearchParams(window.location.search).get("next");
 
 /** `?role=auditor` only highlights that card (§4.4); a GET never signs anyone in. */
 function useDeepLinkRole(): string | null {
@@ -110,19 +86,23 @@ export function DemoPersonaCards({ variant = "landing" }: { variant?: Variant })
     if (inFlight.current) return;
     // The visitor's own card navigates without signing in again, so a throttle doesn't block it.
     if (me && current?.key === p.key) {
-      router.push(homePath(me.permissions));
+      router.push(signedInPath(nextParam(), me.permissions));
       return;
     }
-    if (throttled) return;
+    if (throttled) {
+      announce(THROTTLED);
+      return;
+    }
     inFlight.current = true;
     setNotice(null);
     setSlow(false);
     setPending(p.key);
+    announce(`Signing in as ${p.title}`);
     try {
       const user = await signInAs(p.key);
       announce(`Signed in as ${p.title}`);
       // Stay busy: the cards unmount when the route changes.
-      router.replace(homePath(user.permissions));
+      router.replace(signedInPath(nextParam(), user.permissions));
     } catch (e) {
       inFlight.current = false;
       setPending(null);
@@ -139,8 +119,7 @@ export function DemoPersonaCards({ variant = "landing" }: { variant?: Variant })
   return (
     <div>
       <ul className={variant === "landing" ? GRID : "flex flex-col gap-2"}>
-        {personas.map((raw) => {
-          const p = withCopy(raw);
+        {personas.map((p) => {
           const Card = variant === "landing" ? LandingCard : CompactRow;
           const isCurrent = !pending && current?.key === p.key;
           const locked = pending !== null || (throttled && !isCurrent);
@@ -177,8 +156,8 @@ function buttonState(state: CardState) {
   return {
     "aria-busy": state === "busy" || state === "spinning" || undefined,
     "aria-disabled": state === "locked" || undefined,
-    stateClass: cx(
-      state === "locked" && "cursor-not-allowed opacity-50",
+    cursorClass: cx(
+      state === "locked" && "cursor-not-allowed",
       (state === "busy" || state === "spinning") && "cursor-wait",
     ),
   };
@@ -186,27 +165,25 @@ function buttonState(state: CardState) {
 
 function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, buttonRef }: CardProps) {
   const id = useId();
-  const { stateClass, ...aria } = buttonState(state);
+  const { cursorClass, ...aria } = buttonState(state);
   const interactive = state === "idle";
   const pill = isCurrent ? "You're here" : p.key === "engineer" ? "Start here" : null;
   const cta = state === "spinning" ? `Signing in as ${p.title}…` : isCurrent ? "Back to workspace" : `Continue as ${p.title}`;
-  const describedBy = [pill && `${id}-pill`, `${id}-who`, `${id}-sum`, `${id}-caps`, `${id}-dest`].filter(Boolean).join(" ");
+  const describedBy = [pill && `${id}-pill`, isCurrent && `${id}-title`, `${id}-who`, `${id}-sum`, `${id}-caps`, `${id}-dest`]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    <button
-      ref={buttonRef}
-      type="button"
-      onClick={onChoose}
-      aria-labelledby={`${id}-cta`}
-      aria-describedby={describedBy}
-      {...aria}
+    // The button holds only its CTA, so its name matches its visible text (WCAG 2.5.3). Its ::after
+    // stretches over this card, so the whole card is still one target.
+    <div
+      title={`${p.display_name} · ${p.email}`}
       className={cx(
-        // The global :focus-visible rule sets a 4px radius; keep the card's 16px.
-        "group flex min-h-[236px] w-full flex-col rounded-2xl border bg-panel p-5 text-left focus-visible:rounded-2xl!",
+        "group relative flex min-h-[236px] w-full flex-col rounded-2xl border bg-panel p-5 text-left",
         "transition-[translate,scale,border-color,box-shadow,opacity] duration-150 ease-[var(--ease-snappy)]",
         highlighted ? "border-accent ring-2 ring-accent/30" : "border-border",
-        interactive && "hover:-translate-y-0.5 hover:border-accent hover:shadow-elev-3 active:scale-[.98] active:duration-100",
-        stateClass,
+        interactive && "hover:-translate-y-0.5 hover:border-accent hover:shadow-md active:scale-[.98] active:duration-100",
+        state === "locked" && "opacity-50",
       )}
     >
       <span className="flex items-start justify-between gap-2">
@@ -217,13 +194,13 @@ function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, butt
           </Pill>
         )}
       </span>
-      <span className="mt-3 text-lg leading-[26px] font-semibold">{p.title}</span>
-      <span id={`${id}-who`} className="mt-0.5 flex min-w-0 items-baseline gap-1 text-xs text-muted">
-        <span className="max-w-[50%] shrink-0 truncate">{p.display_name}</span>
-        <span aria-hidden="true">·</span>
-        <span className="min-w-0 truncate font-mono" title={p.email}>
-          {p.email}
-        </span>
+      <span id={`${id}-title`} className="mt-3 text-lg leading-[26px] font-semibold">
+        {p.title}
+      </span>
+      {/* Two lines: side by side, a 248px card clips the email at every desktop width. */}
+      <span id={`${id}-who`} className="mt-0.5 flex min-w-0 flex-col text-xs text-muted">
+        <span className="truncate">{p.display_name}</span>
+        <span className="truncate font-mono">{p.email}</span>
       </span>
       <span id={`${id}-sum`} className="mt-3 text-sm leading-5">
         {p.summary}
@@ -256,7 +233,21 @@ function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, butt
       <span className="mt-auto flex flex-col pt-4">
         <span className="flex items-center gap-1.5 text-sm font-semibold text-accent">
           {state === "spinning" && <Spinner />}
-          <span id={`${id}-cta`}>{cta}</span>
+          <button
+            ref={buttonRef}
+            type="button"
+            onClick={onChoose}
+            aria-describedby={describedBy}
+            {...aria}
+            className={cx(
+              // The focus ring goes on the ::after, which has the card's shape.
+              "min-h-6 text-left font-semibold after:absolute after:inset-0 after:rounded-2xl",
+              "focus-visible:outline-none! focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-[var(--focus)]",
+              cursorClass,
+            )}
+          >
+            {cta}
+          </button>
           {state !== "spinning" && (
             <Icon
               name="arrowRight"
@@ -270,46 +261,43 @@ function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, butt
           {destination(p)}
         </span>
       </span>
-    </button>
+    </div>
   );
 }
 
 /** 56px row for the login page: avatar, title, summary and a chevron (§4.2). */
 function CompactRow({ persona: p, state, isCurrent, highlighted, onChoose, buttonRef }: CardProps) {
-  const id = useId();
-  const { stateClass, ...aria } = buttonState(state);
+  const { cursorClass, ...aria } = buttonState(state);
   const interactive = state === "idle";
   const sub = state === "spinning" ? `Signing in as ${p.title}…` : isCurrent ? "Back to workspace" : p.summary;
-  const labelledBy = [`${id}-title`, isCurrent && `${id}-pill`, `${id}-sub`].filter(Boolean).join(" ");
 
   return (
     <button
       ref={buttonRef}
       type="button"
       onClick={onChoose}
-      aria-labelledby={labelledBy}
       {...aria}
       className={cx(
         "flex min-h-14 w-full items-center gap-3 rounded-xl border bg-panel px-3 py-2 text-left focus-visible:rounded-xl!",
         "transition-[scale,border-color,background-color,opacity] duration-150 ease-[var(--ease-snappy)]",
         highlighted ? "border-accent ring-2 ring-accent/30" : "border-border",
         interactive && "hover:border-accent hover:bg-panel-2 active:scale-[.98] active:duration-100",
-        stateClass,
+        cursorClass,
+        state === "locked" && "opacity-50",
       )}
     >
       <Avatar title={p.title} size="sm" />
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-2">
-          <span id={`${id}-title`} className="text-sm font-semibold">
-            {p.title}
-          </span>
+          <span className="text-sm font-semibold">{p.title}</span>
           {isCurrent && (
-            <Pill id={`${id}-pill`} current>
+            <Pill current>
               You&apos;re here
             </Pill>
           )}
         </span>
-        <span id={`${id}-sub`} className="block truncate text-xs text-muted" title={sub}>
+        {/* A touch screen has no tooltip, so narrow rows wrap instead of cutting the summary. */}
+        <span className="block text-xs text-muted sm:truncate" title={sub}>
           {sub}
         </span>
       </span>
@@ -328,7 +316,7 @@ function Skeletons({ variant }: { variant: Variant }) {
           <div
             key={i}
             className={cx(
-              "animate-pulse border border-border bg-panel-2 motion-reduce:animate-none",
+              "animate-shimmer border border-border bg-panel-2 motion-reduce:animate-none",
               landing ? "h-[236px] rounded-2xl" : "h-14 rounded-xl",
             )}
           />
@@ -343,7 +331,9 @@ function NoticeBar({ notice, variant }: { notice: Notice; variant: Variant }) {
   return (
     <div
       className={cx(
-        "flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-4 py-3 text-sm",
+        // Sticky so that on a one-column phone layout it stays on screen beside the tapped card.
+        "sticky bottom-[max(1rem,env(safe-area-inset-bottom))] z-10 flex flex-wrap items-center gap-x-3 gap-y-2",
+        "rounded-xl border px-4 py-3 text-sm max-sm:shadow-elev-3",
         variant === "landing" ? "mx-auto mt-4 max-w-[1040px]" : "mt-3",
         throttled ? "border-warn/30 bg-warn-soft text-warn" : "border-bad/30 bg-bad-soft text-bad",
       )}
@@ -368,21 +358,22 @@ function NoticeBar({ notice, variant }: { notice: Notice; variant: Variant }) {
   );
 }
 
+/** The initial is generated content: it is decoration, not part of the button's visible label (2.5.3). */
 function Avatar({ title, size }: { title: string; size: "lg" | "sm" }) {
   return (
     <span
       aria-hidden="true"
+      data-initial={title.charAt(0).toUpperCase()}
       className={cx(
         "grid shrink-0 place-items-center rounded-full bg-accent-soft font-semibold text-accent",
+        "before:content-[attr(data-initial)]",
         size === "lg" ? "h-10 w-10 text-base" : "h-9 w-9 text-sm",
       )}
-    >
-      {title.charAt(0).toUpperCase()}
-    </span>
+    />
   );
 }
 
-function Pill({ id, current, children }: { id: string; current: boolean; children: ReactNode }) {
+function Pill({ id, current, children }: { id?: string; current: boolean; children: ReactNode }) {
   return (
     <span
       id={id}

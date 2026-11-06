@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 import { pendingStore } from "@/lib/pendingStore";
 import type { DocumentItem } from "@/lib/types";
 import type { ScopeValue, UploadsApi } from "../types";
@@ -43,8 +43,10 @@ export function useArrival({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [autoQuestion, setAutoQuestion] = useState<string | null>(null);
-  const [scopeDocs, setScopeDocs] = useState<string[] | null>(null);
+  // Work waiting for `settled`. Nothing renders from these, so they are refs: the effects below
+  // run after the ones that fill them, and again whenever `settled` changes.
+  const autoQuestion = useRef<string | null>(null);
+  const scopeDocs = useRef<string[] | null>(null);
   const handledQuery = useRef<string | null>(null);
 
   // Landing hand-off (taken exactly once) and a draft saved when the session ended.
@@ -55,7 +57,7 @@ export function useArrival({
     if (saved) clearDraft();
     if (pending.question) {
       // The user already pressed Enter on the landing page, so it sends once routing is known.
-      if (pending.autoSend) setAutoQuestion(pending.question);
+      if (pending.autoSend) autoQuestion.current = pending.question;
       else setDraft(pending.question);
     } else if (saved) {
       setDraft(saved);
@@ -64,17 +66,6 @@ export function useArrival({
   useEffect(() => {
     if (enabled) takePending();
   }, [enabled]);
-
-  const fire = useEffectEvent((question: string) => {
-    // A chat that can't take a question (blocked state) keeps it in the composer for later.
-    if (canSend) send(question);
-    else setDraft(question);
-  });
-  useEffect(() => {
-    if (!autoQuestion || !settled) return;
-    setAutoQuestion(null);
-    fire(autoQuestion);
-  }, [autoQuestion, settled]);
 
   const query = searchParams.toString();
   const handleQuery = useEffectEvent(() => {
@@ -88,7 +79,7 @@ export function useArrival({
     if (ids.length) {
       uploads.track(ids);
       showReading(ids);
-      setScopeDocs(ids);
+      scopeDocs.current = ids;
     }
     // A question in a URL is only ever filled in, never sent: links must not ask on a GET.
     if (question) setDraft((d) => d || question);
@@ -110,17 +101,32 @@ export function useArrival({
     if (enabled) handleQuery();
   }, [enabled, query]);
 
+  const fire = useEffectEvent((question: string) => {
+    // A chat that can't take a question (blocked state) keeps it in the composer for later.
+    if (canSend) send(question);
+    else setDraft(question);
+  });
+  useEffect(() => {
+    const question = autoQuestion.current;
+    if (!question || !settled) return;
+    autoQuestion.current = null;
+    fire(question);
+  }, [enabled, settled]);
+
   // §5.8: ?doc= arrivals search the collection the file is in ("Searching: My documents · 5").
+  // A file newer than the documents list, with My documents still unknown, waits for the next poll.
   const applyScope = useEffectEvent((ids: string[]) => {
     const byId = new Map(docs.map((d) => [d.id, d]));
     const found = [...new Set(ids.map((id) => byId.get(id)?.collection_id).filter((c): c is string => !!c))];
     const fallback = uploads.myCollection?.id;
     const scope = found.length ? found : fallback ? [fallback] : [];
-    if (scope.length) setScope(scope);
+    if (!scope.length) return;
+    scopeDocs.current = null;
+    setScope(scope);
   });
+  const myCollectionId = uploads.myCollection?.id;
   useEffect(() => {
-    if (!scopeDocs || !settled) return;
-    setScopeDocs(null);
-    applyScope(scopeDocs);
-  }, [scopeDocs, settled]);
+    const ids = scopeDocs.current;
+    if (ids && settled) applyScope(ids);
+  }, [enabled, query, settled, docs, myCollectionId]);
 }

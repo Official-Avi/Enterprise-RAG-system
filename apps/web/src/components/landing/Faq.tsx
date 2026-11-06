@@ -1,4 +1,5 @@
 import { Icon } from "@/components/icons";
+import { OpenDetailsOnHash } from "./LandingNav";
 
 const ITEMS: { id?: string; q: string; a: string; open?: boolean }[] = [
   {
@@ -30,10 +31,11 @@ const ITEMS: { id?: string; q: string; a: string; open?: boolean }[] = [
   },
 ];
 
-/** §3.7: native disclosure widgets; the first two start open. */
+/** §3.7: native disclosure widgets; the first two start open. A link to one opens it (§3.8). */
 export function Faq() {
   return (
     <div className="mx-auto max-w-[820px] space-y-2">
+      <OpenDetailsOnHash />
       {ITEMS.map((item) => (
         <details
           key={item.q}
@@ -47,7 +49,7 @@ export function Faq() {
               name="plus"
               width={18}
               height={18}
-              className="shrink-0 text-muted transition-transform duration-150 group-open:rotate-45"
+              className="shrink-0 text-muted group-open:rotate-45"
             />
           </summary>
           <p className="px-5 pb-5 text-[15px] leading-6 text-muted">{item.a}</p>

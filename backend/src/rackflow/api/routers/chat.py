@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -27,7 +28,7 @@ from rackflow.db.models import (
     EvidenceStatus,
 )
 from rackflow.db.session import get_db
-from rackflow.rag.answer import answer_question
+from rackflow.rag.answer import answer_question, prior_user_turns
 from rackflow.rag.retrieval import authorized_collections, retrieve
 from rackflow.tenant_settings import effective_settings
 
@@ -59,12 +60,14 @@ class SessionPage(BaseModel):
 
 class CitationOut(BaseModel):
     marker: int
-    document_id: uuid.UUID
+    # None, with an empty filename and quote, only when the document's record no longer exists.
+    document_id: uuid.UUID | None
     filename: str
     page: int | None
     chunk_id: uuid.UUID | None
     quote: str
     score: float | None
+    document_deleted: bool = False
 
 
 class ModelRef(BaseModel):
@@ -82,6 +85,7 @@ class MessageOut(BaseModel):
     model: ModelRef | None
     latency_ms: int | None
     created_at: datetime
+    retrieved_count: int | None = None  # passages found when asked; None on the user's messages
 
 
 class SessionDetail(BaseModel):
@@ -122,6 +126,27 @@ class InspectItem(BaseModel):
 
 class InspectOut(BaseModel):
     items: list[InspectItem]
+
+
+def _stored_citation(cit: Citation, filename: str | None, collection_id: uuid.UUID | None,
+                     status: DocumentStatus | None,
+                     allowed: Mapping[uuid.UUID, Any]) -> CitationOut | None:
+    """A saved citation as the caller may see it now, or None if they lost access (ADR-009).
+
+    A deleted document keeps its attribution: the tombstone's name and what the citation stored
+    when the answer was given, never document content. Once the tombstone is gone too (its
+    collection was deleted) access can't be re-checked, so only the marker survives. Keeping it
+    stops the client crediting that sentence to the next source.
+    """
+    if collection_id is None or filename is None:
+        return CitationOut(marker=cit.marker, document_id=None, filename="", page=None,
+                           chunk_id=None, quote="", score=None, document_deleted=True)
+    if collection_id not in allowed:
+        return None
+    deleted = status in (DocumentStatus.DELETING, DocumentStatus.DELETED)
+    return CitationOut(marker=cit.marker, document_id=cit.document_id, filename=filename,
+                       page=cit.page, chunk_id=None if deleted else cit.chunk_id, quote=cit.quote,
+                       score=cit.rank_score, document_deleted=deleted)
 
 
 def _session_out(c: Conversation) -> SessionOut:
@@ -199,22 +224,21 @@ def get_session(
     conv = _own_session(db, principal, session_id)
     messages = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conv.id)
                           .order_by(ChatMessage.created_at)).all()
-    # Re-authorise stored citations on every read (ADR-009): hide sources that were deleted or
-    # that the caller can no longer access.
-    allowed = set(accessible_collections(db, principal))
+    # Re-authorise stored citations on every read (ADR-009). Outer join: a citation outlives its
+    # document's row, and its tenant is checked here rather than through the document.
+    allowed = accessible_collections(db, principal)
     rows = db.execute(
         select(Citation, Document.filename, Document.collection_id, Document.status)
-        .join(Document, Document.id == Citation.document_id)
+        .outerjoin(Document, Document.id == Citation.document_id)
         .where(Citation.message_id.in_([m.id for m in messages]),
                Citation.tenant_id == principal.tenant_id)
         .order_by(Citation.marker)
     ).all() if messages else []
     by_message: dict[uuid.UUID, list[CitationOut]] = {}
     for cit, filename, collection_id, status in rows:
-        if collection_id in allowed and status == DocumentStatus.INDEXED:
-            by_message.setdefault(cit.message_id, []).append(CitationOut(
-                marker=cit.marker, document_id=cit.document_id, filename=filename,
-                page=cit.page, chunk_id=cit.chunk_id, quote=cit.quote, score=cit.rank_score))
+        out = _stored_citation(cit, filename, collection_id, status, allowed)
+        if out is not None:
+            by_message.setdefault(cit.message_id, []).append(out)
     return SessionDetail(session=_session_out(conv), messages=[
         MessageOut(
             id=m.id, role=m.role, content=m.content,
@@ -223,6 +247,7 @@ def get_session(
             model=ModelRef(provider=m.model_provider, name=m.model_name or "")
             if m.model_provider else None,
             latency_ms=m.latency_ms, created_at=m.created_at,
+            retrieved_count=(m.retrieval_stats or {}).get("retrieved"),
         )
         for m in messages
     ])
@@ -297,7 +322,8 @@ def ask(
     else:
         collection_ids = _session_scope(db, principal, conv)
 
-    result = answer_question(db, principal, body.message.strip(), collection_ids)
+    result = answer_question(db, principal, body.message.strip(), collection_ids,
+                             history=prior_user_turns(db, principal.tenant_id, conv.id))
 
     user_msg = ChatMessage(tenant_id=principal.tenant_id, conversation_id=conv.id, role="user",
                            content=body.message.strip())

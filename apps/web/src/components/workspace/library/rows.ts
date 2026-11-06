@@ -58,6 +58,7 @@ const parseTime = (iso: string, fallback: number) => {
 export function docRow(d: DocumentItem, now: number): LibraryRow {
   const phase = phaseFromDocument(d.status, d.latest_job?.status);
   const failed = phase === "failed";
+  const failedDelete = failed && d.latest_job?.job_type === "delete_document";
   return {
     key: d.id,
     filename: d.filename,
@@ -69,7 +70,7 @@ export function docRow(d: DocumentItem, now: number): LibraryRow {
       // updated_at moves with each status change, so it stands in for "time in this phase".
       elapsedMs: Math.max(0, now - parseTime(d.updated_at, now)),
       stage: d.latest_job?.stage ?? null,
-      reasonCode: failed ? (d.latest_job?.error_code ?? null) : null,
+      reasonCode: failedDelete ? "DELETE_FAILED" : failed ? (d.latest_job?.error_code ?? null) : null,
       reasonMessage: failed ? (d.latest_job?.safe_error_message ?? null) : null,
     },
     pageCount: d.page_count,
@@ -112,11 +113,13 @@ export function countRows(rows: LibraryRow[]): Record<StatusFilter, number> {
 }
 
 /** GET /documents for the library (§6): newest 200, optionally narrowed by name and collection.
- *  Status chips filter on the client so every chip can show its count. */
-export function libraryPath(q: string, collectionId: string): string {
+ *  Status chips filter on the client so every chip can show its count; `status` is only for
+ *  finding failed files older than those 200. */
+export function libraryPath(q: string, collectionId: string, status?: "failed"): string {
   const qs = new URLSearchParams({ limit: "200" });
   if (q) qs.set("q", q);
   if (collectionId !== "all") qs.set("collection_id", collectionId);
+  if (status) qs.set("status", status);
   return `/documents?${qs.toString()}`;
 }
 

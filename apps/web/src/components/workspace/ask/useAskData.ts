@@ -30,6 +30,8 @@ export interface AskData {
   loading: boolean;
   /** The first load failed, so there is nothing to count. */
   error: ApiError | undefined;
+  /** The documents poll got a 401: the page keeps its content and offers Sign in again (§5.6). */
+  sessionError: ApiError | undefined;
   retry(): void;
   /** Documents in collections this user can ask about, newest first. */
   docs: DocumentItem[];
@@ -41,6 +43,9 @@ export interface AskData {
   readingDocs: DocumentItem[];
   /** From GET /models until an answer says which model replied. */
   defaultMode: AnswerMode;
+  defaultProvider: string | null;
+  /** `scope` without collections that are no longer readable; the same value when nothing changes. */
+  readableScope(scope: ScopeValue): ScopeValue;
   /** The ids a request sends: "all" = every collection in the picker (plus My documents). */
   collectionIdsFor(scope: ScopeValue): string[];
   statsFor(scope: ScopeValue): ScopeStats;
@@ -74,11 +79,15 @@ export function useAskData({
   uploads: UploadsApi;
 }): AskData {
   const on = enabled && canRead;
-  const docsQ = useApi<Page<DocumentItem>>(on ? DOCS_PATH : null, (page) =>
-    page.items.some(isPendingDoc) ? READING_POLL_MS : IDLE_POLL_MS,
+  const docsQ = useApi<Page<DocumentItem>>(
+    on ? DOCS_PATH : null,
+    (page) => (page.items.some(isPendingDoc) ? READING_POLL_MS : IDLE_POLL_MS),
+    { noAuthRedirect: true, pauseWhenHidden: true },
   );
-  const collectionsQ = useApi<Collection[]>(on ? COLLECTIONS_PATH : null);
-  const modelsQ = useApi<{ items: ModelInfo[] }>(enabled && canModel ? MODELS_PATH : null);
+  const collectionsQ = useApi<Collection[]>(on ? COLLECTIONS_PATH : null, undefined, { noAuthRedirect: true });
+  const modelsQ = useApi<{ items: ModelInfo[] }>(enabled && canModel ? MODELS_PATH : null, undefined, {
+    noAuthRedirect: true,
+  });
 
   const reloadDocs = useEffectEvent(() => docsQ.reload());
   const reloadCollectionsNow = useEffectEvent(() => collectionsQ.reload());
@@ -163,6 +172,13 @@ export function useAskData({
       return docs.filter((d) => ids.has(d.collection_id));
     };
 
+    const readableScope = (scope: ScopeValue): ScopeValue => {
+      if (scope === "all" || !collectionsQ.data) return scope;
+      const kept = scope.filter((id) => readableIds.has(id));
+      if (kept.length === scope.length) return scope;
+      return kept.length ? kept : "all";
+    };
+
     const total = statsFor("all");
     const models = modelsQ.data?.items ?? [];
     const model = models.find((m) => m.is_default) ?? models[0];
@@ -174,6 +190,8 @@ export function useAskData({
       pendingCount: total.pending,
       readingDocs: docs.filter((d) => kindOf(d) === "pending"),
       defaultMode: (model && model.provider !== "extractive" ? "llm" : "extractive") as AnswerMode,
+      defaultProvider: model?.provider ?? null,
+      readableScope,
       collectionIdsFor: idsOf,
       statsFor,
       docsIn,
@@ -191,6 +209,7 @@ export function useAskData({
     ...derived,
     loading,
     error,
+    sessionError: on && docsQ.error?.status === 401 ? docsQ.error : undefined,
     retry: () => {
       docsQ.reload();
       collectionsQ.reload();

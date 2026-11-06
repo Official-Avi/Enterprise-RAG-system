@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request, UploadFile
 from fastapi.responses import Response
@@ -181,6 +184,18 @@ def _content_document(db: Session, principal: Principal, document_id: uuid.UUID,
     return doc, level
 
 
+def content_disposition(filename: str) -> str:
+    """Attachment header that keeps the real name (RFC 6266 / RFC 5987), plus a plain-ASCII
+    fallback for old clients. Quotes, backslashes and controls leave the fallback, and so does %,
+    which some browsers percent-decode even in the plain form."""
+    decomposed = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode()
+    fallback = re.sub(r'[\x00-\x1f\x7f"\\%]', "", decomposed).strip()
+    # A name with no ASCII stem would save as a hidden ".md"; keep the extension on a real name.
+    if not fallback or fallback.startswith("."):
+        fallback = f"document{fallback}"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+
 async def _read_capped(upload: UploadFile, max_bytes: int) -> bytes:
     buf = bytearray()
     while True:
@@ -261,7 +276,7 @@ def list_documents(
     if file_type:
         stmt = stmt.where(Document.file_type == file_type.lower())
     if q:
-        stmt = stmt.where(Document.filename.ilike(f"%{q.replace('%', '').replace('_', '')}%"))
+        stmt = stmt.where(Document.filename.icontains(q, autoescape=True))
     if cursor:
         ts, last_id = decode_cursor(cursor)
         stmt = stmt.where(or_(Document.created_at < ts,
@@ -341,9 +356,19 @@ def retry_document(
     principal: Principal = Depends(require(Permission.DOCUMENT_RETRY)),
     db: Session = Depends(get_db),
 ) -> JobRef:
-    doc, _ = _content_document(db, principal, document_id, CollectionPermissionLevel.WRITE)
+    # Re-queueing changes no content, and whoever may manage jobs can already do this through
+    # POST /jobs/{id}/retry, so they need only read access. Operators hold read on every collection
+    # they can see. Everyone else still needs write access to the collection.
+    minimum = (CollectionPermissionLevel.READ if principal.can(Permission.JOB_MANAGE)
+               else CollectionPermissionLevel.WRITE)
+    doc, _ = _content_document(db, principal, document_id, minimum)
     if doc.status != DocumentStatus.FAILED:
         raise ConflictError(code="NOT_RETRYABLE", message="Only failed documents can be retried.")
+    # A delete that failed while a live copy held the dedup slot keeps deleted_at, and retrieval
+    # hides such a row for good, so indexing it again could never make it answerable.
+    if doc.deleted_at is not None:
+        raise ConflictError(code="NOT_RETRYABLE",
+                            message="A file being deleted can only be deleted again.")
     version = next_ingest_version(db, doc.id)
     job = enqueue_job(db, tenant_id=principal.tenant_id, job_type=JobType.INGEST_DOCUMENT,
                       idempotency_key=f"ingest:{doc.id}:v{version}", document_id=doc.id,
@@ -398,8 +423,7 @@ def download_document(
     record_audit(db, action="document.download", resource_type="document", resource_id=doc.id,
                  principal=principal)
     db.commit()
-    ascii_name = doc.filename.encode("ascii", "ignore").decode().replace('"', "") or "document"
     return Response(content=data, media_type="application/octet-stream", headers={
-        "Content-Disposition": f'attachment; filename="{ascii_name}"',
+        "Content-Disposition": content_disposition(doc.filename),
         "X-Content-Type-Options": "nosniff",
     })

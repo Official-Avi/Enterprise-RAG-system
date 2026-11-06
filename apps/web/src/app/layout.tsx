@@ -19,7 +19,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`h-full antialiased ${inter.variable}`}>
+    <html lang="en" data-scroll-behavior="smooth" className={`h-full antialiased ${inter.variable}`}>
       <body className="min-h-full">
         {children}
         {/* The one polite announcer for status changes (answers ready, uploads finished). */}

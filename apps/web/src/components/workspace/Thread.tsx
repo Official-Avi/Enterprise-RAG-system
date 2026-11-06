@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { ApiError } from "@/lib/api";
 import { AnswerBlock } from "./AnswerBlock";
 import { AnswerErrorCard } from "./AnswerErrorCard";
+import { noteCitationActivated } from "./CitationChip";
 import { NotFoundCard } from "./NotFoundCard";
 import { WaitingIndicator } from "./WaitingIndicator";
 import { useWorkspace } from "./WorkspaceContext";
@@ -29,10 +30,11 @@ const NEAR_BOTTOM_PX = 120;
 // Answer ids already announced in this tab, so a remounted thread never repeats one (§9 #3).
 const announced = new Set<string>();
 
-const FALLBACK_ERROR = new ApiError(0, "UNKNOWN", "Something went wrong on our side.", null);
+// Not status 0: AnswerErrorCard reads 0 as "Can't reach RackFlow".
+const FALLBACK_ERROR = new ApiError(500, "UNKNOWN", "Something went wrong on our side.", null);
 
 const heldButton =
-  "inline-flex h-8 items-center rounded-md px-3 text-[13px] font-medium transition-colors duration-150 " +
+  "inline-flex h-8 items-center rounded-lg px-3 text-[13px] font-medium transition-colors duration-150 " +
   "pointer-coarse:h-11";
 
 function prefersReducedMotion(): boolean {
@@ -117,8 +119,8 @@ export function Thread(props: ThreadProps) {
       return;
     }
     if (prev.lastId !== lastId) {
-      // The user just asked: show their question and the waiting row.
-      el.scrollTo({ top: el.scrollHeight, behavior });
+      // The user just asked: show their question and the waiting row. Never animated (§8.4).
+      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
       return;
     }
     if (prev.lastStatus === lastStatus || (lastStatus !== "answered" && lastStatus !== "error")) return;
@@ -132,13 +134,14 @@ export function Thread(props: ThreadProps) {
   useEffect(() => {
     for (const t of turns) {
       const a = t.answer;
-      // retrieved_count is null for answers rebuilt from history, which are never announced.
-      if (t.status !== "answered" || !a || a.retrieved_count === null || announced.has(a.id)) continue;
+      // Answers rebuilt from history are never announced.
+      if (t.status !== "answered" || !a || a.fromHistory || announced.has(a.id)) continue;
       announced.add(a.id);
       announce(readyMessage(a));
     }
   }, [turns, announce]);
 
+  const busy = turns.some((t) => t.status === "held" || t.status === "waiting");
   const showPill = pillFor !== null && pillFor === lastId && lastStatus === "answered";
 
   function onScroll() {
@@ -162,7 +165,7 @@ export function Thread(props: ThreadProps) {
       onScroll={onScroll}
       data-thread-scroller=""
       className="relative min-h-0 flex-1 overflow-y-auto"
-      style={{ scrollPaddingBottom: "calc(var(--composer-h, 0px) + 16px)" }}
+      style={{ scrollPaddingBottom: "16px" }}
     >
       <div className="mx-auto flex w-full max-w-[768px] flex-col gap-6 px-4 pt-6 pb-8 md:px-6">
         {turns.map((turn, i) => (
@@ -171,6 +174,7 @@ export function Thread(props: ThreadProps) {
             turn={turn}
             mode={mode}
             isLatest={i === latestAnswerIdx}
+            busy={busy}
             activeMarker={turn.id === selectedId ? activeMarker : null}
             notFound={notFound}
             props={props}
@@ -179,10 +183,8 @@ export function Thread(props: ThreadProps) {
       </div>
       {showPill && (
         <div className="pointer-events-none sticky bottom-0 h-0">
-          <div
-            className="absolute inset-x-0 flex justify-center"
-            style={{ bottom: "calc(var(--composer-h, 0px) + 12px)" }}
-          >
+          {/* The composer sits below this scroller, so the scroller's bottom edge is its top edge. */}
+          <div className="absolute inset-x-0 bottom-3 flex justify-center">
             <button
               type="button"
               onClick={jumpToAnswer}
@@ -206,6 +208,7 @@ function TurnArticle({
   turn,
   mode,
   isLatest,
+  busy,
   activeMarker,
   notFound,
   props,
@@ -213,12 +216,20 @@ function TurnArticle({
   turn: Turn;
   mode: AnswerMode;
   isLatest: boolean;
+  busy: boolean;
   activeMarker: number | null;
   notFound: NotFoundContext;
   props: ThreadProps;
 }) {
   const answer = turn.status === "answered" ? turn.answer : undefined;
   const hasAnswerArea = turn.status !== "held" && (turn.status !== "answered" || answer !== undefined);
+  const answerHeading = useRef<HTMLHeadingElement>(null);
+
+  function retry() {
+    props.onRetry(turn.id);
+    // The pressed button goes away with the card, so keep focus at this answer instead of <body>.
+    answerHeading.current?.focus({ preventScroll: true });
+  }
 
   return (
     <article className="flex flex-col gap-4">
@@ -258,7 +269,7 @@ function TurnArticle({
 
       {hasAnswerArea && (
         <div data-answer-for={turn.id}>
-          <h3 tabIndex={-1} className="sr-only">
+          <h3 ref={answerHeading} tabIndex={-1} className="sr-only">
             Answer
           </h3>
           {turn.status === "waiting" && (
@@ -268,7 +279,13 @@ function TurnArticle({
             (answer.evidence_status === "insufficient" ? (
               <NotFoundCard
                 retrievedCount={answer.retrieved_count}
-                context={notFound}
+                context={{
+                  ...notFound,
+                  // Today's count says nothing about a search made earlier.
+                  documentCount: answer.fromHistory ? 0 : notFound.documentCount,
+                  narrowed: turn.searchedNarrowed ?? notFound.narrowed,
+                  onSearchAll: () => notFound.onSearchAll(turn.question),
+                }}
                 onRephrase={() => props.onRephrase(turn.question)}
               />
             ) : (
@@ -276,14 +293,20 @@ function TurnArticle({
                 answer={answer}
                 activeMarker={activeMarker}
                 isLatest={isLatest}
-                scopeLabel={turn.scopeLabel}
                 mode={mode}
-                onCite={(c, viaKeyboard) => props.onCite(turn.id, c, viaKeyboard)}
+                onCite={(c, viaKeyboard) => {
+                  props.onCite(turn.id, c, viaKeyboard);
+                  noteCitationActivated(c, viaKeyboard);
+                }}
                 onOpenSources={() => props.onOpenSources(turn.id)}
               />
             ))}
           {turn.status === "error" && (
-            <AnswerErrorCard error={turn.error ?? FALLBACK_ERROR} onRetry={() => props.onRetry(turn.id)} />
+            <AnswerErrorCard error={turn.error ?? FALLBACK_ERROR} busy={busy} onRetry={retry} />
+          )}
+          {/* Meta line and "Answered without report.pdf": on every outcome, not found included (§5.5). */}
+          {turn.scopeLabel && turn.status !== "waiting" && (
+            <p className="mt-3 text-xs text-muted wrap-anywhere">{turn.scopeLabel}</p>
           )}
         </div>
       )}

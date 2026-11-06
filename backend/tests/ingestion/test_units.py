@@ -124,9 +124,11 @@ def test_chunking_respects_budget_overlap_and_pages() -> None:
     assert all(c.token_count <= 80 for c in chunks)
     assert [c.index for c in chunks] == list(range(len(chunks)))
     assert chunks[0].page_start == 1 and chunks[-1].page_end == 3
-    # Overlap: the start of each chunk repeats the end of the previous one.
+    # Overlap: the start of each chunk repeats the end of the previous one on the same page.
+    # Across a page break there is none (test_overlap_does_not_cross_a_page_boundary).
     for prev, cur in zip(chunks, chunks[1:], strict=False):
-        assert cur.text.split("\n\n")[0] in prev.text
+        if prev.page_end == cur.page_start:
+            assert cur.text.split("\n\n")[0] in prev.text
 
 
 def test_chunking_splits_oversized_paragraph_and_keeps_code_whole() -> None:
@@ -141,3 +143,32 @@ def test_chunking_splits_oversized_paragraph_and_keeps_code_whole() -> None:
 def test_chunking_rejects_bad_config() -> None:
     with pytest.raises(ValueError):
         chunk_pages([(1, "x")], get_tokenizer(), chunk_size=10, overlap=10)
+
+
+def test_chunks_never_span_pages() -> None:
+    """A citation names one page, so a chunk may only hold one page's text. Short pages used to be
+    packed together and cited by the first page in the chunk."""
+    tok = get_tokenizer()
+    pages = [(1, "Commissioning needs two engineers."), (2, "The valve opens at 14.2 bar."),
+             (3, "The filter is swapped every 620 hours."), (5, "Oil is grade ISO VG 46.")]
+    chunks = chunk_pages(pages, tok, chunk_size=400, overlap=60)
+    assert [(c.page_start, c.page_end) for c in chunks] == [(1, 1), (2, 2), (3, 3), (5, 5)]
+    assert [c.text for c in chunks] == [text for _, text in pages]
+
+
+def test_overlap_does_not_cross_a_page_boundary() -> None:
+    tok = get_tokenizer()
+    para = "Sentence number {n} explains the failover procedure in detail."
+    pages = [(p, "\n\n".join(para.format(n=f"{p}-{i}") for i in range(12))) for p in (1, 2, 3)]
+    chunks = chunk_pages(pages, tok, chunk_size=80, overlap=20)
+    assert all(c.page_start == c.page_end for c in chunks)
+    for chunk in chunks:
+        # Every sentence is numbered with its own page, so foreign text is easy to spot.
+        for other in {1, 2, 3} - {chunk.page_start}:
+            assert f"number {other}-" not in chunk.text
+    # Overlap still works inside a page.
+    same_page = [(a, b) for a, b in zip(chunks, chunks[1:], strict=False)
+                 if a.page_end == b.page_start]
+    assert same_page
+    for prev, cur in same_page:
+        assert cur.text.split("\n\n")[0] in prev.text

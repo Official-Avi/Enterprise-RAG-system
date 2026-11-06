@@ -162,7 +162,10 @@ export interface ChunkItem {
 
 export interface Citation {
   marker: number;
-  document_id: Uuid;
+  /** Null when the deleted document's row is gone too (its collection was deleted). */
+  document_id: Uuid | null;
+  /** True for a source deleted since the answer was written; filename and quote may be empty. */
+  document_deleted?: boolean;
   filename: string;
   page: number | null;
   chunk_id: Uuid | null;
@@ -192,6 +195,8 @@ export interface ChatMessage {
   citations: Citation[];
   model: ModelRef | null;
   latency_ms: number | null;
+  /** Passages retrieved for this answer. Null on user messages and older answers. */
+  retrieved_count: number | null;
   created_at: string;
 }
 

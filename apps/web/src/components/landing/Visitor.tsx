@@ -1,8 +1,9 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { canOpenConsoleRoute, homePath } from "@/components/Shell";
 import { ApiError } from "@/lib/api";
-import { personaFor } from "@/lib/demo";
+import { destination, personaFor } from "@/lib/demo";
 import type { DemoInfo, DemoPersona, Me } from "@/lib/types";
 import { currentUser, demoLogin, fetchDemoInfo } from "@/lib/workspace";
 
@@ -16,13 +17,20 @@ interface Visitor {
   unreachable: boolean;
   /** Load the visitor and the demo list again; `ready` is false until it finishes. */
   reload: () => void;
-  /** One-click demo sign-in; resolves to the new user. */
-  signInAs: (persona: string) => Promise<Me>;
+  /** One-click demo sign-in; resolves to the new user. Aborting `signal` cancels it. */
+  signInAs: (persona: string, signal?: AbortSignal) => Promise<Me>;
 }
 
 /** Network failures and 5xx mean "the server isn't there", as opposed to a refusal. */
 export function isUnreachable(e: unknown): boolean {
   return e instanceof ApiError && (e.status === 0 || e.status >= 500);
+}
+
+/** §2.2, §4.2: where to go after signing in. A safe ?next= the role can open, else the role's home. */
+export function signedInPath(next: string | null, permissions: string[]): string {
+  const home = homePath(permissions);
+  const target = destination(next, permissions, home);
+  return canOpenConsoleRoute(target, permissions) ? target : home;
 }
 
 const VisitorContext = createContext<Visitor | null>(null);
@@ -54,8 +62,8 @@ export function VisitorProvider({ children }: { children: ReactNode }) {
     setAttempt((n) => n + 1);
   }, []);
 
-  const signInAs = useCallback(async (persona: string) => {
-    const user = await demoLogin(persona);
+  const signInAs = useCallback(async (persona: string, signal?: AbortSignal) => {
+    const user = await demoLogin(persona, signal);
     setMe(user);
     return user;
   }, []);

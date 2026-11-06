@@ -1,232 +1,590 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
-import { Icon } from "@/components/icons";
+import { useEffect, useRef, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { Icon, type IconName } from "@/components/icons";
 import { cx } from "@/components/ui";
-import { errorText } from "@/lib/api";
-import type { Me } from "@/lib/types";
-import { ACCEPT_ATTR, checkFile, MAX_FILES, uploadToMyDocuments } from "@/lib/workspace";
+import { NETWORK_ERROR_COPY } from "@/lib/api";
+import { ROLE_LABEL } from "@/lib/demo";
+import { formatBytes } from "@/lib/format";
+import { middleTruncate } from "@/lib/status";
+import { useFileDrop } from "@/lib/useFileDrop";
+import { ACCEPT_ATTR, MAX_FILE_BYTES, MAX_FILES } from "@/lib/workspace";
+import { fileKind, KIND_LABEL, TypeTile } from "@/components/workspace/library/parts";
+import { isBusy, SIGN_IN_HREF, useHeroUpload, type HeroJob, type HeroState } from "./useHeroUpload";
 import { useVisitor } from "./Visitor";
 
-type Phase =
-  | { kind: "idle" }
-  | { kind: "busy"; label: string; progress?: number }
-  | { kind: "error"; message: ReactNode };
+const MAX_MB = Math.round(MAX_FILE_BYTES / (1024 * 1024));
 
-/** The landing page's working tool: drop a file or type a question. Visitors who are not
- *  signed in are signed in as the demo Engineer first (when demo mode is on). */
-export function HeroUpload() {
-  const { me, demo, signInAs } = useVisitor();
-  const router = useRouter();
+const OUTLINE_ACTION =
+  "inline-flex min-h-11 items-center justify-center rounded-lg border border-border-strong bg-panel px-4 " +
+  "text-sm font-medium text-text transition-colors duration-150 hover:bg-panel-2";
+const PRIMARY_ACTION =
+  "inline-flex min-h-11 items-center justify-center rounded-lg bg-accent px-4 text-sm font-medium " +
+  "text-accent-contrast transition-opacity duration-150 hover:opacity-90";
+
+const SUBLINE: { word: string; tile: string; icon: IconName }[] = [
+  { word: "PDF", tile: "bg-bad", icon: "file" },
+  { word: "Word", tile: "bg-info", icon: "file" },
+  { word: "Text", tile: "bg-muted", icon: "file" },
+  { word: "Markdown", tile: "bg-muted", icon: "file" },
+  { word: "Scanned PDFs", tile: "bg-accent", icon: "scan" },
+];
+
+function FileRow({ files }: { files: File[] }) {
+  const total = files.reduce((n, f) => n + f.size, 0);
+  const name = files.length === 1 ? files[0].name : `${files.length} files`;
+  return (
+    <div className="flex w-full min-w-0 items-center gap-3 text-left">
+      <TypeTile kind={fileKind(files[0].name)} />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium" title={name}>
+          {middleTruncate(name, 44)}
+        </p>
+        <p className="text-[13px] leading-5 text-muted">
+          {files.length === 1 ? KIND_LABEL[fileKind(files[0].name)] : "Files"} · {formatBytes(total)}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function Step({ done, children }: { done: boolean; children: ReactNode }) {
+  return (
+    <li className="flex min-w-0 items-start gap-2 text-sm">
+      <span aria-hidden="true" className="mt-0.5 grid size-4 shrink-0 place-items-center">
+        {done ? (
+          <Icon name="check" width={16} height={16} className="text-accent" />
+        ) : (
+          <span className="size-3.5 rounded-full border-2 border-accent border-t-transparent motion-safe:animate-spin" />
+        )}
+      </span>
+      <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
+    </li>
+  );
+}
+
+function ProgressBar({ fraction }: { fraction: number }) {
+  const percent = Math.round(fraction * 100);
+  return (
+    <div
+      role="progressbar"
+      aria-label="Upload progress"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percent}
+      className="h-1 w-full overflow-hidden rounded-full bg-panel-2"
+    >
+      {/* scaleX, not width: §8.4 only animates transform and opacity. */}
+      <div
+        className="h-full origin-left rounded-full bg-accent transition-transform duration-200"
+        style={{ transform: `scaleX(${fraction})` }}
+      />
+    </div>
+  );
+}
+
+function Note({ tone, alert, children }: { tone: "bad" | "warn" | "plain"; alert?: boolean; children: ReactNode }) {
+  return (
+    <p
+      role={alert ? "alert" : undefined}
+      className={cx(
+        "w-full rounded-md px-3 py-2 text-left text-sm [overflow-wrap:anywhere]",
+        tone === "bad" && "bg-bad-soft text-bad",
+        tone === "warn" && "bg-warn-soft text-warn",
+        tone === "plain" && "px-0 py-0",
+      )}
+    >
+      {children}
+    </p>
+  );
+}
+
+function Actions({ children }: { children: ReactNode }) {
+  return <div className="flex w-full flex-wrap items-center gap-2">{children}</div>;
+}
+
+interface PanelProps {
+  state: Exclude<HeroState, { kind: "idle" | "rejected" | "server_rejected" }>;
+  hero: ReturnType<typeof useHeroUpload>;
+  demoRunning: boolean;
+}
+
+/** Everything the card says once it holds a job. Upload jobs show it in the dropzone, question jobs
+ *  under the ask box, so it stays beside what the visitor just used. */
+function JobPanel({ state, hero, demoRunning }: PanelProps) {
+  const { job } = state;
+  const isAsk = job.kind === "ask";
+  const files = job.kind === "upload" ? job.files : [];
+  const jobName = files.length === 1 ? files[0].name : `${files.length} files`;
+  const cancel = (
+    <button type="button" onClick={hero.cancel} className={OUTLINE_ACTION}>
+      Cancel
+    </button>
+  );
+  const remove = (
+    <button type="button" onClick={hero.clear} className={OUTLINE_ACTION}>
+      {isAsk ? "Dismiss" : "Remove"}
+    </button>
+  );
+  const content = (): ReactNode => {
+    switch (state.kind) {
+      case "checking":
+        return <Actions>{cancel}</Actions>;
+      case "signing_in":
+        return (
+          <>
+            <ul className="w-full space-y-1.5">
+              <Step done={false}>Opening the Engineer demo account</Step>
+            </ul>
+            <Actions>{cancel}</Actions>
+          </>
+        );
+      case "uploading": {
+        const percent = Math.round(state.progress * 100);
+        return (
+          <>
+            <ul className="w-full space-y-1.5">
+              {state.demoStep && <Step done>Opening the Engineer demo account</Step>}
+              <Step done={false}>
+                Uploading {jobName} · {percent}%
+              </Step>
+            </ul>
+            <ProgressBar fraction={state.progress} />
+            <Actions>{cancel}</Actions>
+          </>
+        );
+      }
+      case "opening":
+        return (
+          <ul className="w-full space-y-1.5">
+            {state.demoStep && <Step done>Opening the Engineer demo account</Step>}
+            {!isAsk && <Step done>Uploaded {jobName}</Step>}
+            <Step done>Opening your chat…</Step>
+          </ul>
+        );
+      case "kept":
+        return (
+          <>
+            <Note tone="plain">Upload cancelled. {files.length > 1 ? "Your files are" : "Your file is"} still here.</Note>
+            <Actions>
+              <button type="button" onClick={hero.retry} className={PRIMARY_ACTION}>
+                Upload
+              </button>
+              {remove}
+            </Actions>
+          </>
+        );
+      case "demo_off":
+        return (
+          <>
+            {state.personaMissing && (
+              <Note tone="plain" alert>
+                The Engineer demo account isn&apos;t set up on this server.
+              </Note>
+            )}
+            {isAsk ? (
+              <Note tone="plain">Your question stays in this tab until you sign in.</Note>
+            ) : (
+              <div className="w-full text-left">
+                <p className="text-sm font-semibold [overflow-wrap:anywhere]">Sign in to ask about {jobName}</p>
+                <p className="mt-0.5 text-[13px] leading-5 text-muted">
+                  {files.length > 1 ? "Your files stay" : "Your file stays"} in this tab until you sign in.
+                </p>
+              </div>
+            )}
+            <Actions>
+              <Link href={SIGN_IN_HREF} className={PRIMARY_ACTION}>
+                Sign in
+              </Link>
+              {remove}
+            </Actions>
+          </>
+        );
+      case "role_cannot_upload": {
+        const label = ROLE_LABEL[state.role];
+        const verb = isAsk ? "ask questions" : "upload documents";
+        return (
+          <>
+            <Note tone="plain" alert>
+              {label ? `You're signed in as ${label}, and ${label}s can't ${verb}.` : `This account can't ${verb}.`}
+            </Note>
+            <Actions>
+              {state.demoOn ? (
+                <>
+                  <button type="button" onClick={hero.switchToEngineer} className={PRIMARY_ACTION}>
+                    {isAsk ? "Switch to Engineer and ask" : "Switch to Engineer and upload"}
+                  </button>
+                  <button type="button" onClick={hero.clear} className={OUTLINE_ACTION}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <Link href={SIGN_IN_HREF} onClick={hero.keepForSignIn} className={PRIMARY_ACTION}>
+                    Sign in with another account
+                  </Link>
+                  {remove}
+                </>
+              )}
+            </Actions>
+          </>
+        );
+      }
+      case "rate_limited":
+        return (
+          <>
+            {/* Not a live region: a ticking countdown would be read out every second. It is announced once. */}
+            <Note tone="warn">
+              {demoRunning ? "Lots of people are using the demo right now." : "RackFlow is busy right now."} Trying again
+              in {state.seconds}s…
+            </Note>
+            <Actions>{cancel}</Actions>
+          </>
+        );
+      case "api_down":
+        return (
+          <>
+            <Note tone="bad" alert>
+              {NETWORK_ERROR_COPY}
+            </Note>
+            <Actions>
+              <button type="button" onClick={hero.retry} className={PRIMARY_ACTION}>
+                Try again
+              </button>
+              {remove}
+            </Actions>
+          </>
+        );
+      case "upload_failed":
+        return (
+          <>
+            <Note tone="bad" alert>
+              {state.message}
+            </Note>
+            <Actions>
+              <button type="button" onClick={hero.retry} className={PRIMARY_ACTION}>
+                Try again
+              </button>
+              {remove}
+            </Actions>
+          </>
+        );
+    }
+  };
+  return (
+    <div className="flex w-full max-w-md flex-col items-start gap-3">
+      {files.length > 0 && <FileRow files={files} />}
+      {content()}
+    </div>
+  );
+}
+
+function AlertWell() {
+  return (
+    <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-full bg-bad-soft text-bad">
+      <svg viewBox="0 0 24 24" width={20} height={20} fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 4 3 20h18zM12 10v4.5M12 17.5h.01" />
+      </svg>
+    </span>
+  );
+}
+
+/** Which card takes a window-level drop: the one most in view, so the result shows where the visitor is
+ *  looking. Both instances work this out and only the winner keeps the files. */
+function isDropTarget(card: HTMLElement | null): boolean {
+  const cards = Array.from(document.querySelectorAll<HTMLElement>("[data-hero-card]"));
+  const inView = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    return Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0);
+  };
+  return cards.reduce<HTMLElement | null>((best, el) => (!best || inView(el) > inView(best) ? el : best), null) === card;
+}
+
+/** The landing page's working tool: drop a file or type a question (§3.1, §3.2). The flow itself lives
+ *  in useHeroUpload. `compact` (closing band, §3.6) is the dropzone alone, with the same flow. */
+export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" }) {
+  const compact = variant === "compact";
+  const { ready, me, demo, persona } = useVisitor();
+  const hero = useHeroUpload();
+  const { state } = hero;
+  const busy = isBusy(state);
+
+  const card = useRef<HTMLDivElement>(null);
+  const zone = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
-  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
-  const busy = phase.kind === "busy";
+  const textarea = useRef<HTMLTextAreaElement>(null);
 
-  const session = async (nextPath: string): Promise<Me | null> => {
-    if (me) return me;
-    if (demo?.enabled) {
-      setPhase({ kind: "busy", label: "Opening the demo workspace…" });
-      return signInAs("engineer");
-    }
-    setPhase({
-      kind: "error",
-      message: (
-        <>
-          Please{" "}
-          <Link className="font-medium underline" href={`/login?next=${encodeURIComponent(nextPath)}`}>
-            sign in
-          </Link>{" "}
-          first.
-        </>
-      ),
-    });
-    return null;
-  };
+  const { dragging } = useFileDrop({
+    enabled: !busy,
+    onFiles: (files) => {
+      if (isDropTarget(card.current)) hero.addFiles(files);
+    },
+  });
 
-  const addFiles = async (files: File[]) => {
-    if (!files.length || busy) return;
-    if (files.length > MAX_FILES) {
-      setPhase({ kind: "error", message: `You can add up to ${MAX_FILES} files at once.` });
-      return;
-    }
-    for (const f of files) {
-      const problem = checkFile(f);
-      if (problem) {
-        setPhase({ kind: "error", message: `${f.name}: ${problem}` });
-        return;
-      }
-    }
-    try {
-      const user = await session("/ask");
-      if (!user) return;
-      if (!user.permissions.includes("document:upload")) {
-        setPhase({
-          kind: "error",
-          message: "This account can't add documents. Log in as the Engineer demo below to try uploading.",
-        });
-        return;
-      }
-      setPhase({ kind: "busy", label: "Uploading…", progress: 0 });
-      const { items } = await uploadToMyDocuments(files, (p) =>
-        setPhase({ kind: "busy", label: "Uploading…", progress: p }),
-      );
-      const ids = items.filter((i) => i.document_id).map((i) => i.document_id as string);
-      if (!ids.length) {
-        setPhase({ kind: "error", message: items[0]?.error?.message ?? "The file could not be added." });
-        return;
-      }
-      setPhase({ kind: "busy", label: "Opening your workspace…" });
-      router.push(`/ask?docs=${ids.join(",")}`);
-    } catch (e) {
-      setPhase({ kind: "error", message: errorText(e) });
-    }
-  };
+  // Actions unmount as the state changes, so focus would fall to <body>. Keep it near what was used,
+  // and keep the result in view when the drop came from a window scrolled away from the zone.
+  const shownKind = useRef(state.kind);
+  const lastJob = useRef<HeroJob["kind"]>("upload");
+  useEffect(() => {
+    if (shownKind.current === state.kind) return;
+    shownKind.current = state.kind;
+    if ("job" in state) lastJob.current = state.job.kind;
+    else if (state.kind !== "idle") lastJob.current = "upload";
+    const target = lastJob.current === "ask" ? textarea.current : zone.current;
+    if (document.activeElement === document.body) target?.focus({ preventScroll: true });
+    if (state.kind !== "idle") target?.scrollIntoView({ block: "nearest" });
+  }, [state]);
 
-  const ask = async (ev: FormEvent<HTMLFormElement>) => {
+  const submitQuestion = (ev: FormEvent<HTMLFormElement>) => {
     ev.preventDefault();
-    const q = String(new FormData(ev.currentTarget).get("q") ?? "").trim();
-    if (!q || busy) return;
-    const target = `/ask?q=${encodeURIComponent(q)}`;
-    try {
-      const user = await session(target);
-      if (!user) return;
-      if (!user.permissions.includes("chat:use")) {
-        setPhase({ kind: "error", message: "This account can't ask questions. Log in as the Engineer demo below." });
-        return;
-      }
-      setPhase({ kind: "busy", label: "Opening your workspace…" });
-      router.push(target);
-    } catch (e) {
-      setPhase({ kind: "error", message: errorText(e) });
+    hero.ask(String(new FormData(ev.currentTarget).get("q") ?? "").trim());
+  };
+
+  const onQuestionKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter that confirms an IME candidate belongs to the IME (§9 #4).
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      e.currentTarget.form?.requestSubmit();
     }
   };
 
-  const onDrop = (ev: DragEvent<HTMLDivElement>) => {
-    ev.preventDefault();
-    setDragging(false);
-    void addFiles(Array.from(ev.dataTransfer.files));
-  };
+  const pickable = state.kind === "idle" || state.kind === "rejected" || state.kind === "server_rejected";
+  const refused = state.kind === "rejected" || state.kind === "server_rejected";
+  const uploadPanel = "job" in state && state.job.kind === "upload" ? state : null;
+  const askPanel = "job" in state && state.job.kind === "ask" ? state : null;
+  const hot = pickable && dragging;
+  // The note about the shared account: a demo session is running, or about to be.
+  const demoRunning = persona !== null || state.kind === "signing_in" || (state.kind === "uploading" && state.demoStep);
+  const sharedNote = demoRunning && (state.kind === "signing_in" || state.kind === "uploading");
+  const askFooter = !ready
+    ? "Press Enter"
+    : me && !persona
+      ? "Uses your documents · press Enter"
+      : demo?.enabled
+        ? "Uses the demo documents · press Enter"
+        : "Sign in first · press Enter";
+
+  const Zone = pickable ? "label" : "div";
 
   return (
-    <div className="relative">
-      {/* Soft brand glow instead of a heavy shadow. */}
+    <>
+      {!compact && (
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -inset-x-10 -top-12 bottom-0 -z-10 rounded-[48px] opacity-70 blur-3xl"
-        style={{
-          background:
-            "radial-gradient(40% 60% at 20% 40%, color-mix(in oklab, var(--accent) 22%, transparent), transparent)," +
-            "radial-gradient(40% 60% at 80% 30%, color-mix(in oklab, var(--info) 16%, transparent), transparent)," +
-            "radial-gradient(50% 50% at 60% 90%, color-mix(in oklab, var(--ok) 14%, transparent), transparent)",
-        }}
-      />
-      <div className="rounded-2xl border border-border bg-panel p-4 sm:p-5">
-        <p className="mb-4 text-lg font-semibold tracking-tight sm:text-xl">
-          Add a PDF, Word file or scanned page, then ask anything about it.
-        </p>
-        <div className="grid gap-4 md:grid-cols-2">
+        className={cx(
+          "pointer-events-none fixed inset-4 z-50 grid place-items-center rounded-3xl bg-accent/8 p-6 backdrop-blur-[2px] pointer-coarse:hidden",
+          "transition-[opacity,visibility] ease-(--ease-snappy)",
+          dragging && !busy ? "visible opacity-100 duration-120" : "invisible opacity-0 duration-100",
+        )}
+      >
+        <svg className="absolute top-px left-px h-[calc(100%-2px)] w-[calc(100%-2px)] overflow-visible text-dropzone-border">
+          <rect width="100%" height="100%" rx="23" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="10 8" />
+        </svg>
+        <div className="relative flex max-w-md flex-col items-center rounded-2xl bg-panel/90 px-8 py-7 text-center shadow-elev-3">
+          <Icon name="upload" width={48} height={48} strokeWidth={1.5} className="text-accent" />
+          <p className="mt-4 text-2xl font-semibold tracking-tight text-text">Drop your file to start</p>
+          <p className="mt-2 text-sm text-muted">PDF, Word, text or Markdown · up to {MAX_MB} MB</p>
+        </div>
+      </div>
+      )}
+
+      {/* isolate: without its own stacking context the glow sits behind the page's opaque background. */}
+      <div className="relative isolate">
+        {!compact && (
           <div
-            onDragEnter={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
-            onDragOver={(e) => e.preventDefault()}
-            onDragLeave={(e) => {
-              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
-            }}
-            onDrop={onDrop}
+            aria-hidden="true"
             className={cx(
-              "group relative flex min-h-40 flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-4 py-6 text-center",
-              "transition-colors duration-150",
-              dragging
-                ? "border-accent bg-accent-soft"
-                : "border-accent/35 bg-accent/[0.03] hover:border-accent/70 hover:bg-accent-soft",
+              "pointer-events-none absolute top-[-50px] left-1/2 -z-10 h-[420px] w-[896px] -translate-x-1/2",
+              "dark:opacity-50 [[data-theme=dark]_&]:opacity-50 [[data-theme=light]_&]:opacity-100",
             )}
-          >
-            {busy ? (
-              <div role="status" className="w-full max-w-xs">
-                <p className="text-sm font-medium">{phase.label}</p>
-                {phase.progress !== undefined && (
-                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-panel-2">
-                    <div
-                      className="h-full rounded-full bg-accent transition-[width] duration-200"
-                      style={{ width: `${Math.round(phase.progress * 100)}%` }}
+            style={{
+              filter: "blur(48px)",
+              background:
+                "radial-gradient(45% 60% at 30% 45%, rgb(15 107 102 / .14), transparent)," +
+                "radial-gradient(45% 60% at 72% 60%, rgb(217 160 60 / .10), transparent)",
+            }}
+          />
+        )}
+        <div
+          ref={card}
+          data-hero-card=""
+          className="rounded-2xl border border-border bg-panel px-5 pt-4 pb-5"
+        >
+          {!compact && (
+            <p className="mb-4 text-center text-lg leading-7 font-semibold">
+              {SUBLINE.map(({ word, tile, icon }, i) => (
+                <span key={word}>
+                  {i > 0 && " · "}
+                  <span className="whitespace-nowrap">
+                    <span
+                      aria-hidden="true"
+                      className={cx("mr-1 inline-grid size-4 place-items-center rounded-[4px] align-[-2px] text-panel", tile)}
+                    >
+                      <Icon name={icon} width={12} height={12} strokeWidth={2} />
+                    </span>
+                    {word}
+                  </span>
+                </span>
+              ))}
+            </p>
+          )}
+          <div className={cx("grid gap-4", !compact && "md:grid-cols-[7fr_5fr]")}>
+            <div ref={zone} tabIndex={-1} className="flex min-w-0 scroll-mt-20 flex-col outline-none">
+              <Zone
+                className={cx(
+                  "relative flex flex-1 flex-col items-center justify-center gap-2 rounded-xl px-4 py-3 text-center",
+                  compact ? "min-h-[120px]" : "min-h-[180px] md:min-h-[200px]",
+                  "transition-colors duration-150",
+                  hot ? "bg-accent-soft" : "bg-accent-soft/50",
+                  pickable && "group cursor-pointer hover:bg-accent-soft focus-within:bg-accent-soft",
+                )}
+              >
+                <svg aria-hidden="true" className="pointer-events-none absolute inset-0 size-full">
+                  {/* Stroke is centred on the edge and the outer half is clipped: 1.5px visible. */}
+                  <rect
+                    width="100%"
+                    height="100%"
+                    rx="12"
+                    ry="12"
+                    fill="none"
+                    strokeWidth="3"
+                    className={cx(
+                      "transition-colors duration-150",
+                      refused
+                        ? "stroke-bad"
+                        : hot
+                          ? "stroke-accent"
+                          : "stroke-dropzone-border [stroke-dasharray:4_4]",
+                      pickable &&
+                        !refused &&
+                        "group-hover:stroke-accent group-hover:[stroke-dasharray:none] group-focus-within:stroke-accent group-focus-within:[stroke-dasharray:none]",
+                    )}
+                  />
+                </svg>
+
+                {uploadPanel ? (
+                  <JobPanel state={uploadPanel} hero={hero} demoRunning={demoRunning} />
+                ) : (
+                  <>
+                    {refused ? (
+                      <>
+                        <AlertWell />
+                        <span role="alert" className="block max-w-md text-sm font-medium text-bad [overflow-wrap:anywhere]">
+                          {state.message}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        {!compact && (
+                          <span className="grid size-10 place-items-center rounded-full bg-panel text-accent">
+                            <Icon name="upload" width={20} height={20} />
+                          </span>
+                        )}
+                        <span className="text-base font-semibold pointer-coarse:hidden">Drag a file here</span>
+                        <span className="text-sm text-muted pointer-coarse:hidden">or</span>
+                        <span className="hidden text-base font-semibold pointer-coarse:inline">Tap to choose a file</span>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      // The wrapping <label> would otherwise become the button's accessible name.
+                      aria-label={refused ? "Choose another file" : "Choose a file"}
+                      onClick={() => input.current?.click()}
+                      className={cx(
+                        "inline-flex h-11 items-center justify-center rounded-lg border px-4 text-sm font-medium",
+                        "transition-colors duration-150",
+                        "group-hover:border-transparent group-hover:bg-accent group-hover:text-accent-contrast",
+                        "pointer-coarse:h-12 pointer-coarse:w-full pointer-coarse:max-w-[360px]",
+                        hot
+                          ? "border-transparent bg-accent text-accent-contrast"
+                          : "border-border-strong bg-panel text-text",
+                      )}
+                    >
+                      {refused ? "Choose another file" : "Choose a file"}
+                    </button>
+                    {!refused && (
+                      <span className="text-[13px] leading-5 text-muted">
+                        Up to {MAX_MB} MB each · {MAX_FILES} at a time
+                      </span>
+                    )}
+                    <input
+                      ref={input}
+                      type="file"
+                      multiple
+                      accept={ACCEPT_ATTR}
+                      className="sr-only"
+                      tabIndex={-1}
+                      aria-label="Choose files to add"
+                      onChange={(e) => {
+                        hero.addFiles(Array.from(e.target.files ?? []));
+                        e.target.value = "";
+                      }}
                     />
+                  </>
+                )}
+              </Zone>
+            </div>
+            {!compact && (
+              <form
+                onSubmit={submitQuestion}
+                className="flex flex-col rounded-xl border border-border-strong bg-panel p-4 transition-colors duration-150 focus-within:border-accent md:min-h-[200px]"
+              >
+                <label htmlFor="hero-question" className="sr-only">
+                  Ask a question
+                </label>
+                <textarea
+                  ref={textarea}
+                  id="hero-question"
+                  name="q"
+                  maxLength={4000}
+                  rows={2}
+                  placeholder="Or ask a question, e.g. How long are backups retained?"
+                  className="min-h-12 flex-1 resize-none bg-transparent text-base leading-6 outline-none placeholder:text-muted"
+                  onKeyDown={onQuestionKey}
+                />
+                {askPanel && (
+                  <div className="mt-3 scroll-mt-20">
+                    <JobPanel state={askPanel} hero={hero} demoRunning={demoRunning} />
                   </div>
                 )}
-              </div>
-            ) : (
-              <>
-                <span className="grid h-11 w-11 place-items-center rounded-full bg-accent-soft text-accent">
-                  <Icon name="upload" width={20} height={20} />
-                </span>
-                <p className="text-[15px] text-muted">{dragging ? "Drop to add it" : "Drag a file here, or"}</p>
-                <button
-                  type="button"
-                  onClick={() => input.current?.click()}
-                  className={cx(
-                    "inline-flex min-h-11 items-center gap-2 rounded-lg border border-border bg-panel px-4 text-sm font-medium",
-                    "transition-colors duration-150 group-hover:border-transparent group-hover:bg-accent group-hover:text-accent-contrast",
-                  )}
-                >
-                  <Icon name="paperclip" /> Choose a file
-                </button>
-                <p className="text-xs text-muted">PDF, Word (.docx), text, Markdown or scanned PDF · up to 25 MB</p>
-              </>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="text-[13px] leading-5 text-muted">{askFooter}</span>
+                  <button
+                    type="submit"
+                    aria-label="Send question"
+                    aria-disabled={busy || undefined}
+                    className={cx(
+                      "grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-accent-contrast transition-opacity duration-150",
+                      "hover:opacity-90 aria-disabled:cursor-wait aria-disabled:opacity-60 pointer-coarse:size-11",
+                    )}
+                  >
+                    <Icon name="send" width={16} height={16} />
+                  </button>
+                </div>
+              </form>
             )}
-            <input
-              ref={input}
-              type="file"
-              multiple
-              accept={ACCEPT_ATTR}
-              className="sr-only"
-              tabIndex={-1}
-              aria-label="Choose files to add"
-              onChange={(e) => {
-                void addFiles(Array.from(e.target.files ?? []));
-                e.target.value = "";
-              }}
-            />
           </div>
-          <form onSubmit={ask} className="flex min-h-40 flex-col rounded-xl border border-border bg-bg p-3">
-            <label htmlFor="hero-question" className="text-sm font-medium">
-              Or ask about the sample documents
-            </label>
-            <textarea
-              id="hero-question"
-              name="q"
-              maxLength={4000}
-              rows={3}
-              placeholder="e.g. Who approves a database failover?"
-              className="mt-2 flex-1 resize-none bg-transparent text-[15px] outline-none placeholder:text-muted"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  e.currentTarget.form?.requestSubmit();
-                }
-              }}
-            />
-            <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-xs text-muted">Enter to ask · Shift+Enter for a new line</span>
-              <button
-                type="submit"
-                disabled={busy}
-                className="inline-flex min-h-10 items-center gap-1.5 rounded-lg bg-accent px-4 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-60"
-              >
-                Ask <Icon name="arrowRight" width={15} height={15} />
-              </button>
-            </div>
-          </form>
         </div>
-        {phase.kind === "error" && (
-          <p role="alert" className="mt-3 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">
-            {phase.message}
+        <p className="mt-3 flex min-h-5 items-start justify-center gap-1.5 text-center text-[13px] leading-5 text-muted">
+          {ready && (
+            <>
+              <Icon name="lock" width={14} height={14} className="mt-[3px] shrink-0" />
+              <span>
+                {demo?.enabled
+                  ? "Demo files go to a shared workspace on this server. Please don't upload anything private."
+                  : "Files are stored on the server running RackFlow."}
+              </span>
+            </>
+          )}
+        </p>
+        {sharedNote && (
+          <p className="mt-1 text-center text-xs text-muted">
+            You&apos;re using a shared demo account. Others using this demo can see what you upload.
           </p>
         )}
       </div>
-    </div>
+    </>
   );
 }

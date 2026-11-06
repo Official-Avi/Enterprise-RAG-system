@@ -18,8 +18,10 @@ import { cx } from "@/components/ui";
 import { announce } from "@/lib/announce";
 import type { UploadPhase } from "@/lib/status";
 import { AttachmentChip } from "./AttachmentChip";
+import { openPersonaMenu } from "./AskEmptyState";
 import type { TrackedUpload } from "./types";
 import { useUploads } from "./UploadsContext";
+import { useWorkspace } from "./WorkspaceContext";
 
 export interface ComposerProps {
   value: string;
@@ -58,7 +60,7 @@ function subscribePointer(onChange: () => void) {
 // The server assumes a mouse; touch devices correct it right after hydration.
 const useFinePointer = () => useSyncExternalStore(subscribePointer, isFinePointer, () => true);
 
-// Same breakpoint as ScopeChip's bottom-sheet switch (below Tailwind's sm).
+// Below Tailwind's sm. ScopeChip's bottom sheet starts higher, at the page's mobile breakpoint.
 const NARROW = "(max-width: 639.98px)";
 const isNarrow = () => window.matchMedia(NARROW).matches;
 function subscribeNarrow(onChange: () => void) {
@@ -106,6 +108,7 @@ export function Composer({
   firstMessage,
 }: ComposerProps) {
   const uploads = useUploads();
+  const { persona, demo } = useWorkspace();
   const finePointer = useFinePointer();
   const narrow = useNarrow();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -120,6 +123,17 @@ export function Composer({
   const many = chips.length >= COLLAPSE_AT;
   const shown = many && !expanded ? chips.slice(0, COLLAPSED_SHOWN) : chips;
   const blocked = busy || value.trim() === "";
+  // §5.5: a demo Operator gets a way out of "can't add documents".
+  const switchAction =
+    !uploads.canUpload && persona && demo?.personas.some((p) => p.key === "engineer") ? (
+      <button
+        type="button"
+        onClick={() => openPersonaMenu("Engineer")}
+        className="font-medium text-accent underline underline-offset-2 hover:no-underline"
+      >
+        Switch to Engineer
+      </button>
+    ) : null;
 
   // Fallback auto-grow where `field-sizing: content` is unsupported; max-h caps it at 200px.
   useLayoutEffect(() => {
@@ -158,6 +172,9 @@ export function Composer({
 
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // Only the question box and Send may send. The scope picker's inputs share this form, and a
+    // phone keyboard's "Go" key submits without a keydown ScopeChip could catch.
+    if (document.activeElement instanceof HTMLInputElement) return;
     send();
   };
 
@@ -194,22 +211,30 @@ export function Composer({
     }
   };
 
-  const removeChip = (key: string) => {
-    setRemoved((prev) => new Set(prev).add(key));
-    uploads.remove(key);
+  const removeChip = (upload: TrackedUpload) => {
+    setRemoved((prev) => new Set(prev).add(upload.key));
+    uploads.remove(upload.key);
+    if (upload.phase === "uploading") announce(`Upload of ${upload.filename} cancelled.`);
     refocus();
   };
 
-  // Hides the chips only: uploads keep going and the files still land in My documents.
+  // Cancels what is still uploading. Files that already arrived stay in My documents.
   const clearChips = () => {
     const keys = chips.map((u) => u.key);
+    const cancelled = chips.filter((u) => u.phase === "uploading").length;
+    const kept = keys.length - cancelled;
     setRemoved((prev) => new Set([...prev, ...keys]));
     keys.forEach((key) => uploads.remove(key));
     setExpanded(false);
     announce(
-      keys.length === 1
-        ? "1 attached file cleared. It stays in My documents."
-        : `${keys.length} attached files cleared. They stay in My documents.`,
+      [
+        cancelled === 1 && "1 upload cancelled.",
+        cancelled > 1 && `${cancelled} uploads cancelled.`,
+        kept === 1 && "1 attached file cleared. It stays in My documents.",
+        kept > 1 && `${kept} attached files cleared. They stay in My documents.`,
+      ]
+        .filter(Boolean)
+        .join(" "),
     );
   };
 
@@ -222,19 +247,20 @@ export function Composer({
       onSubmit={onSubmit}
       className={cx(
         "rounded-3xl border border-border-strong bg-panel px-3 pt-3 pb-2 shadow-elev-1",
-        "transition-[box-shadow,border-color] duration-150 focus-within:border-accent/40 focus-within:shadow-elev-3",
+        // Full-strength accent, not §5.3's 40%: that dropped to about 1.9:1 and fails §9 #14's 3:1.
+        "transition-[box-shadow,border-color] duration-150 focus-within:border-accent focus-within:shadow-elev-3",
       )}
     >
       {uploads.rejectedNote && (
         <Note
-          glyph="⊘"
-          tone="text-bad"
+          glyph={uploads.canUpload ? "⊘" : <Icon name="lock" width={14} height={14} />}
+          tone={uploads.canUpload ? "text-bad" : "text-muted"}
           onDismiss={() => {
             uploads.clearRejectedNote();
             refocus();
           }}
         >
-          {uploads.rejectedNote}
+          {uploads.rejectedNote} {switchAction}
         </Note>
       )}
       {pasteNote && (
@@ -246,16 +272,16 @@ export function Composer({
             refocus();
           }}
         >
-          {pasteNote}
+          {pasteNote} {switchAction}
         </Note>
       )}
 
       {chips.length > 0 && (
         <div className="mb-2">
-          <ul aria-label="Attached files" className="flex flex-wrap gap-2">
+          <ul aria-label="Attached files" className="flex flex-wrap items-start gap-2">
             {shown.map((u) => (
               <li key={u.key} className="max-w-full">
-                <AttachmentChip upload={u} onRemove={() => removeChip(u.key)} />
+                <AttachmentChip upload={u} onRemove={() => removeChip(u)} onRetried={refocus} />
               </li>
             ))}
             {many && (
@@ -305,7 +331,7 @@ export function Composer({
             <button
               type="button"
               onClick={() => uploads.pickFiles()}
-              className="inline-flex h-9 items-center gap-1.5 rounded-full! border border-border px-3 text-sm font-medium text-text transition-colors hover:bg-panel-2 pointer-coarse:h-11"
+              className="inline-flex h-9 items-center gap-1.5 rounded-full! border border-border-strong px-3 text-sm font-medium text-text transition-colors hover:bg-panel-2 pointer-coarse:h-11"
             >
               <Icon name="paperclip" />
               Add files

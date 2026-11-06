@@ -27,12 +27,21 @@ import type { Job, JobDetail, Page } from "@/lib/types";
 const STATUSES = ["queued", "running", "retry_wait", "succeeded", "failed", "cancelled"];
 const TYPES = ["ingest_document", "delete_document", "evaluation_run"];
 
+/** queued_at never changes, so a retry shows in available_at. A job in retry_wait shows that time
+ *  as its next attempt instead. */
+function requeuedAt(j: Job): string | null {
+  if (j.status === "retry_wait") return null;
+  return new Date(j.available_at).getTime() - new Date(j.queued_at).getTime() > 1000 ? j.available_at : null;
+}
+
 function JobDrawer({ jobId, onClose, onChanged }: { jobId: string; onClose: () => void; onChanged: () => void }) {
   const job = useApi<JobDetail>(`/jobs/${jobId}`, (j) => (["queued", "running", "retry_wait"].includes(j.status) ? 2000 : null));
   const canManage = useCan("job:manage");
   const [error, setError] = useState<string | null>(null);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
   const act = async (action: "retry" | "cancel") => {
     setError(null);
+    setConfirmingCancel(false);
     try {
       await api(`/jobs/${jobId}/${action}`, { method: "POST" });
       job.reload();
@@ -42,10 +51,12 @@ function JobDrawer({ jobId, onClose, onChanged }: { jobId: string; onClose: () =
     }
   };
   const j = job.data;
+  const requeued = j ? requeuedAt(j) : null;
   return (
+    <>
     <Dialog open title={`Job ${shortId(jobId)}`} onClose={onClose} wide>
       {job.loading && <Loading />}
-      {job.error && <ErrorState error={job.error} />}
+      {job.error && <ErrorState error={job.error} onRetry={job.reload} />}
       {j && (
         <div className="space-y-4 text-sm">
           <div className="flex flex-wrap items-center gap-2">
@@ -58,6 +69,7 @@ function JobDrawer({ jobId, onClose, onChanged }: { jobId: string; onClose: () =
             <dt className="text-muted">Document</dt>
             <dd>{j.document_id ? <Link className="underline" href={`/documents/${j.document_id}`}>{j.document_filename ?? shortId(j.document_id)}</Link> : "—"}</dd>
             <dt className="text-muted">Queued</dt><dd>{formatTime(j.queued_at)}</dd>
+            {requeued && (<><dt className="text-muted">Re-queued</dt><dd>{formatTime(requeued)}</dd></>)}
             <dt className="text-muted">Started</dt><dd>{formatTime(j.started_at)}</dd>
             <dt className="text-muted">Finished</dt><dd>{formatTime(j.finished_at)}</dd>
             {j.status === "retry_wait" && (<><dt className="text-muted">Next attempt</dt><dd>{formatTime(j.available_at)}</dd></>)}
@@ -93,13 +105,22 @@ function JobDrawer({ jobId, onClose, onChanged }: { jobId: string; onClose: () =
             <div className="flex justify-end gap-2">
               {["failed", "cancelled"].includes(j.status) && <Button variant="primary" onClick={() => act("retry")}>Retry job</Button>}
               {["queued", "retry_wait", "running"].includes(j.status) && !j.cancel_requested && (
-                <Button variant="danger" onClick={() => window.confirm("Cancel this job? Running jobs stop at the next stage boundary.") && act("cancel")}>Cancel job</Button>
+                <Button variant="danger" onClick={() => setConfirmingCancel(true)}>Cancel job</Button>
               )}
             </div>
           )}
         </div>
       )}
     </Dialog>
+    {/* A sibling, not a child: Esc closes this one and leaves the job open. */}
+    <Dialog open={confirmingCancel} title="Cancel this job?" onClose={() => setConfirmingCancel(false)}>
+      <p className="text-sm">Running jobs stop at the next stage boundary.</p>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button data-autofocus onClick={() => setConfirmingCancel(false)}>Keep job</Button>
+        <Button variant="danger" onClick={() => void act("cancel")}>Cancel job</Button>
+      </div>
+    </Dialog>
+    </>
   );
 }
 
@@ -155,7 +176,7 @@ function JobsInner() {
             <tbody>
               {jobs.data.items.map((j) => (
                 <tr key={j.id} className="hover:bg-panel-2">
-                  <Td><button className="font-mono text-xs underline" onClick={() => setOpen(j.id)}>{shortId(j.id)}</button></Td>
+                  <Td><button className="inline-flex min-h-6 items-center font-mono text-xs underline" onClick={() => setOpen(j.id)}>{shortId(j.id)}</button></Td>
                   <Td className="text-xs">{j.job_type}</Td>
                   <Td>
                     <StatusBadge status={j.status} />
@@ -164,7 +185,10 @@ function JobsInner() {
                   </Td>
                   <Td className="max-w-56 truncate">{j.document_filename ?? "—"}</Td>
                   <Td className="tabular-nums">{j.attempt_count}/{j.max_attempts}</Td>
-                  <Td className="text-muted">{formatTime(j.queued_at)}</Td>
+                  <Td className="text-muted">
+                    {formatTime(j.queued_at)}
+                    {requeuedAt(j) && <div className="text-xs">Re-queued {formatTime(requeuedAt(j))}</div>}
+                  </Td>
                   <Td className="text-muted">{formatTime(j.finished_at)}</Td>
                 </tr>
               ))}

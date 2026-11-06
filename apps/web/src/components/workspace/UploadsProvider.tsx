@@ -2,10 +2,10 @@
 
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { announce } from "@/lib/announce";
-import { ApiError, errorText, uploadFiles } from "@/lib/api";
+import { api, ApiError, errorText, isAbortError, uploadFiles } from "@/lib/api";
 import { MeContext } from "@/lib/hooks";
-import { describeStatus, phaseFromDocument, type UploadPhase } from "@/lib/status";
-import type { Collection, UploadItem } from "@/lib/types";
+import { describeStatus, phaseFromDocument, TERMINAL_PHASES, type UploadPhase } from "@/lib/status";
+import type { Collection, DocumentItem, Page, UploadItem } from "@/lib/types";
 import { useDocStatus, type DocStatusUpdate } from "@/lib/useDocStatus";
 import {
   ACCEPT_ATTR,
@@ -25,12 +25,15 @@ const OPERATOR_NOTE =
   "Operators can't add documents. You can ask about documents already here. An Engineer or Admin can add files.";
 const GONE_MESSAGE = "This file isn't available any more.";
 const READY_PREFIX = "(Ready) ";
+// useDocStatus pauses while the tab is hidden (§5.5), but the "(Ready) " title and a held question
+// only make sense in a hidden tab, so one slow check keeps those working.
+const HIDDEN_POLL_MS = 30_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Plain-words reason for a failed multipart POST (shown on every row of that batch). */
 function transportFailure(e: unknown): Pick<TrackedUpload, "reasonCode" | "reasonMessage"> {
   if (e instanceof ApiError) {
-    if (e.status === 0) return { reasonCode: null, reasonMessage: "Upload interrupted." };
+    if (e.status === 0) return { reasonCode: null, reasonMessage: e.message };
     if (e.status === 413) return { reasonCode: "FILE_TOO_LARGE", reasonMessage: null };
     if (e.status === 429) {
       return { reasonCode: null, reasonMessage: "Lots of people are using the demo right now. Try again in a minute." };
@@ -78,6 +81,13 @@ function setReadyTitle(on: boolean) {
   if (!on && has) document.title = document.title.slice(READY_PREFIX.length);
 }
 
+/** One multipart POST in flight, shared by every row it carries. */
+interface UploadRequest {
+  controller: AbortController;
+  /** Past this point an abort can no longer stop the server storing the files. */
+  bodySent: boolean;
+}
+
 /** Provides UploadsContext (§5.5): validation, "My documents", XHR upload, batched polling with
  *  backoff, ready announcements. */
 export function UploadsProvider({ children, canUpload }: { children: ReactNode; canUpload: boolean }) {
@@ -95,6 +105,8 @@ export function UploadsProvider({ children, canUpload }: { children: ReactNode; 
   const collectionRef = useRef<Collection | null>(null);
   const ensuring = useRef<Promise<Collection> | null>(null);
   const keySeq = useRef(0);
+  const requests = useRef(new Map<string, UploadRequest>());
+  const cancelled = useRef(new Set<string>());
 
   const commit = useCallback((next: TrackedUpload[]) => {
     rowsRef.current = next;
@@ -176,53 +188,96 @@ export function UploadsProvider({ children, canUpload }: { children: ReactNode; 
           .join(". "),
       );
 
-      const post = (c: Collection, group: File[], groupKeys: Set<string>) =>
-        uploadFiles<{ items: UploadItem[] }>(`/collections/${c.id}/documents`, group, (p) =>
-          patchRows(groupKeys, { progress: p }),
+      const entries = valid.map((file, i) => ({ file, key: batch[i].key }));
+      type Entry = (typeof entries)[number];
+      const bytes = (list: Entry[]) => list.reduce((n, e) => n + e.file.size, 0);
+      const alive = (list: Entry[]) => list.filter((e) => !cancelled.current.has(e.key));
+      const finished = new Set<string>();
+
+      // One shared bar across the batch (§5.5), even when it takes several requests.
+      const showProgress = (group: Entry[], fraction: number) => {
+        const total = bytes(alive(entries)) || 1;
+        const done = bytes(alive(entries).filter((e) => finished.has(e.key)));
+        const progress = Math.min(1, (done + fraction * bytes(alive(group))) / total);
+        patchRows(
+          new Set(rowsRef.current.filter((r) => keys.has(r.key) && r.phase === "uploading").map((r) => r.key)),
+          { progress },
         );
-      const send = async (group: File[], groupKeys: Set<string>): Promise<UploadItem[]> => {
+      };
+
+      const send = async (group: Entry[], request: UploadRequest): Promise<UploadItem[]> => {
+        const post = (c: Collection) =>
+          uploadFiles<{ items: UploadItem[] }>(
+            `/collections/${c.id}/documents`,
+            group.map((e) => e.file),
+            (p) => {
+              if (p >= 1) request.bodySent = true;
+              showProgress(group, p);
+            },
+            request.controller.signal,
+          );
         const collection = await getCollection();
         try {
-          return (await post(collection, group, groupKeys)).items;
+          return (await post(collection)).items;
         } catch (e) {
           // The cached collection was deleted in the meantime: find or create it again, once.
           if (!(e instanceof ApiError && e.status === 404)) throw e;
           collectionRef.current = null;
-          return (await post(await getCollection(), group, groupKeys)).items;
+          return (await post(await getCollection())).items;
         }
       };
 
-      // Sequential requests that each fit the proxy body limit; each group's chips switch to
-      // their server status (and start polling) as soon as that group returns.
-      const entries = valid.map((file, i) => ({ file, key: batch[i].key }));
-      for (const group of requestGroups(entries, (e) => e.file.size)) {
-        const groupKeys = new Set(group.map((e) => e.key));
-        let results: UploadItem[];
-        try {
-          results = await send(
-            group.map((e) => e.file),
-            groupKeys,
-          );
-        } catch (e) {
-          const reason = transportFailure(e);
-          const unsent = new Set(
-            rowsRef.current.filter((r) => keys.has(r.key) && r.phase === "uploading").map((r) => r.key),
-          );
-          patchRows(unsent, { phase: "rejected", progress: undefined, phaseSince: Date.now(), ...reason });
-          announce(describeStatus("rejected", reason).sub ?? "Upload failed.");
-          return;
+      try {
+        // Sequential requests that each fit the proxy body limit; each group's chips switch to
+        // their server status (and start polling) as soon as that group returns.
+        for (const group of requestGroups(entries, (e) => e.file.size)) {
+          // Cancelling one file aborts the POST that carries it, so the rest of it goes out again.
+          for (let todo = alive(group); todo.length > 0; todo = alive(todo)) {
+            const request: UploadRequest = { controller: new AbortController(), bodySent: false };
+            todo.forEach((e) => requests.current.set(e.key, request));
+            let results: UploadItem[];
+            try {
+              results = await send(todo, request);
+            } catch (e) {
+              if (isAbortError(e)) continue;
+              const reason = transportFailure(e);
+              const unsent = new Set(
+                rowsRef.current.filter((r) => keys.has(r.key) && r.phase === "uploading").map((r) => r.key),
+              );
+              patchRows(unsent, { phase: "rejected", progress: undefined, phaseSince: Date.now(), ...reason });
+              announce(describeStatus("rejected", reason).sub ?? "Upload failed.");
+              return;
+            } finally {
+              todo.forEach((e) => requests.current.delete(e.key));
+            }
+            const done = Date.now();
+            const byKey = new Map(todo.map((e, i) => [e.key, resultFields(results[i])]));
+            todo.forEach((e, i) => {
+              finished.add(e.key);
+              const item = results[i];
+              // Cancelled too late to abort: the server stored this copy, so take it back. A
+              // duplicate is left alone because that document was already the user's.
+              if (cancelled.current.has(e.key) && item?.status === "queued" && item.document_id) {
+                void api(`/documents/${encodeURIComponent(item.document_id)}`, {
+                  method: "DELETE",
+                  noAuthRedirect: true,
+                }).catch(() => undefined);
+              }
+            });
+            commit(
+              rowsRef.current.map((r) => {
+                const fields = byKey.get(r.key);
+                return fields ? { ...r, ...fields, progress: undefined, phaseSince: done } : r;
+              }),
+            );
+            break;
+          }
         }
-        const done = Date.now();
-        const byKey = new Map(group.map((e, i) => [e.key, resultFields(results[i])]));
-        // Rows removed during the upload stay removed; the documents themselves are kept.
-        commit(
-          rowsRef.current.map((r) => {
-            const fields = byKey.get(r.key);
-            return fields ? { ...r, ...fields, progress: undefined, phaseSince: done } : r;
-          }),
-        );
+      } finally {
+        keys.forEach((key) => cancelled.current.delete(key));
       }
-      announce(resultAnnouncement(rowsRef.current.filter((r) => keys.has(r.key))));
+      const remaining = rowsRef.current.filter((r) => keys.has(r.key));
+      if (remaining.length) announce(resultAnnouncement(remaining));
     },
     [canUpload, commit, getCollection, newKey, patchRows],
   );
@@ -246,8 +301,17 @@ export function UploadsProvider({ children, canUpload }: { children: ReactNode; 
     [commit, newKey],
   );
 
+  // Removing a row that is still uploading cancels that file (§5.4). Once it has arrived, removing
+  // only stops showing it.
   const remove = useCallback(
-    (key: string) => commit(rowsRef.current.filter((r) => r.key !== key)),
+    (key: string) => {
+      const row = rowsRef.current.find((r) => r.key === key);
+      commit(rowsRef.current.filter((r) => r.key !== key));
+      if (row?.phase !== "uploading") return;
+      cancelled.current.add(key);
+      const request = requests.current.get(key);
+      if (request && !request.bodySent) request.controller.abort();
+    },
     [commit],
   );
 
@@ -310,6 +374,21 @@ export function UploadsProvider({ children, canUpload }: { children: ReactNode; 
     [items],
   );
   useDocStatus(watchedIds, myCollection?.id ?? null, { onUpdate: onDocs });
+
+  const hiddenPollCollection = watchedIds.length > 0 ? (myCollection?.id ?? null) : null;
+  useEffect(() => {
+    if (!hiddenPollCollection) return;
+    const id = window.setInterval(() => {
+      if (!document.hidden) return;
+      if (!rowsRef.current.some((r) => r.documentId && !TERMINAL_PHASES.has(r.phase))) return;
+      api<Page<DocumentItem>>(`/documents?collection_id=${encodeURIComponent(hiddenPollCollection)}&limit=200`, {
+        noAuthRedirect: true,
+      })
+        .then((page) => onDocs({ docs: new Map(page.items.map((d) => [d.id, d])), gone: new Set() }))
+        .catch(() => undefined);
+    }, HIDDEN_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [hiddenPollCollection, onDocs]);
 
   // "(Ready) " only marks a hidden tab; drop it as soon as the user is back.
   useEffect(() => {

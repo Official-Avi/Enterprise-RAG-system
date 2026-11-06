@@ -45,7 +45,7 @@ function retrySeconds(error: ApiError): number {
 
 const actionClass =
   "inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border-strong bg-panel px-3 " +
-  "text-sm font-medium text-text transition-colors duration-150 max-sm:min-h-11";
+  "text-sm font-medium text-text transition-[background-color,scale] duration-150 active:duration-100 max-sm:min-h-11";
 
 function AlertGlyph({ tone }: { tone: "warn" | "bad" }) {
   return (
@@ -72,7 +72,7 @@ function AlertGlyph({ tone }: { tone: "warn" | "bad" }) {
 
 /** Counts down from the limit window, then enables. Its accessible name stays "Try again" and the
  *  ticking text is aria-hidden, so the surrounding role="alert" isn't re-read every second. */
-function RateLimitedRetry({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
+function RateLimitedRetry({ error, busy, onRetry }: { error: ApiError; busy: boolean; onRetry: () => void }) {
   const seconds = retrySeconds(error);
   const [remaining, setRemaining] = useState(seconds);
   const [trackedError, setTrackedError] = useState(error);
@@ -93,17 +93,18 @@ function RateLimitedRetry({ error, onRetry }: { error: ApiError; onRetry: () => 
   }, [error, seconds]);
 
   const waiting = remaining > 0;
+  const blocked = waiting || busy;
   return (
     <button
       type="button"
-      aria-disabled={waiting || undefined}
+      aria-disabled={blocked || undefined}
       onClick={() => {
-        if (!waiting) onRetry();
+        if (!blocked) onRetry();
       }}
       className={cx(
         actionClass,
         "tabular-nums",
-        waiting ? "cursor-not-allowed opacity-60" : "hover:bg-bg active:scale-[.98]",
+        blocked ? "cursor-not-allowed opacity-60" : "hover:bg-bg active:scale-[.98]",
       )}
     >
       <Icon name="refresh" />
@@ -174,7 +175,7 @@ function CopyRef({ id }: { id: string }) {
         type="button"
         onClick={(e) => void copy(e.currentTarget)}
         className={cx(
-          "inline-flex min-h-6 items-center gap-1 rounded-md px-1.5 font-sans text-xs font-medium",
+          "inline-flex min-h-6 items-center gap-1 rounded-lg px-1.5 font-sans text-xs font-medium",
           "text-muted transition-colors duration-150 hover:bg-panel hover:text-text max-sm:min-h-11",
         )}
       >
@@ -187,7 +188,16 @@ function CopyRef({ id }: { id: string }) {
 }
 
 /** Inline error / rate-limit card under the kept question (§5.6). Never a toast. */
-export function AnswerErrorCard({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
+export function AnswerErrorCard({
+  error,
+  busy = false,
+  onRetry,
+}: {
+  error: ApiError;
+  /** Another question is on its way: only one goes out at a time, so Try again has to wait. */
+  busy?: boolean;
+  onRetry: () => void;
+}) {
   const kind = kindOf(error);
   const tone = kind === "session" || kind === "other" ? "bad" : "warn";
   const { title, body } = COPY[kind];
@@ -209,9 +219,16 @@ export function AnswerErrorCard({ error, onRetry }: { error: ApiError; onRetry: 
             {kind === "session" ? (
               <SignInAgain />
             ) : kind === "rate" ? (
-              <RateLimitedRetry error={error} onRetry={onRetry} />
+              <RateLimitedRetry error={error} busy={busy} onRetry={onRetry} />
             ) : (
-              <button type="button" onClick={onRetry} className={cx(actionClass, "hover:bg-bg active:scale-[.98]")}>
+              <button
+                type="button"
+                aria-disabled={busy || undefined}
+                onClick={() => {
+                  if (!busy) onRetry();
+                }}
+                className={cx(actionClass, busy ? "cursor-not-allowed opacity-60" : "hover:bg-bg active:scale-[.98]")}
+              >
                 <Icon name="refresh" />
                 Try again
               </button>

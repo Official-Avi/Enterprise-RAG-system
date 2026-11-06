@@ -10,8 +10,8 @@ const CONTROL =
   "pointer-coarse:h-11";
 
 /** §6 toolbar: name search (16px text so iOS doesn't zoom), status chips with counts and the
- *  collection menu. Chips other than All hide at 0 unless selected, so the selected filter's
- *  empty state stays reachable. */
+ *  collection menu. Only Needs attention hides at 0, and not while it is selected, so its empty
+ *  state stays reachable. */
 export function LibraryToolbar({
   query,
   onQuery,
@@ -19,6 +19,7 @@ export function LibraryToolbar({
   filter,
   onFilter,
   counts,
+  atLeast,
   collections,
   collectionId,
   onCollection,
@@ -29,13 +30,15 @@ export function LibraryToolbar({
   filter: StatusFilter;
   onFilter: (filter: StatusFilter) => void;
   counts: Record<StatusFilter, number>;
+  /** Chips whose count is only a lower bound, because the list stops at the newest 200. */
+  atLeast: ReadonlySet<StatusFilter>;
   /** Readable collections; the menu is hidden until they load. */
   collections: { id: string; name: string }[];
   collectionId: string;
   onCollection: (id: string) => void;
 }) {
   const selectId = useId();
-  const chips = FILTERS.filter((f) => f.key === "all" || f.key === filter || counts[f.key] > 0);
+  const chips = FILTERS.filter((f) => f.key !== "attention" || f.key === filter || counts.attention > 0);
 
   return (
     <div className="mt-5 flex flex-col gap-3">
@@ -96,7 +99,10 @@ export function LibraryToolbar({
               )}
             >
               {f.label}
-              <span className={cx("tabular-nums", active ? "text-accent" : "text-muted")}>{counts[f.key]}</span>
+              <span className={cx("tabular-nums", active ? "text-accent" : "text-muted")}>
+                {counts[f.key]}
+                {atLeast.has(f.key) ? "+" : ""}
+              </span>
             </button>
           );
         })}

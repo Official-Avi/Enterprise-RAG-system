@@ -21,11 +21,20 @@ const FALLBACK_POLL_MS = 5_000;
 /** The next poll is scheduled when a request settles, so a hung request would freeze polling. */
 const POLL_TIMEOUT_MS = 10_000;
 
+export interface UseApiOptions {
+  /** A 401 is reported through `error` instead of leaving for /login, so the page can keep what
+   *  the user was doing on screen and let them choose when to sign in again (§5.6). */
+  noAuthRedirect?: boolean;
+  /** Hold the next poll while the tab is hidden; it runs as soon as the tab is visible (§5.5). */
+  pauseWhenHidden?: boolean;
+}
+
 /** Fetch `path` (null = skip). `pollMs` may depend on the latest data (null = stop polling).
  *  A failed poll keeps the previous data, reports `error`, and retries with backoff. */
 export function useApi<T>(
   path: string | null,
   pollMs?: number | ((data: T) => number | null),
+  options?: UseApiOptions,
 ) {
   const [state, setState] = useState<PathState<T>>({ path, loading: path !== null });
   const [tick, setTick] = useState(0);
@@ -41,8 +50,21 @@ export function useApi<T>(
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
+    const poll = () => setTick((t) => t + 1);
+    const pollOnceVisible = () => {
+      if (document.hidden) return;
+      document.removeEventListener("visibilitychange", pollOnceVisible);
+      poll();
+    };
     const schedule = (ms: number | null | undefined) => {
-      if (ms) timer = setTimeout(() => setTick((t) => t + 1), ms);
+      if (!ms) return;
+      timer = setTimeout(() => {
+        if (options?.pauseWhenHidden && document.hidden) {
+          document.addEventListener("visibilitychange", pollOnceVisible);
+        } else {
+          poll();
+        }
+      }, ms);
     };
 
     const run = async () => {
@@ -54,7 +76,10 @@ export function useApi<T>(
           }, POLL_TIMEOUT_MS)
         : undefined;
       try {
-        const data = await api<T>(path, { signal: controller.signal });
+        const data = await api<T>(path, {
+          signal: controller.signal,
+          noAuthRedirect: options?.noAuthRedirect,
+        });
         if (cancelled) return;
         // An abort while the body was being read resolves as null data; it is still a timeout.
         if (timedOut) throw new Error("timeout");
@@ -85,6 +110,7 @@ export function useApi<T>(
       cancelled = true;
       controller.abort();
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", pollOnceVisible);
     };
     // pollMs is intentionally read fresh on each run without re-subscribing.
     // eslint-disable-next-line react-hooks/exhaustive-deps

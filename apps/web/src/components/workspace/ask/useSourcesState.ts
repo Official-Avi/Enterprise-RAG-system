@@ -7,15 +7,11 @@ import type { AnswerView, Citation, Turn } from "../types";
 const AUTO_OPEN_QUERY = "(min-width: 1440px)";
 const NO_CITATIONS: Citation[] = [];
 
-function latestCited(turns: Turn[]): Turn | undefined {
-  for (let i = turns.length - 1; i >= 0; i--) {
-    const t = turns[i];
-    if (t.status === "answered" && t.answer && t.answer.citations.length > 0) return t;
-  }
-  return undefined;
+function latestAnswered(turns: Turn[]): Turn | undefined {
+  return turns.findLast((t) => t.status === "answered" && t.answer);
 }
 
-/** Which answer's sources the panel/sheet shows (default: the latest cited one), the active
+/** Which answer's sources the panel/sheet shows (default: the latest answer, §5.7), the active
  *  marker, open state, and the focus hand-back to whatever opened it (§5.7, §9 #7). */
 export function useSourcesState(turns: Turn[]) {
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
@@ -25,7 +21,7 @@ export function useSourcesState(turns: Turn[]) {
   const autoOpened = useRef(false);
 
   const picked = selectedTurnId ? turns.find((t) => t.id === selectedTurnId && t.answer) : undefined;
-  const selected = picked ?? latestCited(turns);
+  const selected = picked ?? latestAnswered(turns);
   const citations = selected?.answer?.citations ?? NO_CITATIONS;
 
   const remember = () => {
@@ -73,19 +69,19 @@ export function useSourcesState(turns: Turn[]) {
     setOpen(true);
   };
 
-  /** A fresh answer arrived. Cited answers become the panel's default; the first one in a chat
-   *  opens the panel at >= 1440px, without moving focus. */
+  /** A fresh answer arrived and becomes the panel's default; the first cited one in a chat opens
+   *  the panel at >= 1440px, without moving focus. */
   const noteAnswer = useCallback((answer: AnswerView, hadCitationsBefore: boolean) => {
-    if (answer.citations.length === 0) return;
     setSelectedTurnId(null);
     setActiveMarker(null);
+    if (answer.citations.length === 0) return;
     if (hadCitationsBefore || autoOpened.current) return;
     autoOpened.current = true;
     if (window.matchMedia(AUTO_OPEN_QUERY).matches) setOpen(true);
   }, []);
 
   return {
-    /** null = the latest cited answer. */
+    /** null = the latest answer. */
     selectedTurnId: picked ? picked.id : null,
     activeMarker: picked ? activeMarker : null,
     citations,

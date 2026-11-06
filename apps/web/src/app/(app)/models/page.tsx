@@ -13,11 +13,12 @@ export default function ModelsPage() {
   const health = useApi<ModelHealth>("/models/health", 30000);
   const metrics = useApi<ModelMetrics>(`/models/metrics?window=${range}`, 15000);
   const m = models.data?.items[0];
+
   return (
     <RequirePermission permission="model:read">
       <PageHeader title="Model serving" description="The configured inference endpoint, its health and measured request metrics. Credentials are never displayed." />
       {models.loading && <Loading />}
-      {models.error && <ErrorState error={models.error} />}
+      {models.error && <ErrorState error={models.error} onRetry={models.reload} />}
       {m && (
         <div className="grid gap-4 lg:grid-cols-3">
           <Card title="Configured endpoint">
@@ -35,7 +36,8 @@ export default function ModelsPage() {
             )}
           </Card>
           <Card title="Health">
-            {health.error && <ErrorState error={health.error} />}
+            {health.loading && <Loading />}
+            {health.error && <ErrorState error={health.error} onRetry={health.reload} />}
             {health.data && (
               <div className="space-y-2 text-sm">
                 <StatusBadge status={health.data.ok ? "healthy" : "failed"} label={health.data.ok ? "Available" : "Unavailable"} />
@@ -47,14 +49,15 @@ export default function ModelsPage() {
           <Card
             title="Request metrics"
             actions={
-              <select aria-label="Time window" className={`${inputClass} w-24 py-0.5`} value={range} onChange={(e) => setRange(e.target.value)}>
+              <select aria-label="Time window" className={`${inputClass} w-28! py-0.5`} value={range} onChange={(e) => setRange(e.target.value)}>
                 <option value="1h">1 hour</option>
                 <option value="24h">24 hours</option>
                 <option value="7d">7 days</option>
               </select>
             }
           >
-            {metrics.error && <ErrorState error={metrics.error} />}
+            {metrics.loading && <Loading />}
+            {metrics.error && <ErrorState error={metrics.error} onRetry={metrics.reload} />}
             {metrics.data && (
               <div className="grid grid-cols-2 gap-2">
                 <Kpi label="Requests" value={metrics.data.requests} />
