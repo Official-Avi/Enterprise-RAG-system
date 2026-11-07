@@ -1,6 +1,14 @@
 # RackFlow AI — local/staging stack for Linux hosts with Docker.
 # Usage:  cp .env.example .env  (set POSTGRES_PASSWORD etc.)  &&  docker compose up --build
 # Data services bind to 127.0.0.1 only. Put TLS and a real load balancer in front for staging/prod.
+# Containers get only the settings listed in x-backend-env; anything else in .env does not reach them.
+#
+# Client addresses: the browser reaches the API through the web container's /api proxy, so the API
+# sees the web container as the client of every request, and sign-in rate limits are shared. With a
+# load balancer in front of web, make it set X-Forwarded-For, then set TRUSTED_PROXY_IPS=172.30.0.10
+# (web's fixed address below). The Next proxy adds no address of its own and passes on whatever
+# X-Forwarded-For it receives, so turn this on only while port 3000 can be reached through that load
+# balancer alone. Published on 0.0.0.0 with this set, clients could forge their address.
 
 name: rackflow
 
@@ -18,6 +26,8 @@ x-backend-env: &backend-env
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
   COOKIE_SECURE: ${COOKIE_SECURE:-false}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DEMO_MODE: ${DEMO_MODE:-false}
+  TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
 
 services:
   postgres:
@@ -91,11 +101,23 @@ services:
       context: ./apps/web
       args:
         API_PROXY_TARGET: http://api:8000
+    networks:
+      default:
+        ipv4_address: 172.30.0.10  # fixed so TRUSTED_PROXY_IPS can name it
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
       api:
         condition: service_healthy
+
+networks:
+  default:
+    ipam:
+      config:
+        # Other containers are given addresses from ip_range, so none can take web's. If this subnet
+        # overlaps a network on the host, change it here and web's address together.
+        - subnet: 172.30.0.0/24
+          ip_range: 172.30.0.128/25
 
 volumes:
   pgdata:

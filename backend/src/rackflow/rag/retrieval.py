@@ -26,6 +26,9 @@ from rackflow.providers.vectorstore import get_vector_store
 
 log = logging.getLogger(__name__)
 CANDIDATE_MULTIPLIER = 3
+# Only these keep page numbers. DOCX, TXT and MD are extracted as one "page", so every chunk of
+# them would claim to be on page 1.
+PAGINATED_FILE_TYPES = frozenset({"pdf"})
 
 
 @dataclass(slots=True)
@@ -75,7 +78,7 @@ def retrieve(
         return []
 
     rows = db.execute(
-        select(Chunk, Document.filename)
+        select(Chunk, Document.filename, Document.file_type)
         .join(Document, Document.id == Chunk.document_id)
         .where(
             Chunk.id.in_([h.id for h in hits]),
@@ -87,7 +90,7 @@ def retrieve(
             Document.current_version_id == Chunk.document_version_id,
         )
     ).all()
-    by_id = {chunk.id: (chunk, filename) for chunk, filename in rows}
+    by_id = {chunk.id: (chunk, filename, file_type) for chunk, filename, file_type in rows}
 
     results: list[RetrievedChunk] = []
     seen_hashes: set[str] = set()
@@ -95,13 +98,15 @@ def retrieve(
         found = by_id.get(hit.id)
         if found is None:
             continue  # stale/unauthorized vector: never returned
-        chunk, filename = found
+        chunk, filename, file_type = found
+        paginated = file_type in PAGINATED_FILE_TYPES
         if chunk.content_hash in seen_hashes:
             continue
         seen_hashes.add(chunk.content_hash)
         results.append(RetrievedChunk(
             chunk_id=chunk.id, document_id=chunk.document_id, collection_id=chunk.collection_id,
-            filename=filename, page_start=chunk.page_start, page_end=chunk.page_end,
+            filename=filename, page_start=chunk.page_start if paginated else None,
+            page_end=chunk.page_end if paginated else None,
             score=round(hit.score, 4), text=chunk.text,
         ))
         if len(results) == top_k:

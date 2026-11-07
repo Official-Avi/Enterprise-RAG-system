@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query, Response
+from pydantic import AfterValidator, BaseModel, Field
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from rackflow.audit import record_audit
@@ -15,7 +17,7 @@ from rackflow.auth.access import accessible_collections
 from rackflow.auth.deps import require
 from rackflow.auth.principal import Principal
 from rackflow.auth.rbac import Permission
-from rackflow.core.errors import NotFoundError
+from rackflow.core.errors import NotFoundError, ValidationFailedError
 from rackflow.core.ratelimit import chat_limiter
 from rackflow.db.models import (
     ChatMessage,
@@ -26,16 +28,37 @@ from rackflow.db.models import (
     EvidenceStatus,
 )
 from rackflow.db.session import get_db
-from rackflow.rag.answer import answer_question
-from rackflow.rag.retrieval import authorized_collections, retrieve
+from rackflow.rag.answer import answer_question, prior_user_turns
+from rackflow.rag.retrieval import PAGINATED_FILE_TYPES, authorized_collections, retrieve
 from rackflow.tenant_settings import effective_settings
 
 router = APIRouter(tags=["chat"])
 
+# Shown in place of a saved answer the caller can no longer check access for. An answer can be
+# verbatim document text (the extractive provider's always is), so hiding only its citations would
+# leave the content readable after access was revoked.
+ANSWER_WITHHELD_NOTE = ("This answer is hidden because it used a document you no longer have "
+                        "access to. Ask again to search the documents you can open now.")
+
+
+def _no_nul(value: str) -> str:
+    """PostgreSQL text can't hold NUL: refuse it here, not with a 500 after answering."""
+    if "\x00" in value:
+        raise ValueError("must not contain NUL characters")
+    return value
+
+
+StoredText = Annotated[str, AfterValidator(_no_nul)]
+
 
 class SessionIn(BaseModel):
-    title: str | None = Field(default=None, max_length=200)
+    title: StoredText | None = Field(default=None, max_length=200)
     collection_ids: list[uuid.UUID] = Field(min_length=1, max_length=50)
+
+
+class SessionPatch(BaseModel):
+    title: StoredText | None = Field(default=None, min_length=1, max_length=200)
+    collection_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=50)
 
 
 class SessionOut(BaseModel):
@@ -53,12 +76,14 @@ class SessionPage(BaseModel):
 
 class CitationOut(BaseModel):
     marker: int
-    document_id: uuid.UUID
+    # None, with an empty filename and quote, only when the document's record no longer exists.
+    document_id: uuid.UUID | None
     filename: str
     page: int | None
     chunk_id: uuid.UUID | None
     quote: str
     score: float | None
+    document_deleted: bool = False
 
 
 class ModelRef(BaseModel):
@@ -76,6 +101,9 @@ class MessageOut(BaseModel):
     model: ModelRef | None
     latency_ms: int | None
     created_at: datetime
+    retrieved_count: int | None = None  # passages found when asked; None on the user's messages
+    # `content` is ANSWER_WITHHELD_NOTE and `evidence_status` is None: there is no answer to judge.
+    content_withheld: bool = False
 
 
 class SessionDetail(BaseModel):
@@ -84,7 +112,7 @@ class SessionDetail(BaseModel):
 
 
 class AskIn(BaseModel):
-    message: str = Field(min_length=1, max_length=4000)
+    message: StoredText = Field(min_length=1, max_length=4000)
     collection_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
 
 
@@ -118,6 +146,30 @@ class InspectOut(BaseModel):
     items: list[InspectItem]
 
 
+def _stored_citation(cit: Citation, filename: str | None, file_type: str | None,
+                     collection_id: uuid.UUID | None, status: DocumentStatus | None,
+                     allowed: Mapping[uuid.UUID, Any]) -> CitationOut | None:
+    """A saved citation as the caller may see it now, or None if they lost access (ADR-009).
+
+    A deleted document keeps its attribution: the tombstone's name and what the citation stored
+    when the answer was given, never document content. Once the tombstone is gone too (its
+    collection was deleted) access can't be re-checked, so only the marker survives. Keeping it
+    stops the client crediting that sentence to the next source.
+
+    Citations saved before unpaginated formats lost their page numbers still hold page 1.
+    """
+    if collection_id is None or filename is None:
+        return CitationOut(marker=cit.marker, document_id=None, filename="", page=None,
+                           chunk_id=None, quote="", score=None, document_deleted=True)
+    if collection_id not in allowed:
+        return None
+    deleted = status in (DocumentStatus.DELETING, DocumentStatus.DELETED)
+    return CitationOut(marker=cit.marker, document_id=cit.document_id, filename=filename,
+                       page=cit.page if file_type in PAGINATED_FILE_TYPES else None,
+                       chunk_id=None if deleted else cit.chunk_id, quote=cit.quote,
+                       score=cit.rank_score, document_deleted=deleted)
+
+
 def _session_out(c: Conversation) -> SessionOut:
     return SessionOut(id=c.id, title=c.title,
                       collection_ids=[uuid.UUID(x) for x in c.collection_ids],
@@ -138,6 +190,23 @@ def _require_collections(db: Session, principal: Principal, ids: list[uuid.UUID]
     if len(authorized_collections(db, principal, ids)) != len(set(ids)):
         raise NotFoundError(code="COLLECTION_NOT_FOUND",
                             message="The requested collection could not be found.")
+
+
+def _session_scope(db: Session, principal: Principal, conv: Conversation) -> list[uuid.UUID]:
+    """The session's stored collections that still exist and are still accessible. Collections
+    deleted (or revoked) since the session was created are dropped silently, so one deleted
+    collection does not break the whole chat; only an empty result is an error."""
+    stored = [uuid.UUID(c) for c in conv.collection_ids]
+    # Guard the empty case explicitly: authorized_collections() treats "none requested" as
+    # "every accessible collection", which would silently widen the scope.
+    scope = authorized_collections(db, principal, stored) if stored else []
+    if not scope:
+        raise NotFoundError(
+            code="SESSION_SCOPE_EMPTY",
+            message="None of this chat's collections are available any more. "
+                    "Choose other collections or start a new chat.",
+        )
+    return scope
 
 
 @router.post("/chat/sessions", response_model=SessionOut, status_code=201)
@@ -176,33 +245,95 @@ def get_session(
     conv = _own_session(db, principal, session_id)
     messages = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conv.id)
                           .order_by(ChatMessage.created_at)).all()
-    # Re-authorise stored citations on every read (ADR-009): hide sources that were deleted or
-    # that the caller can no longer access.
-    allowed = set(accessible_collections(db, principal))
+    # Re-authorise stored citations on every read (ADR-009). Outer join: a citation outlives its
+    # document's row, and its tenant is checked here rather than through the document. A message
+    # with any citation that fails the check is withheld: its text may hold that source's content.
+    allowed = accessible_collections(db, principal)
     rows = db.execute(
-        select(Citation, Document.filename, Document.collection_id, Document.status)
-        .join(Document, Document.id == Citation.document_id)
+        select(Citation, Document.filename, Document.file_type, Document.collection_id,
+               Document.status)
+        .outerjoin(Document, Document.id == Citation.document_id)
         .where(Citation.message_id.in_([m.id for m in messages]),
                Citation.tenant_id == principal.tenant_id)
         .order_by(Citation.marker)
     ).all() if messages else []
     by_message: dict[uuid.UUID, list[CitationOut]] = {}
-    for cit, filename, collection_id, status in rows:
-        if collection_id in allowed and status == DocumentStatus.INDEXED:
-            by_message.setdefault(cit.message_id, []).append(CitationOut(
-                marker=cit.marker, document_id=cit.document_id, filename=filename,
-                page=cit.page, chunk_id=cit.chunk_id, quote=cit.quote, score=cit.rank_score))
+    withheld: set[uuid.UUID] = set()
+    for cit, filename, file_type, collection_id, status in rows:
+        out = _stored_citation(cit, filename, file_type, collection_id, status, allowed)
+        if out is not None:
+            by_message.setdefault(cit.message_id, []).append(out)
+        if collection_id not in allowed:
+            withheld.add(cit.message_id)
     return SessionDetail(session=_session_out(conv), messages=[
         MessageOut(
-            id=m.id, role=m.role, content=m.content,
-            evidence_status=m.evidence_status.value if m.evidence_status else None,
+            id=m.id, role=m.role,
+            content=ANSWER_WITHHELD_NOTE if m.id in withheld else m.content,
+            evidence_status=m.evidence_status.value
+            if m.evidence_status and m.id not in withheld else None,
             citations=by_message.get(m.id, []),
+            content_withheld=m.id in withheld,
             model=ModelRef(provider=m.model_provider, name=m.model_name or "")
             if m.model_provider else None,
             latency_ms=m.latency_ms, created_at=m.created_at,
+            retrieved_count=(m.retrieval_stats or {}).get("retrieved"),
         )
         for m in messages
     ])
+
+
+@router.patch("/chat/sessions/{session_id}", response_model=SessionOut)
+def update_session(
+    session_id: uuid.UUID,
+    body: SessionPatch,
+    principal: Principal = Depends(require(Permission.CHAT_USE)),
+    db: Session = Depends(get_db),
+) -> SessionOut:
+    """Rename and/or re-scope the caller's own chat. `updated_at` is left alone: it orders the
+    history by last activity, and a rename is not activity (UI spec §5.10)."""
+    conv = _own_session(db, principal, session_id)
+    values: dict[str, Any] = {}
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise ValidationFailedError(code="INVALID_TITLE", message="The title cannot be empty.")
+        values["title"] = title
+    if body.collection_ids is not None:
+        _require_collections(db, principal, body.collection_ids)
+        values["collection_ids"] = [str(c) for c in dict.fromkeys(body.collection_ids)]
+    if not values:
+        return _session_out(conv)
+    # A Core UPDATE that sets updated_at to itself; the ORM `onupdate` would otherwise bump it.
+    db.execute(update(Conversation).where(Conversation.id == conv.id)
+               .values(**values, updated_at=Conversation.updated_at)
+               .execution_options(synchronize_session=False))
+    # Audit metadata is counts only: the title is usually the user's first question.
+    if "title" in values:
+        record_audit(db, action="chat.session.rename", resource_type="chat_session",
+                     resource_id=conv.id, principal=principal)
+    if "collection_ids" in values:
+        record_audit(db, action="chat.session.update", resource_type="chat_session",
+                     resource_id=conv.id, principal=principal,
+                     metadata={"collections": len(values["collection_ids"])})
+    db.commit()
+    db.refresh(conv)
+    return _session_out(conv)
+
+
+@router.delete("/chat/sessions/{session_id}", status_code=204)
+def delete_session(
+    session_id: uuid.UUID,
+    principal: Principal = Depends(require(Permission.CHAT_USE)),
+    db: Session = Depends(get_db),
+) -> Response:
+    conv = _own_session(db, principal, session_id)
+    messages = db.scalar(select(func.count()).select_from(ChatMessage)
+                         .where(ChatMessage.conversation_id == conv.id)) or 0
+    db.delete(conv)  # messages and their citations go with it (ON DELETE CASCADE)
+    record_audit(db, action="chat.session.delete", resource_type="chat_session",
+                 resource_id=conv.id, principal=principal, metadata={"messages": messages})
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/chat/sessions/{session_id}/messages", response_model=AnswerOut)
@@ -214,10 +345,14 @@ def ask(
 ) -> AnswerOut:
     chat_limiter.hit(f"{principal.tenant_id}:{principal.user_id}")
     conv = _own_session(db, principal, session_id)
-    collection_ids = body.collection_ids or [uuid.UUID(c) for c in conv.collection_ids]
-    _require_collections(db, principal, collection_ids)
+    if body.collection_ids:  # an explicit per-message override must be fully accessible
+        collection_ids = body.collection_ids
+        _require_collections(db, principal, collection_ids)
+    else:
+        collection_ids = _session_scope(db, principal, conv)
 
-    result = answer_question(db, principal, body.message.strip(), collection_ids)
+    result = answer_question(db, principal, body.message.strip(), collection_ids,
+                             history=prior_user_turns(db, principal.tenant_id, conv.id))
 
     user_msg = ChatMessage(tenant_id=principal.tenant_id, conversation_id=conv.id, role="user",
                            content=body.message.strip())

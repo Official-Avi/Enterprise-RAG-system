@@ -7,10 +7,10 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from rackflow.db.models import Chunk, Document, JobStatus, ProcessingJob, Role
+from rackflow.db.models import Chunk, Document, DocumentStatus, JobStatus, ProcessingJob, Role
 from rackflow.providers.storage import get_object_storage
 from rackflow.providers.vectorstore import get_vector_store
 from rackflow.worker.main import main as worker_main
@@ -176,3 +176,83 @@ def test_document_access_is_scoped(client: TestClient, factory: Factory) -> None
     # Upload into a collection without write access is refused (indistinguishable 404).
     assert client.post(f"/api/v1/collections/{restricted}/documents", headers=other_eng.headers,
                        files=[("files", ("x.md", b"# x\n\ntext"))]).status_code == 404
+
+
+def test_embedding_dependency_failure_fails_once_at_the_embed_stage(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUG-03: a broken embedding runtime is recorded against EMBED (not CHUNK), with a safe
+    DEPENDENCY_UNAVAILABLE code, and is not retried."""
+    from rackflow.rag import indexing
+
+    def broken() -> None:
+        raise ImportError("DLL load failed while importing onnxruntime_pybind11_state",
+                          name="onnxruntime")
+
+    monkeypatch.setattr(indexing, "get_embedding_provider", broken)
+    eng = factory.actor(Role.ENGINEER)
+    cid = make_collection(client, eng)
+    item = upload(client, eng, cid, [("notes.md", b"# Notes\n\nRotate the TLS certificates.\n")])[0]
+    run_worker()
+
+    doc_url = f"/api/v1/documents/{item['document_id']}"
+    doc = client.get(doc_url, headers=eng.headers).json()
+    assert doc["status"] == "failed"
+    assert doc["latest_job"]["error_code"] == "DEPENDENCY_UNAVAILABLE"
+    assert doc["latest_job"]["attempt_count"] == 1
+    pipeline = client.get(f"{doc_url}/pipeline", headers=eng.headers).json()
+    stages = {s["stage"]: s for s in pipeline["jobs"][0]["stages"]}
+    assert stages["chunk"]["status"] == "succeeded"
+    assert stages["embed"]["status"] == "failed"
+    assert stages["embed"]["error_code"] == "DEPENDENCY_UNAVAILABLE"
+    assert "index" not in stages
+
+
+def test_reindex_rebuilds_lost_vectors(client: TestClient, factory: Factory, db: Session,
+                                       capsys: pytest.CaptureFixture[str]) -> None:
+    """BUG-01 recovery: after the vector collection is lost, `rackflow-admin reindex` re-queues
+    the tenant's documents and the worker rebuilds every vector from the stored originals."""
+    from rackflow.cli import main as admin_cli
+
+    eng = factory.actor(Role.ENGINEER)
+    cid = make_collection(client, eng)
+    items = upload(client, eng, cid, [
+        ("runbook.pdf", RUNBOOK),
+        ("notes.md", b"# Notes\n\nRotate the TLS certificates every 90 days.\n"),
+    ])
+    run_worker()
+    pdf_id, md_id = (uuid.UUID(i["document_id"]) for i in items)
+    store = get_vector_store()
+    assert store.count_document(eng.tenant_id, pdf_id) > 0
+
+    # Simulate BUG-01 on this session's throwaway collection (never a live one), and a document
+    # whose ingestion had failed.
+    assert store.collection.startswith("rackflow_test_")
+    store.client.delete_collection(store.collection)
+    db.execute(update(Document).where(Document.id == md_id).values(status=DocumentStatus.FAILED))
+    db.commit()
+    jobs = select(func.count()).select_from(ProcessingJob).where(
+        ProcessingJob.tenant_id == eng.tenant_id)
+
+    assert admin_cli(["reindex", "--tenant", "acme", "--dry-run"]) == 0
+    assert "would queue 1 document(s)" in capsys.readouterr().out  # failed ones need the flag
+    assert db.scalar(jobs) == 2  # a dry run writes nothing
+
+    assert admin_cli(["reindex", "--tenant", "acme", "--include-failed"]) == 0
+    assert "queued 2 document(s)" in capsys.readouterr().out
+    keys = db.scalars(select(ProcessingJob.idempotency_key)
+                      .where(ProcessingJob.idempotency_key.like("reindex:%"))).all()
+    assert sorted(keys) == sorted([f"reindex:{pdf_id}:2", f"reindex:{md_id}:2"])
+    # The documents are queued now, so running the command again queues nothing.
+    assert admin_cli(["reindex", "--tenant", "acme", "--include-failed"]) == 0
+    assert "queued 0 document(s)" in capsys.readouterr().out
+
+    run_worker()
+    db.expire_all()
+    for doc_id in (pdf_id, md_id):
+        doc = db.get(Document, doc_id)
+        assert doc is not None and doc.status == DocumentStatus.INDEXED
+        assert doc.chunk_count and doc.chunk_count > 0
+        assert store.count_document(eng.tenant_id, doc_id,
+                                    version_id=doc.current_version_id) == doc.chunk_count
+        assert store.count_document(eng.tenant_id, doc_id) == doc.chunk_count  # no stale points
+    assert admin_cli(["reindex", "--tenant", "no-such-tenant"]) == 1

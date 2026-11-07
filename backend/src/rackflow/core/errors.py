@@ -30,6 +30,11 @@ class AppError(Exception):
         self.status_code = status_code or self.status_code
         super().__init__(self.message)
 
+    @property
+    def headers(self) -> dict[str, str] | None:
+        """Extra response headers for this error (none by default)."""
+        return None
+
 
 class NotFoundError(AppError):
     """Also used for resources in other tenants or without permission, to avoid existence leaks."""
@@ -74,6 +79,15 @@ class RateLimitedError(AppError):
     code = "RATE_LIMITED"
     message = "Too many requests. Please retry later."
 
+    def __init__(self, message: str | None = None, *, retry_after: int | None = None,
+                 code: str | None = None) -> None:
+        super().__init__(message, code=code)
+        self.retry_after = retry_after  # whole seconds until a retry can succeed
+
+    @property
+    def headers(self) -> dict[str, str] | None:
+        return {"Retry-After": str(self.retry_after)} if self.retry_after else None
+
 
 class ServiceUnavailableError(AppError):
     status_code = 503
@@ -88,7 +102,8 @@ def error_body(code: str, message: str) -> dict[str, object]:
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError) -> JSONResponse:
-        return JSONResponse(error_body(exc.code, exc.message), status_code=exc.status_code)
+        return JSONResponse(error_body(exc.code, exc.message), status_code=exc.status_code,
+                            headers=exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:

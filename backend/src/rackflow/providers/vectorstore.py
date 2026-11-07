@@ -4,6 +4,7 @@ retrieval re-validates hits against PostgreSQL."""
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Sequence
 from functools import lru_cache
@@ -12,6 +13,8 @@ from qdrant_client import QdrantClient, models
 
 from rackflow.core.config import get_settings
 from rackflow.providers.interfaces import VectorFilter, VectorHit, VectorRecord
+
+log = logging.getLogger(__name__)
 
 _INDEXED_FIELDS = ("tenant_id", "collection_id", "document_id", "document_version_id")
 
@@ -27,9 +30,15 @@ class QdrantVectorStore:
         self._ready = False
 
     def ensure_collection(self, dimension: int) -> None:
-        if self._ready:
+        # Existence is re-checked on every call (one cheap request per indexed document): a
+        # collection deleted while the worker runs is recreated instead of failing every upsert.
+        exists = self.client.collection_exists(self.collection)
+        if self._ready and exists:
             return
-        if not self.client.collection_exists(self.collection):
+        if not exists:
+            # Expected once per deployment. Later it means the vectors were lost, and this makes the
+            # collection check pass while only new uploads have vectors: operators need the trace.
+            log.warning("vector_collection_created", extra={"collection": self.collection})
             self.client.create_collection(
                 self.collection,
                 vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
@@ -127,6 +136,9 @@ class QdrantVectorStore:
     def health(self) -> bool:
         self.client.get_collections()
         return True
+
+    def collection_exists(self) -> bool:
+        return bool(self.client.collection_exists(self.collection))
 
 
 @lru_cache(maxsize=1)

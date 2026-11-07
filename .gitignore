@@ -33,3 +33,7 @@ var/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local secrets kept in Docs/ (never commit)
+Docs/env
+Docs/demo-password.txt

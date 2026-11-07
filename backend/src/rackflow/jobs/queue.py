@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from rackflow.core.config import get_settings
@@ -72,6 +73,27 @@ def _on_terminal(db: Session, job: ProcessingJob) -> None:
         doc = db.get(Document, job.document_id)
         if doc is not None and doc.status in (DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
             doc.status = DocumentStatus.FAILED
+    if (job.job_type == JobType.DELETE_DOCUMENT and job.document_id
+            and job.status in (JobStatus.FAILED, JobStatus.CANCELLED)):
+        doc = db.get(Document, job.document_id)
+        if doc is not None and doc.status == DocumentStatus.DELETING:
+            _restore_undeleted(db, doc)
+
+
+def _restore_undeleted(db: Session, doc: Document) -> None:
+    """A delete that gave up leaves the file in place, so show it again as failed. The owner can
+    then delete it again; nothing is left stuck in `deleting` with no job working on it.
+
+    Some of its vectors or its stored file may already be gone, so it must not read as indexed.
+    Clearing deleted_at can collide with a live copy uploaded after the delete was requested: the
+    copy keeps the dedup slot, and this row stays out of retrieval and quota."""
+    doc.status = DocumentStatus.FAILED
+    try:
+        with db.begin_nested():
+            doc.deleted_at = None
+            db.flush()
+    except IntegrityError:
+        pass  # savepoint rolled back: deleted_at keeps its value
 
 
 def _close_attempt(db: Session, job: ProcessingJob, attempt_number: int, status: str,
@@ -222,18 +244,57 @@ def request_cancel(db: Session, job: ProcessingJob) -> ProcessingJob:
     return job
 
 
+def delete_gave_up(db: Session, document_id: uuid.UUID) -> bool:
+    """The last thing asked of this document was a delete that did not finish. Its row is back as
+    failed so that it can be deleted again, not because anyone wants the content back."""
+    latest = db.scalars(
+        select(ProcessingJob)
+        .where(ProcessingJob.document_id == document_id)
+        .order_by(ProcessingJob.queued_at.desc(), ProcessingJob.id.desc())
+        .limit(1)
+    ).first()
+    return (latest is not None and latest.job_type == JobType.DELETE_DOCUMENT
+            and latest.status in (JobStatus.FAILED, JobStatus.CANCELLED))
+
+
+def _check_ingest_retry(db: Session, doc: Document) -> None:
+    # A newer run may already have indexed this document. Running this old job again would take a
+    # healthy document out of search, and leave it failed if the run failed.
+    if doc.status != DocumentStatus.FAILED:
+        raise InvalidTransition(
+            f"This job is out of date: the document is now {doc.status.value}.")
+    # Retrieval hides a row with deleted_at set for good, so it would read as indexed yet never be
+    # answerable. A delete that gave up was still a request to remove this content.
+    if doc.deleted_at is not None or delete_gave_up(db, doc.id):
+        raise InvalidTransition("A file being deleted can only be deleted again.")
+
+
 def manual_retry(db: Session, job: ProcessingJob) -> ProcessingJob:
-    """Re-queue a FAILED/CANCELLED job with a fresh attempt budget (history is preserved)."""
+    """Re-queue a FAILED/CANCELLED job with a fresh attempt budget (history is preserved).
+
+    InvalidTransition messages say why it was refused, and API clients are shown them."""
     if job.status not in (JobStatus.FAILED, JobStatus.CANCELLED):
-        raise InvalidTransition(f"cannot retry a {job.status.value} job")
+        raise InvalidTransition("Only failed or cancelled jobs can be retried.")
+    doc = db.get(Document, job.document_id) if job.document_id else None
+    if job.job_type == JobType.INGEST_DOCUMENT and doc is not None:
+        _check_ingest_retry(db, doc)
+    if job.job_type == JobType.DELETE_DOCUMENT and doc is not None:
+        # The file may have been re-processed since this delete gave up: never delete it unasked.
+        if doc.status not in (DocumentStatus.FAILED, DocumentStatus.DELETING):
+            raise InvalidTransition(
+                f"This delete is out of date: the document is now {doc.status.value}.")
+        doc.status = DocumentStatus.DELETING
+        doc.deleted_at = doc.deleted_at or _now()
+    now = _now()
     job.status = JobStatus.QUEUED
-    job.available_at = _now()
+    job.queued_at = now  # when this round of work was queued; attempts keep the earlier history
+    job.available_at = now
+    job.started_at = None
     job.finished_at = None
     job.cancel_requested = False
     job.max_attempts = job.attempt_count + get_settings().job_max_attempts
     job.error_code = job.safe_error_message = None
-    if job.job_type == JobType.INGEST_DOCUMENT and job.document_id:
-        doc = db.get(Document, job.document_id)
-        if doc is not None and doc.status == DocumentStatus.FAILED:
-            doc.status = DocumentStatus.QUEUED
+    if (job.job_type == JobType.INGEST_DOCUMENT and doc is not None
+            and doc.status == DocumentStatus.FAILED):
+        doc.status = DocumentStatus.QUEUED
     return job

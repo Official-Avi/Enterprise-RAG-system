@@ -15,6 +15,9 @@ def get_engine(url: str | None = None) -> Engine:
     return create_engine(
         url or get_settings().database_url,
         pool_pre_ping=True,
+        # A failing statement's traceback reaches the server log, and its bound parameters hold
+        # questions, document text and password hashes.
+        hide_parameters=True,
         connect_args={"connect_timeout": 5},
         pool_size=10,
         max_overflow=10,

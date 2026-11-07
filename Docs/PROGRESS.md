@@ -1,35 +1,78 @@
 # RackFlow AI — Progress Tracker
 
-**Current phase:** Sprint complete (v0.1.0 pilot release)  
-**Overall status:** Day 1, Day 2 and Day 3 acceptance met; production hardening remains (see DELIVERY_REPORT.md)  
-**Last updated:** 2026-10-27  
+**Current phase:** UI redesign and bug fixes on branch `ui-redesign-2026-10`, awaiting the final gate and merge  
+**Overall status:** v0.1.0 is the tagged pilot on `main`. The redesign and review fixes are implemented and owner-checked. **The final gate has not run, and this is not production ready.**  
+**Last updated:** 2026-11-06  
 **Rule:** The coding agent must update this file after every implementation session.
 
 ## Summary
-- Completed phases: 0–8 verified (API and browser); 9–10 partially complete. Tasks: 73 verified / 13 partial / 5 not started / 1 deferred (of 92)
-- Active phase: none (sprint closed); next: production hardening
-- Blocked tasks: none. Repository: https://github.com/Official-Avi/Enterprise-RAG-system (private)
-- Last verified test run: 2026-10-27 — backend 96/96; browser E2E 5/5; web lint/tsc/build clean; clean install passed; CI green incl. Docker Compose
-- Current commit: see `git log` (Day 1 ends at 7a83d94)
-- Environment: Inspected 2026-10-27 — see session log below
+- **Branches:** `main` and `origin/main` are at `7fbb85b` (tag `v0.1.0`). Local `ui-redesign-2026-10` is at `45cd0dd`, one commit ahead of its remote at `569d4e6`. About 70 files, including these docs, are modified and **uncommitted**.
+- **Repository:** https://github.com/Official-Avi/Enterprise-RAG-system is **public** (reachable without signing in, checked 2026-11-06). Earlier documents call it private. Do not push without asking the owner.
+- **Last full gate:** Stage 4 on 2026-11-06, before the review fixes: 233 backend tests, eslint, tsc, ruff, mypy, build, all Playwright specs.
+- **Since then:** owner-level runs only. The last full backend run reported 350 passed, 1 failed. Final numbers are pending in `TESTING.md`.
+- **Answer model on the local stack:** Groq, `qwen/qwen3.8-27b` through `openai_compatible`. Matched passages leave the machine. `extractive` stays the default in code and `.env.example`.
+- **Running services:** the owners did not restart the API or worker, so the running stack may not include the latest backend fixes until `start-backend.ps1` runs again.
+- **Environment:** Windows reinstalled 2026-11-01. Toolchain recreated 2026-11-05: Python 3.12 via uv, PostgreSQL 18.6, Qdrant 1.20.0, Node 26.13.0. No Docker.
 
 ## Phase status
+Statuses reflect the last check of each phase, mostly v0.1.0 on 2026-10-27. Code in several phases has changed since, and those changes are covered by the final gate, which is pending.
+
 | Phase | Name | Status | Evidence / notes |
 |---|---|---|---|
-| 0 | Repository and decisions | Verified | CI green |
-| 1 | Local foundation | Verified | Compose verified in CI; UI verified in browser |
-| 2 | Authentication, tenancy, RBAC | Verified (API) | Email invitations deferred (ADR-019) |
-| 3 | Document ingestion and processing | Verified | S3 adapter not started |
-| 4 | Embeddings, vector index, retrieval | Verified | Hybrid/rerank not started (optional) |
-| 5 | RAG chat and citations | Verified | Retention policy pending |
-| 6 | Operations and workload management | Verified (API) | No load test; LB guidance pending |
-| 7 | Model Serving and evaluation | Partially complete | Evaluation verified; no LLM compared (none configured) |
-| 8 | Infrastructure / logical rack management | Verified | API + browser |
-| 9 | Monitoring, security, enterprise hardening | Partially complete | Security gates in CI; no tracing, backups or CI dependency scanning |
-| 10 | Release and deployment | Partially complete | Clean install verified; deployment guide; no staging or load tests |
+| 0 | Repository and decisions | Verified | CI green at v0.1.0; no CI result recorded for this branch |
+| 1 | Local foundation | Verified at v0.1.0 | Compose verified in CI then; **Compose changes on this branch not executed** |
+| 2 | Authentication, tenancy, RBAC | Verified at v0.1.0; changed since | New sign-in limits and caps have tests; cross-tenant add awaits a decision (ADR-026); email invitations deferred (ADR-019) |
+| 3 | Document ingestion and processing | Verified at v0.1.0; changed since | S3 adapter not started |
+| 4 | Embeddings, vector index, retrieval | Verified at v0.1.0; changed since | Hybrid/rerank not started (optional) |
+| 5 | RAG chat and citations | Verified at v0.1.0; changed since | Live answers with Groq checked by hand; retention policy not started |
+| 6 | Operations and workload management | Verified at v0.1.0; changed since | No load test; load balancer guidance added, not exercised |
+| 7 | Model serving and evaluation | Partially complete | **LLM evaluation incomplete: 7 of 13 scored;** retry not run against real Groq |
+| 8 | Infrastructure / logical rack management | Verified at v0.1.0; changed since | Node and workload delete, PATCH null handling added |
+| 9 | Monitoring, security, enterprise hardening | Partially complete | No tracing, backups, or CI dependency or secret scanning |
+| 10 | Release and deployment | Partially complete | Clean install at v0.1.0 only; no staging or load tests |
+| UI | Redesign (`DESIGN.md`) | Implemented; Stage 4 gate passed; later fixes owner-checked | Final gate pending; differences from the spec in `DESIGN.md` §12 |
+
+## Open risks
+Details and evidence are in `SECURITY.md` §10 and `TODO.md`.
+
+1. **Cross-tenant membership add (owner decision, ADR-026):** an org_admin can add another tenant's user by email, revealing that the account exists and possibly changing their default sign-in tenant.
+2. **Credentials to rotate (owner action):** the model API key appeared in a chat session; a local database password appeared in tool output; credentials from before the reinstall. No full malware scan is recorded.
+3. **Data egress:** with Groq on, questions, retrieved passages and an earlier question for follow-ups leave the machine.
+4. **Demo mode:** password-less org_admin access for anyone who can reach the site. Never on real data or a public address.
+5. **Rate limits:** per API process. Without a load balancer, all Compose sign-ins share one address.
+6. **Free-plan model limits:** chat returns `MODEL_OVERLOADED` under load. An evaluation run holds a worker for about 13 to 15 minutes, and uploads queue behind it with one worker.
+7. **Stop does not cancel on the server:** the question and answer are saved and can feed follow-up search.
+8. **Regression protection:** several fixes, including the blocker `safeNext` fix, have no permanent test.
+9. **Demo data clutter:** test documents and leftover chats in the shared accounts, and leftover user `console-admin-test@example.com`.
+10. **Not implemented:** backups and restore, TLS configuration, secret management, S3 storage, tracing, retention, malware scanning, SSO.
+
+## Not verified
+- Final gate results are in `TESTING.md`. `test_answer_is_withheld_once_access_can_no_longer_be_checked` now passes; the cause of its earlier failure was not reproduced.
+- Docker Compose and CI on this branch: fixed web address, `DEMO_MODE` and `TRUSTED_PROXY_IPS` pass-through, curl retries. No CI result is recorded.
+- Clean install using the current README.
+- The Claude adapter against the live API.
+- RAG and chat fixes beyond the full backend suites run by other owners; that owner's report was not received.
+- Ask fixes against the real backend (browser checks used a mocked API); console writes against real data (stubbed); several landing edge cases (`TESTING.md`).
+- `next start` behaviour for `X-Forwarded-For`.
+- Load, backup and restore, real mobile devices, screen readers, Windows High Contrast.
 
 ## Latest session
-- Date: 2026-10-27 — Sprint complete. Final report: Docs/DELIVERY_REPORT.md. Release notes: Docs/RELEASE_NOTES.md.
+### 2026-11-06 — Redesign finish, diff review and fixes
+- Implemented: finished the UI redesign; Groq via `openai_compatible`; a 68-finding diff review (1 blocker, 14 major, 53 minor, some duplicates) followed by fixes from seven owners. See `RELEASE_NOTES.md` "Unreleased".
+- Files changed: commit `45cd0dd`, plus the uncommitted working tree.
+- Tests run and results: `TESTING.md` entries for 2026-11-05 and 2026-11-06. The final gate is pending.
+- Manual verification: live Groq answers by hand. Browser scripts per owner, with the limits listed in `TESTING.md`.
+- Decisions made: ADR-022 to ADR-025. ADR-026 awaits the owner.
+- Deferred by owners: see `TODO.md`. Rejected: the reviewer's `FORWARDED_ALLOW_IPS` fix, because it would change nothing without a load balancer and would allow forged addresses (ADR-025).
+- Blockers/risks: see "Open risks".
+- Next steps: final gate, fix or explain the failing test, commit, restart services, reset demo data, merge locally, then ask before pushing. Production work follows on its own branch.
+- TODO/PROGRESS updated: Yes
+
+### 2026-11-05 — Reset laptop, setup and browser testing
+- Implemented: fixed the build; set the backend up on the reinstalled laptop; added `scripts/dev/start-backend.ps1`.
+- Tests run and results: 114 backend tests passed, ruff and mypy clean; browser E2E 49 of 53 (`TESTING.md`).
+- Findings: 144 browser bugs (50 major, 0 blockers) and 182 spec gaps, worked through on 2026-11-06. Not all spec gaps are closed (`DESIGN.md` §13). ENV-1 from `LIVE_CHECK_REPORT.md` no longer reproduces.
+- TODO/PROGRESS updated: at the time in project notes; recorded here on 2026-11-06.
 
 ### 2026-10-27 — Sprint Day 3: integration, verification, delivery
 - Implemented: authentication release gate and other release-gate tests; Playwright browser E2E (5 specs); route-level permission gating and role-based landing; fixes for defects found by E2E; RAG logo and favicon; deployment guide (DEPLOYMENT.md §8); security status (SECURITY.md §9); release notes; final delivery report.

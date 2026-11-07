@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from rackflow.core.config import get_settings
 from rackflow.core.logging import get_correlation_id
 from rackflow.db.models import JobStatus, JobType, ProcessingJob
+from rackflow.jobs.queue import manual_retry
 
 
 def enqueue_job(
@@ -28,11 +29,18 @@ def enqueue_job(
     created_by: uuid.UUID | None = None,
     max_attempts: int | None = None,
 ) -> ProcessingJob:
-    """Create a queued job; returns the existing job if the idempotency key was already used."""
+    """Create a queued job; returns the existing job if the idempotency key was already used.
+
+    The exception is asking again to delete a document whose delete job gave up. Its key is
+    stable, so returning that dead job would leave the document in `deleting` with nothing
+    running: the job is put back in the queue instead."""
     existing = db.scalar(
         select(ProcessingJob).where(ProcessingJob.idempotency_key == idempotency_key)
     )
     if existing is not None:
+        if (existing.job_type == JobType.DELETE_DOCUMENT
+                and existing.status in (JobStatus.FAILED, JobStatus.CANCELLED)):
+            return manual_retry(db, existing)
         return existing
     now = datetime.now(UTC)
     job = ProcessingJob(

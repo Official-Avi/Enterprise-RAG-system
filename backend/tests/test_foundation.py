@@ -3,11 +3,16 @@ collections."""
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Iterator
+
 import pytest
 from fastapi.testclient import TestClient
 
+from rackflow.api.routers.health import EmbeddingProbe
 from rackflow.auth.rbac import ROLE_PERMISSIONS, Permission
-from rackflow.db.models import Role
+from rackflow.db.models import Collection, Document, DocumentStatus, Role
+from rackflow.db.session import session_scope
 from tests.conftest import TEST_PASSWORD, Factory
 
 pytestmark = pytest.mark.integration
@@ -19,6 +24,69 @@ def test_health_live(client: TestClient) -> None:
     assert r.json()["status"] == "ok"
     assert "X-Correlation-ID" in r.headers
     assert r.headers["X-Content-Type-Options"] == "nosniff"
+
+
+@pytest.fixture()
+def probe(client: TestClient) -> Iterator[EmbeddingProbe]:
+    from rackflow.api.routers.health import embedding_probe
+
+    embedding_probe.check()  # let the startup warm-up finish so it cannot race the test
+    embedding_probe.reset()
+    yield embedding_probe
+    embedding_probe.reset()
+
+
+@pytest.mark.qdrant
+@pytest.mark.usefixtures("probe")
+def test_health_ready_checks_every_dependency(client: TestClient) -> None:
+    r = client.get("/api/v1/health/ready")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "ready", "checks": {
+        "database": True, "vector_store": True, "vector_collection": True, "embeddings": True}}
+
+
+@pytest.mark.qdrant
+@pytest.mark.usefixtures("probe")
+def test_health_ready_fails_when_embeddings_cannot_load(
+        client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUG-04: a broken embedding runtime (ENV-1) must make the API not ready."""
+    from rackflow.providers import embeddings
+
+    def broken() -> None:
+        raise ImportError("DLL load failed", name="onnxruntime")
+
+    monkeypatch.setattr(embeddings, "get_embedding_provider", broken)
+    r = client.get("/api/v1/health/ready")
+    assert r.status_code == 503
+    assert r.json()["status"] == "not_ready"
+    assert r.json()["checks"]["embeddings"] is False
+    assert r.json()["checks"]["database"] is True
+
+
+@pytest.mark.qdrant
+@pytest.mark.usefixtures("probe")
+def test_health_ready_fails_when_indexed_vectors_are_gone(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUG-04: PostgreSQL lists indexed documents but the vector collection is missing (BUG-01).
+    A fresh deployment with nothing indexed yet is still ready."""
+    from rackflow.providers.vectorstore import get_vector_store
+
+    monkeypatch.setattr(get_vector_store(), "collection",
+                        f"rackflow_test_absent_{uuid.uuid4().hex[:8]}")
+    assert client.get("/api/v1/health/ready").json()["checks"]["vector_collection"] is True
+
+    eng = factory.actor(Role.ENGINEER)
+    with session_scope() as s:
+        col = Collection(tenant_id=eng.tenant_id, name="c", created_by=eng.user_id)
+        s.add(col)
+        s.flush()
+        s.add(Document(tenant_id=eng.tenant_id, collection_id=col.id, filename="a.md",
+                       file_type="md", mime_type="text/markdown", size_bytes=1,
+                       content_hash="0" * 64, storage_key="tenants/x/documents/y/original",
+                       status=DocumentStatus.INDEXED, warnings=[]))
+    r = client.get("/api/v1/health/ready")
+    assert r.status_code == 503
+    assert r.json()["checks"]["vector_collection"] is False
 
 
 def test_protected_endpoint_requires_auth(client: TestClient) -> None:

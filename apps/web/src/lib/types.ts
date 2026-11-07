@@ -19,6 +19,21 @@ export interface Me {
   memberships: Membership[];
 }
 
+export interface DemoPersona {
+  key: "engineer" | "operator" | "admin" | "auditor";
+  title: string;
+  display_name: string;
+  email: string;
+  summary: string;
+  can: string[];
+  cannot: string[];
+}
+
+export interface DemoInfo {
+  enabled: boolean;
+  personas: DemoPersona[];
+}
+
 export interface Collection {
   id: Uuid;
   name: string;
@@ -123,6 +138,13 @@ export interface UploadItem {
   error: { code: string; message: string } | null;
 }
 
+/** 202 body of POST /documents/{id}/retry and DELETE /documents/{id} (JobRef in routers/documents.py). */
+export interface JobRef {
+  document_id: Uuid;
+  job_id: Uuid;
+  status: string;
+}
+
 export interface Pipeline {
   document_id: Uuid;
   status: DocumentStatus;
@@ -140,7 +162,10 @@ export interface ChunkItem {
 
 export interface Citation {
   marker: number;
-  document_id: Uuid;
+  /** Null when the deleted document's row is gone too (its collection was deleted). */
+  document_id: Uuid | null;
+  /** True for a source deleted since the answer was written; filename and quote may be empty. */
+  document_deleted?: boolean;
   filename: string;
   page: number | null;
   chunk_id: Uuid | null;
@@ -170,7 +195,18 @@ export interface ChatMessage {
   citations: Citation[];
   model: ModelRef | null;
   latency_ms: number | null;
+  /** Passages retrieved for this answer. Null on user messages and older answers. */
+  retrieved_count: number | null;
   created_at: string;
+  /** The caller lost access to a source: `content` is the API's note instead of the answer, and
+   *  evidence_status is null. */
+  content_withheld?: boolean;
+}
+
+/** GET /chat/sessions/{id} (SessionDetail in routers/chat.py). */
+export interface ChatSessionDetail {
+  session: ChatSession;
+  messages: ChatMessage[];
 }
 
 export interface AnswerResponse {

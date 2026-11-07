@@ -14,6 +14,24 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  // Stops `next dev` writing a generated AGENTS.md into this folder.
+  agentRules: false,
+  // The dev-only "N" button sits over the sidebar footer. Build errors still show their overlay.
+  devIndicators: false,
+  experimental: {
+    // Request bodies are buffered up to this size before the /api rewrite forwards them
+    // (Next's default is 10 MB). 26mb fits the 25 MiB per-file upload limit plus multipart overhead.
+    // A larger body arrives cut short, so uploaders split batches (requestGroups in lib/workspace;
+    // PROXY_BODY_LIMIT_BYTES in lib/api mirrors this value).
+    proxyClientMaxBodySize: "26mb",
+    // How long the /api rewrite waits for the API to answer (Next's default is 30s). A slow upload
+    // or answer gets its real response instead of the proxy's plain 500.
+    proxyTimeout: 120_000,
+  },
+  async redirects() {
+    // The console chat moved to the /ask workspace.
+    return [{ source: "/chat", destination: "/ask", permanent: true }];
+  },
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${apiTarget}/api/:path*` }];
   },

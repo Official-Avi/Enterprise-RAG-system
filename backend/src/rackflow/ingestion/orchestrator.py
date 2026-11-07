@@ -95,7 +95,32 @@ def _run_ocr(ctx: JobContext, data: bytes, pages: list[ExtractedPage], enabled: 
     return {"ocr_pages": len(confidences), "avg_confidence": round(avg, 3) if avg else None}
 
 
+def _discard_vectors_if_deleted(ctx: JobContext) -> None:
+    """Cancellation is only noticed between stages, so another worker can finish deleting a document
+    while this job is still writing its vectors. Nothing would ever remove those later: delete,
+    re-index and retry all leave a deleted document alone."""
+    from rackflow.rag.indexing import delete_document_vectors
+
+    try:
+        ctx.db.rollback()
+        document_id = uuid.UUID(str(ctx.payload["document_id"]))
+        doc = ctx.db.get(Document, document_id, populate_existing=True)
+        if doc is not None and doc.tenant_id == ctx.tenant_id and doc.status in _GONE:
+            delete_document_vectors(ctx.tenant_id, document_id)
+    except Exception as exc:  # noqa: BLE001 — must not replace the job's real outcome
+        log.warning("ingest_vector_cleanup_failed", extra={"job_id": str(ctx.job_id),
+                                                           "exc_type": type(exc).__name__})
+
+
 def process_document(ctx: JobContext) -> None:
+    try:
+        _process_document(ctx)
+    except Exception:
+        _discard_vectors_if_deleted(ctx)
+        raise
+
+
+def _process_document(ctx: JobContext) -> None:
     from rackflow.rag.indexing import delete_document_vectors, index_document_version
 
     db = ctx.db

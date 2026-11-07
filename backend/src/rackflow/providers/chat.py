@@ -1,6 +1,6 @@
 """Chat model providers behind one interface (FR-050..FR-053).
 
-- ExtractiveProvider  — NO LLM. Quotes the most relevant retrieved sentences with citations.
+- ExtractiveProvider  — NO LLM. Quotes the retrieved sentences that cover the question, or abstains.
                         Development/CI fallback; always labelled as such in API responses.
 - AnthropicProvider   — hosted Claude via the official SDK (default model claude-opus-5-5).
 - OpenAICompatibleProvider — any OpenAI-compatible endpoint, e.g. a local Ollama/vLLM server
@@ -25,7 +25,8 @@ import httpx
 from rackflow.core.config import get_settings
 from rackflow.core.errors import AppError
 from rackflow.providers.interfaces import ChatCompletion, ChatTurn, ProviderHealth
-from rackflow.rag.injection import looks_like_injection
+from rackflow.rag.evidence import Source, select_evidence
+from rackflow.rag.prompts import split_user_prompt
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 _CONCURRENCY_WAIT_SECONDS = 10.0
@@ -63,21 +64,7 @@ class _Limiter:
 
 # ------------------------------------------------------------------ extractive
 
-_SOURCE_RE = re.compile(r'<source id="(\d+)"[^>]*>\n(.*?)\n</source>', re.DOTALL)
-_QUESTION_RE = re.compile(r"\nQuestion:\s*(.+)\s*$", re.DOTALL)
-_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+")
-_HEADING_RE = re.compile(r"^#{1,6}\s")
-_HARD_WRAP_RE = re.compile(r"(?<![.!?:])\n(?!\n|\d+\.|[-*•] )")
-_WORD_RE = re.compile(r"[a-z0-9_]+")
-_STOP = frozenset([
-    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "from", "has",
-    "have", "how", "i", "if", "in", "is", "it", "of", "on", "or", "should", "the", "this", "to",
-    "was", "what", "when", "where", "which", "who", "why", "will", "with", "you", "your",
-])
-
-
-def _terms(text: str) -> set[str]:
-    return {w for w in _WORD_RE.findall(text.lower()) if w not in _STOP and len(w) > 1}
+_SOURCE_RE = re.compile(r'<source id="(\d+)" document="([^"]*)"[^>]*>\n(.*?)\n</source>', re.DOTALL)
 
 
 class ExtractiveProvider:
@@ -90,35 +77,14 @@ class ExtractiveProvider:
     def complete(self, *, system: str, turns: Sequence[ChatTurn], max_tokens: int,
                  temperature: float) -> ChatCompletion:
         started = time.perf_counter()
-        prompt = turns[-1].content if turns else ""
-        match = _QUESTION_RE.search(prompt)
-        question_terms = _terms(match.group(1)) if match else set()
-        scored: list[tuple[float, int, int]] = []
-        sentences: dict[int, list[str]] = {}
-        for sid_text, body in _SOURCE_RE.findall(prompt):
-            sid = int(sid_text)
-            # Re-join hard-wrapped lines (PDF extraction) so sentences are not cut mid-way.
-            body = _HARD_WRAP_RE.sub(" ", body)
-            # Never quote instruction-like text planted in documents back to the user.
-            # Markdown headings are structure, not statements, so they are not quoted either.
-            sentences[sid] = [s.strip() for s in _SENTENCE_RE.split(body)
-                              if s.strip() and not _HEADING_RE.match(s.strip())
-                              and not looks_like_injection(s)]
-            for idx, sentence in enumerate(sentences[sid]):
-                overlap = len(question_terms & _terms(sentence))
-                if overlap and 20 <= len(sentence) <= 600:
-                    scored.append((overlap + 1 / (1 + sid), sid, idx))
-        scored.sort(key=lambda s: -s[0])
-        picked: list[tuple[int, int]] = []
-        for _, sid, idx in scored[:2]:
-            # A matching sentence often states the problem; the next one states the action.
-            for i in (idx, idx + 1):
-                if i < len(sentences[sid]) and (sid, i) not in picked:
-                    picked.append((sid, i))
-        if not picked:
-            text = "INSUFFICIENT_EVIDENCE: none of the retrieved passages address the question."
+        sources_block, question, context = split_user_prompt(turns[-1].content if turns else "")
+        sources = [Source(int(sid), filename, body)
+                   for sid, filename, body in _SOURCE_RE.findall(sources_block)]
+        evidence = select_evidence(question, sources, context)
+        if evidence:
+            text = " ".join(f"{e.sentence} [{e.source_id}]" for e in evidence)
         else:
-            text = " ".join(f"{sentences[sid][i]} [{sid}]" for sid, i in picked[:4])
+            text = "INSUFFICIENT_EVIDENCE: none of the retrieved passages address the question."
         return ChatCompletion(text=text, provider=self.provider, model=self.model,
                               latency_ms=int((time.perf_counter() - started) * 1000))
 
@@ -267,6 +233,6 @@ def get_chat_provider() -> ChatProvider:
         return AnthropicProvider(s.model_name or DEFAULT_ANTHROPIC_MODEL, key or "",
                                  s.model_timeout_seconds, s.model_max_concurrency)
     if s.model_provider == "openai_compatible":
-        return OpenAICompatibleProvider(s.model_name or "qwen2.5:1.5b", s.model_base_url, key,
+        return OpenAICompatibleProvider(s.model_name, s.model_base_url, key,
                                         s.model_timeout_seconds, s.model_max_concurrency)
     return ExtractiveProvider()

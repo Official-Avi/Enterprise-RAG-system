@@ -24,4 +24,5 @@ _RE = re.compile("|".join(f"(?:{p})" for p in _PATTERNS), re.IGNORECASE)
 
 
 def looks_like_injection(text: str) -> bool:
-    return bool(_RE.search(text))
+    # Hard-wrapped lines must not hide a phrase, and every caller has to get the same verdict.
+    return bool(_RE.search(" ".join(text.split())))

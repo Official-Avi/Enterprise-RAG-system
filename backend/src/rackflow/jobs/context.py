@@ -19,7 +19,12 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from rackflow.db.models import PipelineStage, PipelineStageRun, ProcessingJob, StageStatus
-from rackflow.jobs.errors import JobCancelled, JobError
+from rackflow.jobs.errors import (
+    DEPENDENCY_UNAVAILABLE,
+    JobCancelled,
+    JobError,
+    is_dependency_failure,
+)
 
 
 @dataclass
@@ -76,7 +81,12 @@ class JobContext:
             self.db.rollback()
             run = self.db.merge(run)
             run.status = StageStatus.FAILED
-            run.error_code = exc.code if isinstance(exc, JobError) else type(exc).__name__[:64]
+            if isinstance(exc, JobError):
+                run.error_code = exc.code
+            elif is_dependency_failure(exc):  # same code the runner records for the job
+                run.error_code = DEPENDENCY_UNAVAILABLE
+            else:
+                run.error_code = type(exc).__name__[:64]
             run.finished_at = datetime.now(UTC)
             run.duration_ms = int((time.perf_counter() - t0) * 1000)
             run.details = recorder.details

@@ -2,7 +2,11 @@
 
 Paragraphs are the packing unit; oversized paragraphs fall back to sentences, then word windows.
 Fenced code blocks are kept whole unless a single block exceeds the budget. Each chunk records
-page span and character offsets into the page-joined document text (pages joined by "\\n\\n").
+its page and character offsets into the page-joined document text (pages joined by "\\n\\n").
+
+A chunk never holds text from two pages, overlap included. A citation names one page, so a chunk
+that packed pages 1-3 together would cite page 1 for a fact on page 3. The cost is that a sentence
+running over a page break is split across two chunks.
 """
 
 from __future__ import annotations
@@ -155,6 +159,9 @@ def chunk_pages(
         ))
 
     for seg in segments:
+        if current and current[-1].page != seg.page:
+            emit()
+            current, current_tokens = [], 0
         if current and current_tokens + seg.tokens > chunk_size:
             emit()
             carry: list[_Segment] = []

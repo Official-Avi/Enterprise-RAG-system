@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from rackflow.audit import record_audit
-from rackflow.db.models import Document, DocumentStatus, JobType
+from rackflow.db.models import Document, DocumentStatus, JobType, ProcessingJob
 from rackflow.ingestion.validation import UploadRejected, validate_upload
 from rackflow.jobs.enqueue import enqueue_job
 from rackflow.providers.storage import document_key, get_object_storage
@@ -27,6 +27,14 @@ class AcceptResult:
     error_code: str | None = None
     error_message: str | None = None
     stored_bytes: int = 0
+
+
+def next_ingest_version(db: Session, document_id: uuid.UUID) -> int:
+    """Version number for a new ingest run of an existing document (retry, re-index): one past
+    the number of ingest jobs so far, so every run builds a fresh DocumentVersion."""
+    return (db.scalar(select(func.count()).select_from(ProcessingJob).where(
+        ProcessingJob.document_id == document_id,
+        ProcessingJob.job_type == JobType.INGEST_DOCUMENT)) or 0) + 1
 
 
 def used_storage_bytes(db: Session, tenant_id: uuid.UUID) -> int:
@@ -51,18 +59,20 @@ def accept_upload(
     except UploadRejected as exc:
         return AcceptResult(filename=(filename or "upload")[:200], status="rejected",
                             error_code=exc.code, error_message=exc.message)
-    quota = settings.max_storage_bytes
-    if quota is not None and used_bytes + len(data) > quota:
-        return AcceptResult(filename=checked.filename, status="rejected",
-                            error_code="QUOTA_EXCEEDED",
-                            error_message="The workspace storage quota has been reached.")
 
+    # Before the quota: a duplicate stores no new bytes, so a full workspace can still report it.
     content_hash = hashlib.sha256(data).hexdigest()
     existing = db.scalar(select(Document.id).where(
         Document.tenant_id == tenant_id, Document.collection_id == collection_id,
         Document.content_hash == content_hash, Document.deleted_at.is_(None)))
     if existing is not None:
         return AcceptResult(filename=checked.filename, status="duplicate", document_id=existing)
+
+    quota = settings.max_storage_bytes
+    if quota is not None and used_bytes + len(data) > quota:
+        return AcceptResult(filename=checked.filename, status="rejected",
+                            error_code="QUOTA_EXCEEDED",
+                            error_message="The workspace storage quota has been reached.")
 
     storage = get_object_storage()
     doc_id = uuid.uuid4()

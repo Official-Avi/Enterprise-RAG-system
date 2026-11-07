@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal, Self
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from rackflow.api.routers.operations import worker_health
 from rackflow.audit import record_audit
 from rackflow.auth.deps import require
 from rackflow.auth.principal import Principal
@@ -25,7 +27,6 @@ from rackflow.auth.rbac import Permission
 from rackflow.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from rackflow.db.models import NodeResource, Rack, StateSource, WorkerHeartbeat, Workload
 from rackflow.db.session import get_db
-from rackflow.worker.main import HEARTBEAT_SECONDS
 
 router = APIRouter(prefix="/infrastructure", tags=["infrastructure"])
 
@@ -41,10 +42,25 @@ WorkloadType = Literal["api", "worker", "vector_db", "database", "model_serving"
 
 
 class Capacity(BaseModel):
-    cpu_cores: int = 0
+    cpu_cores: float = 0  # a workload may request part of a core
     memory_bytes: int = 0
     storage_bytes: int = 0
     accelerators: int = 0
+
+
+class _Patch(BaseModel):
+    """A PATCH applies every field it names, so an explicit null must be refused for NOT NULL
+    columns here, or it reaches the database and comes back as a 500."""
+
+    not_nullable: ClassVar[frozenset[str]] = frozenset()
+
+    @model_validator(mode="after")
+    def _refuse_null(self) -> Self:
+        for field in sorted(self.not_nullable & self.model_fields_set):
+            if getattr(self, field) is None:
+                raise PydanticCustomError("null_not_allowed", "{field} cannot be null",
+                                          {"field": field})
+        return self
 
 
 class RackIn(BaseModel):
@@ -57,7 +73,9 @@ class RackIn(BaseModel):
     status: Health = "unknown"
 
 
-class RackPatch(BaseModel):
+class RackPatch(_Patch):
+    not_nullable = frozenset({"name", "environment", "description", "status"})
+
     name: str | None = Field(default=None, min_length=1, max_length=120)
     environment: Environment | None = None
     location_label: str | None = Field(default=None, max_length=200)
@@ -78,7 +96,9 @@ class NodeIn(BaseModel):
     status: Health = "unknown"
 
 
-class NodePatch(BaseModel):
+class NodePatch(_Patch):
+    not_nullable = frozenset({"name", "status"})
+
     name: str | None = Field(default=None, min_length=1, max_length=120)
     rack_id: uuid.UUID | None = None
     rack_unit_position: int | None = Field(default=None, ge=1, le=60)
@@ -105,7 +125,9 @@ class WorkloadIn(BaseModel):
     state_source: ClientSource = "manual"
 
 
-class WorkloadPatch(BaseModel):
+class WorkloadPatch(_Patch):
+    not_nullable = frozenset({"desired_state", "observed_state", "resource_request"})
+
     node_id: uuid.UUID | None = None
     desired_state: Literal["running", "stopped"] | None = None
     observed_state: Literal["running", "stopped", "degraded", "unknown"] | None = None
@@ -202,6 +224,12 @@ def _get(db: Session, model: Any, principal: Principal, obj_id: uuid.UUID, what:
     return obj
 
 
+def _refuse_integration_managed(obj: Any, verb: str) -> None:
+    if obj.state_source == StateSource.INTEGRATION:
+        raise ConflictError(code="INTEGRATION_MANAGED",
+                            message=f"Integration-reported records cannot be {verb} manually.")
+
+
 def _workloads(db: Session, tenant_id: uuid.UUID, node_ids: list[uuid.UUID] | None = None,
                ) -> list[WorkloadOut]:
     stmt = (select(Workload, NodeResource.name, NodeResource.rack_id)
@@ -231,7 +259,7 @@ def _nodes(db: Session, tenant_id: uuid.UUID, rack_id: uuid.UUID | None = None,
     for n in nodes:
         mine = [w for w in workloads if w.node_id == n.id]
         alloc = Capacity(
-            cpu_cores=int(sum(w.resource_request.get("cpu_cores") or 0 for w in mine)),
+            cpu_cores=round(sum(w.resource_request.get("cpu_cores") or 0 for w in mine), 3),
             memory_bytes=int(sum(w.resource_request.get("memory_bytes") or 0 for w in mine)),
             accelerators=int(sum(w.resource_request.get("accelerators") or 0 for w in mine)),
         )
@@ -287,15 +315,13 @@ def overview(
 
     now = datetime.now(UTC)
     recent = now - timedelta(hours=1)
-    stale_after = timedelta(seconds=HEARTBEAT_SECONDS * 3)
     workers = db.scalars(select(WorkerHeartbeat).where(
         WorkerHeartbeat.last_heartbeat_at > recent)).all()
     return Overview(
         racks=by_source(Rack), nodes=by_source(NodeResource), workloads=by_source(Workload),
         platform_processes=[PlatformProcess(
             worker_id=w.worker_id, hostname=w.hostname, status=w.status,
-            health="stopped" if w.status == "stopped"
-            else "healthy" if now - w.last_heartbeat_at <= stale_after else "stale",
+            health=worker_health(w, now),
             last_heartbeat_at=w.last_heartbeat_at)
                             for w in workers],
         note=("Racks, nodes and workloads are logical inventory (configured or simulated). Only "
@@ -355,9 +381,10 @@ def update_rack(
     db: Session = Depends(get_db),
 ) -> RackOut:
     rack = _get(db, Rack, principal, rack_id, "rack")
-    if rack.state_source == StateSource.INTEGRATION:
-        raise ConflictError(code="INTEGRATION_MANAGED",
-                            message="Integration-reported records cannot be edited manually.")
+    _refuse_integration_managed(rack, "edited")
+    if body.name is not None and body.name != rack.name and db.scalar(
+            select(Rack.id).where(Rack.tenant_id == principal.tenant_id, Rack.name == body.name)):
+        raise ConflictError(code="RACK_NAME_TAKEN", message="A rack with this name exists.")
     for field in body.model_fields_set:
         setattr(rack, field, getattr(body, field))
     record_audit(db, action="infra.rack.update", resource_type="rack", resource_id=rack.id,
@@ -372,13 +399,16 @@ def delete_rack(
     principal: Principal = Depends(require(Permission.INFRA_MANAGE)),
     db: Session = Depends(get_db),
 ) -> Response:
+    """Removes an empty rack. Its nodes must be moved or removed first, never dropped with it."""
     rack = _get(db, Rack, principal, rack_id, "rack")
+    _refuse_integration_managed(rack, "deleted")
     if db.scalar(select(func.count()).select_from(NodeResource).where(
             NodeResource.rack_id == rack.id)):
         raise ConflictError(code="RACK_NOT_EMPTY", message="Move or remove the rack's nodes first.")
-    db.delete(rack)
     record_audit(db, action="infra.rack.delete", resource_type="rack", resource_id=rack_id,
-                 principal=principal)
+                 principal=principal,
+                 metadata={"name": rack.name, "state_source": rack.state_source.value})
+    db.delete(rack)
     db.commit()
     return Response(status_code=204)
 
@@ -417,9 +447,7 @@ def update_node(
     db: Session = Depends(get_db),
 ) -> NodeOut:
     node = _get(db, NodeResource, principal, node_id, "node")
-    if node.state_source == StateSource.INTEGRATION:
-        raise ConflictError(code="INTEGRATION_MANAGED",
-                            message="Integration-reported records cannot be edited manually.")
+    _refuse_integration_managed(node, "edited")
     rack_id = body.rack_id if "rack_id" in body.model_fields_set else node.rack_id
     position = (body.rack_unit_position if "rack_unit_position" in body.model_fields_set
                 else node.rack_unit_position)
@@ -430,6 +458,26 @@ def update_node(
                  principal=principal, metadata={"fields": sorted(body.model_fields_set)})
     db.commit()
     return _nodes(db, principal.tenant_id, node_id=node.id)[0]
+
+
+@router.delete("/nodes/{node_id}", status_code=204)
+def delete_node(
+    node_id: uuid.UUID,
+    principal: Principal = Depends(require(Permission.INFRA_MANAGE)),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Removes a node with no workloads. Removes a record only; no hardware is touched."""
+    node = _get(db, NodeResource, principal, node_id, "node")
+    _refuse_integration_managed(node, "deleted")
+    if db.scalar(select(func.count()).select_from(Workload).where(Workload.node_id == node.id)):
+        raise ConflictError(code="NODE_HAS_WORKLOADS",
+                            message="Move or remove the node's workloads first.")
+    record_audit(db, action="infra.node.delete", resource_type="node", resource_id=node_id,
+                 principal=principal,
+                 metadata={"name": node.name, "state_source": node.state_source.value})
+    db.delete(node)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/workloads", response_model=Items[WorkloadOut])
@@ -471,9 +519,7 @@ def update_workload(
     db: Session = Depends(get_db),
 ) -> WorkloadOut:
     w = _get(db, Workload, principal, workload_id, "workload")
-    if w.state_source == StateSource.INTEGRATION:
-        raise ConflictError(code="INTEGRATION_MANAGED",
-                            message="Integration-reported records cannot be edited manually.")
+    _refuse_integration_managed(w, "edited")
     if "node_id" in body.model_fields_set and body.node_id is not None:
         _get(db, NodeResource, principal, body.node_id, "node")
     for field in body.model_fields_set:
@@ -487,3 +533,20 @@ def update_workload(
                  principal=principal, metadata={"fields": sorted(body.model_fields_set)})
     db.commit()
     return next(x for x in _workloads(db, principal.tenant_id) if x.id == w.id)
+
+
+@router.delete("/workloads/{workload_id}", status_code=204)
+def delete_workload(
+    workload_id: uuid.UUID,
+    principal: Principal = Depends(require(Permission.INFRA_MANAGE)),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Removes a workload registration. It never stops or undeploys anything."""
+    w = _get(db, Workload, principal, workload_id, "workload")
+    _refuse_integration_managed(w, "deleted")
+    record_audit(db, action="infra.workload.delete", resource_type="workload",
+                 resource_id=workload_id, principal=principal,
+                 metadata={"name": w.name, "state_source": w.state_source.value})
+    db.delete(w)
+    db.commit()
+    return Response(status_code=204)

@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -31,7 +31,13 @@ from rackflow.db.session import get_sessionmaker, session_scope
 from rackflow.jobs import queue, registry
 from rackflow.jobs.context import JobContext
 from rackflow.jobs.enqueue import enqueue_job
-from rackflow.jobs.errors import PermanentJobError, RetryableJobError
+from rackflow.jobs.errors import (
+    DEPENDENCY_MESSAGE,
+    DEPENDENCY_UNAVAILABLE,
+    PermanentJobError,
+    RetryableJobError,
+    is_dependency_failure,
+)
 from rackflow.jobs.runner import run_claimed_job
 from tests.conftest import TEST_DB
 
@@ -163,6 +169,48 @@ def test_unknown_exception_text_never_leaks(tenant_id: uuid.UUID, db: Session) -
     job = _job(db, job_id)
     assert job.status == JobStatus.FAILED and job.error_code == "INTERNAL_ERROR"
     assert "SECRET" not in (job.safe_error_message or "")
+
+
+def _dll_error() -> OSError:
+    exc = OSError("A dynamic link library (DLL) initialization routine failed")
+    exc.winerror = 1114  # what Windows reports; set explicitly so the test also runs on POSIX
+    return exc
+
+
+@pytest.mark.parametrize("make_exc", [
+    lambda: ImportError("DLL load failed while importing _state", name="onnxruntime"),
+    lambda: ModuleNotFoundError("No module named 'fastembed'", name="fastembed"),
+    _dll_error,
+])
+def test_dependency_failure_is_not_retried(tenant_id: uuid.UUID, db: Session,
+                                           make_exc: Callable[[], BaseException]) -> None:
+    """BUG-03: a library that cannot load fails the same way on every attempt; fail it once with
+    a safe, actionable message instead of four INTERNAL_ERROR retries."""
+    def broken(ctx: JobContext) -> None:
+        raise make_exc()
+
+    registry.register_handler(JobType.EVALUATION_RUN, broken)
+    job_id = _enqueue(tenant_id, max_attempts=4)
+    assert _run_next() == "failed"
+    job = _job(db, job_id)
+    assert job.attempt_count == 1 and job.error_code == DEPENDENCY_UNAVAILABLE
+    assert job.safe_error_message == DEPENDENCY_MESSAGE
+    assert "onnxruntime" not in job.safe_error_message and "DLL" not in job.safe_error_message
+
+
+def test_dependency_failure_classification() -> None:
+    try:
+        try:
+            raise ImportError("x", name="onnxruntime")
+        except ImportError as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as wrapped:
+        assert is_dependency_failure(wrapped)  # found through the exception chain
+    assert is_dependency_failure(_dll_error())
+    # Ordinary OSErrors are transient and must stay retryable.
+    for transient in (ConnectionRefusedError(), TimeoutError(), FileNotFoundError("x"),
+                      OSError("disk busy"), RuntimeError("boom")):
+        assert not is_dependency_failure(transient)
 
 
 def test_cancel_queued_and_running(tenant_id: uuid.UUID, db: Session) -> None:

@@ -8,6 +8,7 @@ import type { Worker } from "@/lib/types";
 
 export default function WorkersPage() {
   const workers = useApi<{ items: Worker[] }>("/operations/workers", 5000);
+
   return (
     <RequirePermission permission="ops:read">
       <PageHeader

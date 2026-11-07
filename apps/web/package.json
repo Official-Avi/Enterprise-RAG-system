@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:a11y": "playwright test e2e/a11y-gates.spec.ts"
   },
   "dependencies": {
     "next": "16.4.3",
@@ -15,6 +17,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
     "@playwright/test": "1.64.1",
     "@tailwindcss/turbopack": "4.3.3",
     "@types/node": "20.19.43",
