@@ -1,17 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Icon } from "@/components/icons";
 import { ApiError } from "@/lib/api";
 import { AnswerBlock } from "./AnswerBlock";
 import { AnswerErrorCard } from "./AnswerErrorCard";
+import type { SavedTurn } from "./ask/helpers";
 import { noteCitationActivated } from "./CitationChip";
 import { NotFoundCard } from "./NotFoundCard";
 import { WaitingIndicator } from "./WaitingIndicator";
 import { useWorkspace } from "./WorkspaceContext";
-import type { AnswerMode, AnswerView, Citation, NotFoundContext, Turn } from "./types";
+import type { AnswerMode, AnswerView, Citation, NotFoundContext } from "./types";
 
 export interface ThreadProps {
-  turns: Turn[];
+  turns: SavedTurn[];
   mode: AnswerMode;
   selectedTurnId: string | null;
   activeMarker: number | null;
@@ -204,6 +206,27 @@ export function Thread(props: ThreadProps) {
   );
 }
 
+/** A saved answer hidden because its source is no longer open to this user. The note is the API's. */
+function WithheldNote({ note, onAskAgain }: { note: string; onAskAgain: () => void }) {
+  return (
+    <div className="rounded-xl border border-border bg-panel-2 p-4">
+      <div className="flex gap-3">
+        <Icon name="lock" width={20} height={20} className="mt-0.5 shrink-0 text-muted" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-text text-pretty wrap-anywhere">{note}</p>
+          <button
+            type="button"
+            onClick={onAskAgain}
+            className={`${heldButton} mt-3 border border-border-strong bg-panel text-text hover:bg-panel-2`}
+          >
+            Ask again
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TurnArticle({
   turn,
   mode,
@@ -213,7 +236,7 @@ function TurnArticle({
   notFound,
   props,
 }: {
-  turn: Turn;
+  turn: SavedTurn;
   mode: AnswerMode;
   isLatest: boolean;
   busy: boolean;
@@ -222,7 +245,8 @@ function TurnArticle({
   props: ThreadProps;
 }) {
   const answer = turn.status === "answered" ? turn.answer : undefined;
-  const hasAnswerArea = turn.status !== "held" && (turn.status !== "answered" || answer !== undefined);
+  const hasAnswerArea =
+    turn.status !== "held" && (turn.status !== "answered" || answer !== undefined || turn.withheldNote !== undefined);
   const answerHeading = useRef<HTMLHeadingElement>(null);
 
   function retry() {
@@ -274,6 +298,9 @@ function TurnArticle({
           </h3>
           {turn.status === "waiting" && (
             <WaitingIndicator startedAt={turn.startedAt} mode={mode} onStop={() => props.onStop(turn.id)} />
+          )}
+          {turn.withheldNote !== undefined && (
+            <WithheldNote note={turn.withheldNote} onAskAgain={() => props.onRephrase(turn.question)} />
           )}
           {answer &&
             (answer.evidence_status === "insufficient" ? (

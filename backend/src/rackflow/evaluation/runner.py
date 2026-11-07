@@ -1,10 +1,17 @@
 """EVALUATION_RUN job handler: answers every dataset question through the real RAG path with the
-permissions of the user who started the run, then stores per-question scores and aggregates."""
+permissions of the user who started the run, then stores per-question scores and aggregates.
+
+A run sends questions as fast as the model answers, so a rate-limited model (a free plan allows a
+few thousand tokens a minute) refuses most of them unless the run waits. A busy model is retried
+with bounded backoff that reaches past a one-minute window; the run stays responsive to cancel and
+keeps its lease while it waits."""
 
 from __future__ import annotations
 
 import logging
+import time
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,9 +25,61 @@ from rackflow.evaluation.dataset import load_dataset
 from rackflow.evaluation.metrics import aggregate, score_question
 from rackflow.jobs.context import JobContext
 from rackflow.jobs.errors import PermanentJobError
-from rackflow.rag.answer import answer_question
+from rackflow.rag.answer import AnswerResult, answer_question
 
 log = logging.getLogger(__name__)
+
+MODEL_BUSY = "MODEL_OVERLOADED"
+# Waits before each further try of one question. The last ones outlast a one-minute token window.
+BUSY_BACKOFF_SECONDS = (5.0, 15.0, 30.0, 65.0, 65.0)
+# A provider asking for longer than this has run out of more than its per-minute allowance.
+MAX_RETRY_AFTER_SECONDS = 120.0
+WAIT_TICK_SECONDS = 5.0  # well inside the shortest lease, and how soon a cancel is noticed
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _wait(ctx: JobContext, seconds: float) -> None:
+    """Wait without losing the lease or ignoring a cancel, and with no transaction left open."""
+    remaining = seconds
+    while remaining > 0:
+        tick = min(remaining, WAIT_TICK_SECONDS)
+        _sleep(tick)
+        remaining -= tick
+        ctx.check_cancelled()
+        ctx.heartbeat()
+        ctx.db.rollback()
+
+
+def _busy_wait(exc: AppError, schedule: Iterator[float]) -> float | None:
+    """Seconds to wait before trying again, or None when this error should stand."""
+    if exc.code != MODEL_BUSY:
+        return None
+    scheduled = next(schedule, None)
+    if scheduled is None:
+        return None
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is None:
+        return scheduled
+    return float(retry_after) + 1.0 if retry_after <= MAX_RETRY_AFTER_SECONDS else None
+
+
+def _answer(ctx: JobContext, principal: Principal, question: str,
+            collection_ids: list[uuid.UUID], *, patient: bool) -> AnswerResult:
+    schedule = iter(BUSY_BACKOFF_SECONDS if patient else ())
+    while True:
+        try:
+            return answer_question(ctx.db, principal, question, collection_ids)
+        except AppError as exc:
+            ctx.db.rollback()
+            wait = _busy_wait(exc, schedule)
+            if wait is None:
+                raise
+            log.info("evaluation_model_busy", extra={"job_id": str(ctx.job_id),
+                                                     "wait_seconds": wait})
+        _wait(ctx, wait)
 
 
 def _principal(ctx: JobContext, user_id: uuid.UUID | None) -> Principal:
@@ -66,15 +125,20 @@ def run_evaluation(ctx: JobContext) -> None:
     db.commit()
 
     results = []
+    # A question that used up its waits means an outage, not a passing limit: later questions get
+    # one try each until the model answers again, so a dead model does not hold the run for an hour.
+    patient = True
     for q in dataset.questions:
         ctx.check_cancelled()
         ctx.heartbeat()
         try:
-            ans = answer_question(db, principal, q.question, collection_ids)
+            ans = _answer(ctx, principal, q.question, collection_ids, patient=patient)
         except AppError as exc:
             db.rollback()
+            patient = patient and exc.code != MODEL_BUSY
             results.append({"id": q.id, "category": q.category, "error": exc.code})
             continue
+        patient = True
         scored = score_question(
             q, retrieved_docs=[s.filename for s in ans.sources],
             cited_docs=[c.chunk.filename for c in ans.citations], answer=ans.answer,

@@ -4,6 +4,7 @@ retrieval re-validates hits against PostgreSQL."""
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Sequence
 from functools import lru_cache
@@ -12,6 +13,8 @@ from qdrant_client import QdrantClient, models
 
 from rackflow.core.config import get_settings
 from rackflow.providers.interfaces import VectorFilter, VectorHit, VectorRecord
+
+log = logging.getLogger(__name__)
 
 _INDEXED_FIELDS = ("tenant_id", "collection_id", "document_id", "document_version_id")
 
@@ -33,6 +36,9 @@ class QdrantVectorStore:
         if self._ready and exists:
             return
         if not exists:
+            # Expected once per deployment. Later it means the vectors were lost, and this makes the
+            # collection check pass while only new uploads have vectors: operators need the trace.
+            log.warning("vector_collection_created", extra={"collection": self.collection})
             self.client.create_collection(
                 self.collection,
                 vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),

@@ -138,17 +138,27 @@ def workers(
     principal: Principal = Depends(require(Permission.OPS_READ)),
     db: Session = Depends(get_db),
 ) -> WorkerList:
+    """Workers serve every tenant, so what they did is reported for the caller's tenant only."""
     now = datetime.now(UTC)
     rows = _listed_workers(db, now)
+    attempts = {(worker, status): int(n) for worker, status, n in db.execute(
+        select(JobAttempt.worker_id, JobAttempt.status, func.count()).where(
+            JobAttempt.tenant_id == principal.tenant_id,
+            JobAttempt.worker_id.in_([w.worker_id for w in rows]),
+            JobAttempt.status.in_(["succeeded", "failed"]),
+        ).group_by(JobAttempt.worker_id, JobAttempt.status)).all()}
     current_ids = [w.current_job_id for w in rows if w.current_job_id]
     own_jobs = set(db.scalars(select(ProcessingJob.id).where(
         ProcessingJob.id.in_(current_ids), ProcessingJob.tenant_id == principal.tenant_id)).all()
     ) if current_ids else set()
     return WorkerList(items=[
-        WorkerOut(worker_id=w.worker_id, hostname=w.hostname, status=w.status,
+        WorkerOut(worker_id=w.worker_id, hostname=w.hostname,
+                  status="idle" if w.status == "busy" and w.current_job_id not in own_jobs
+                  else w.status,
                   health=worker_health(w, now),
                   current_job_id=w.current_job_id if w.current_job_id in own_jobs else None,
-                  jobs_succeeded=w.jobs_succeeded, jobs_failed=w.jobs_failed,
+                  jobs_succeeded=attempts.get((w.worker_id, "succeeded"), 0),
+                  jobs_failed=attempts.get((w.worker_id, "failed"), 0),
                   started_at=w.started_at, last_heartbeat_at=w.last_heartbeat_at,
                   version=w.version)
         for w in rows

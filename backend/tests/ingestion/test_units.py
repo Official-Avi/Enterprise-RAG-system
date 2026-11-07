@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
+from unittest.mock import MagicMock
+
 import pytest
 
 from rackflow.ingestion.chunking import chunk_pages
@@ -12,6 +16,7 @@ from rackflow.jobs.errors import PermanentJobError
 from rackflow.providers.extractors import get_extractor
 from rackflow.providers.storage import LocalObjectStorage
 from rackflow.providers.tokenizer import get_tokenizer
+from rackflow.providers.vectorstore import QdrantVectorStore
 from tests.fixtures import make_docx, make_macro_docx, make_text_pdf, make_zip_bomb_docx
 
 MAX = 25 * 1024 * 1024
@@ -49,6 +54,52 @@ def test_invalid_files_rejected(name: str, data: bytes, code: str) -> None:
     with pytest.raises(UploadRejected) as err:
         validate_upload(name, data, max_bytes=MAX)
     assert err.value.code == code
+
+
+def _crafted_docx(patch: Callable[[bytearray, int], None]) -> bytes:
+    """A real DOCX with its first central directory entry changed, which ZipFile() parses."""
+    data = bytearray(make_docx("T", ["p"]))
+    patch(data, data.index(b"PK\x01\x02"))
+    return bytes(data)
+
+
+def _future_zip_version(data: bytearray, entry: int) -> None:
+    data[entry + 6] = 99  # "extract version 9.9": ZipFile raises NotImplementedError
+
+
+def _bad_utf8_name(data: bytearray, entry: int) -> None:
+    data[entry + 9] |= 0x08  # flag bit 11, "the name is UTF-8"
+    data[entry + 46] = 0xFF  # the first byte of the name: ZipFile raises UnicodeDecodeError
+
+
+@pytest.mark.parametrize("patch", [_future_zip_version, _bad_utf8_name])
+def test_docx_that_breaks_the_zip_parser_is_a_rejection(
+        patch: Callable[[bytearray, int], None]) -> None:
+    with pytest.raises(UploadRejected) as err:
+        validate_upload("a.docx", _crafted_docx(patch), max_bytes=MAX)
+    assert err.value.code == "CORRUPT_FILE"
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-be-bom"])
+def test_utf16_text_with_a_byte_order_mark_is_accepted_and_readable(encoding: str) -> None:
+    text = "hello world notes\nRotate the certificates every ninety days.\n"
+    data = (b"\xfe\xff" + text.encode("utf-16-be") if encoding == "utf-16-be-bom"
+            else text.encode("utf-16"))
+    assert validate_upload("a.txt", data, max_bytes=MAX).file_type == "txt"
+    assert validate_upload("a.md", data, max_bytes=MAX).file_type == "md"
+    extracted = get_extractor("txt").extract(data, max_pages=10).pages[0].text
+    assert "Rotate the certificates" in extracted
+
+
+def test_recreating_a_missing_vector_collection_leaves_a_trace(
+        caplog: pytest.LogCaptureFixture) -> None:
+    client = MagicMock()
+    client.collection_exists.return_value = False
+    store = QdrantVectorStore(client, "rackflow_test_units")
+    with caplog.at_level(logging.WARNING):
+        store.ensure_collection(4)
+    assert "vector_collection_created" in caplog.messages
+    client.create_collection.assert_called_once()
 
 
 def test_oversized_rejected() -> None:

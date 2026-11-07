@@ -5,6 +5,7 @@ import { useEffect, useEffectEvent, useRef } from "react";
 import { pendingStore } from "@/lib/pendingStore";
 import type { DocumentItem } from "@/lib/types";
 import type { ScopeValue, UploadsApi } from "../types";
+import { useWorkspace } from "../WorkspaceContext";
 import { clearDraft, readDraft } from "./helpers";
 
 // ?doc= is the spec'd hand-off (§3.2 step 6, §5.5); ?docs= and ?q= are what older landing
@@ -40,6 +41,7 @@ export function useArrival({
   setScope,
   showReading,
 }: Options) {
+  const { me } = useWorkspace();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -53,7 +55,7 @@ export function useArrival({
   const takePending = useEffectEvent(() => {
     const pending = pendingStore.take();
     if (pending.files.length) void uploads.add(pending.files);
-    const saved = readDraft();
+    const saved = readDraft(me.user_id);
     if (saved) clearDraft();
     if (pending.question) {
       // The user already pressed Enter on the landing page, so it sends once routing is known.

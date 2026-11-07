@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal, Self
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -41,10 +42,25 @@ WorkloadType = Literal["api", "worker", "vector_db", "database", "model_serving"
 
 
 class Capacity(BaseModel):
-    cpu_cores: int = 0
+    cpu_cores: float = 0  # a workload may request part of a core
     memory_bytes: int = 0
     storage_bytes: int = 0
     accelerators: int = 0
+
+
+class _Patch(BaseModel):
+    """A PATCH applies every field it names, so an explicit null must be refused for NOT NULL
+    columns here, or it reaches the database and comes back as a 500."""
+
+    not_nullable: ClassVar[frozenset[str]] = frozenset()
+
+    @model_validator(mode="after")
+    def _refuse_null(self) -> Self:
+        for field in sorted(self.not_nullable & self.model_fields_set):
+            if getattr(self, field) is None:
+                raise PydanticCustomError("null_not_allowed", "{field} cannot be null",
+                                          {"field": field})
+        return self
 
 
 class RackIn(BaseModel):
@@ -57,7 +73,9 @@ class RackIn(BaseModel):
     status: Health = "unknown"
 
 
-class RackPatch(BaseModel):
+class RackPatch(_Patch):
+    not_nullable = frozenset({"name", "environment", "description", "status"})
+
     name: str | None = Field(default=None, min_length=1, max_length=120)
     environment: Environment | None = None
     location_label: str | None = Field(default=None, max_length=200)
@@ -78,7 +96,9 @@ class NodeIn(BaseModel):
     status: Health = "unknown"
 
 
-class NodePatch(BaseModel):
+class NodePatch(_Patch):
+    not_nullable = frozenset({"name", "status"})
+
     name: str | None = Field(default=None, min_length=1, max_length=120)
     rack_id: uuid.UUID | None = None
     rack_unit_position: int | None = Field(default=None, ge=1, le=60)
@@ -105,7 +125,9 @@ class WorkloadIn(BaseModel):
     state_source: ClientSource = "manual"
 
 
-class WorkloadPatch(BaseModel):
+class WorkloadPatch(_Patch):
+    not_nullable = frozenset({"desired_state", "observed_state", "resource_request"})
+
     node_id: uuid.UUID | None = None
     desired_state: Literal["running", "stopped"] | None = None
     observed_state: Literal["running", "stopped", "degraded", "unknown"] | None = None
@@ -237,7 +259,7 @@ def _nodes(db: Session, tenant_id: uuid.UUID, rack_id: uuid.UUID | None = None,
     for n in nodes:
         mine = [w for w in workloads if w.node_id == n.id]
         alloc = Capacity(
-            cpu_cores=int(sum(w.resource_request.get("cpu_cores") or 0 for w in mine)),
+            cpu_cores=round(sum(w.resource_request.get("cpu_cores") or 0 for w in mine), 3),
             memory_bytes=int(sum(w.resource_request.get("memory_bytes") or 0 for w in mine)),
             accelerators=int(sum(w.resource_request.get("accelerators") or 0 for w in mine)),
         )

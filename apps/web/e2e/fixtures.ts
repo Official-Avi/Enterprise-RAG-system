@@ -34,6 +34,9 @@ export const CHAT_TITLE = "e2e-a11y backup retention";
 export const EMPTY_COLLECTION = "e2e-a11y empty";
 export const FULL_COLLECTION = "e2e-a11y full";
 export const GRANTEE_EMAIL = "e2e-a11y-grantee@acme.example.com";
+export const SHARED_COLLECTION = "e2e-library shared";
+export const SHARED_FILE = "e2e-library-shared.pdf";
+export const SHARED_DOC_ID = id(13);
 
 function collection(over: Partial<Collection>): Collection {
   return {
@@ -224,6 +227,63 @@ export const mockReadingDocuments = (page: Page) =>
 
 export const mockNoDocuments = (page: Page) => mockLibraryData(page, [], [collection({})]);
 
+/** A Ready file in My documents and a Ready file in a collection this user only reads. `/documents`
+ *  narrows by collection as the API does, and the second file can be fetched on its own. */
+export async function mockSharedDocument(page: Page): Promise<void> {
+  const shared = document({
+    id: SHARED_DOC_ID,
+    collection_id: FULL_COLLECTION_ID,
+    collection_name: SHARED_COLLECTION,
+    filename: SHARED_FILE,
+  });
+  const docs = [READY_DOC, shared];
+  await mockGet(page, COLLECTIONS_URL, () => [
+    collection({ document_count: 1 }),
+    collection({ id: FULL_COLLECTION_ID, name: SHARED_COLLECTION, access_level: "read", document_count: 1 }),
+  ]);
+  await mockGet(page, DOCUMENTS_URL, (url) => {
+    const only = url.searchParams.get("collection_id");
+    return { items: only ? docs.filter((d) => d.collection_id === only) : docs, next_cursor: null };
+  });
+  await mockGet(page, /\/api\/v1\/documents\/[^/?]+$/, () => shared);
+}
+
+/** A failed file in a collection where this user holds `level`, listed for as long as it exists. */
+export async function mockFailedFile(
+  page: Page,
+  {
+    level,
+    uploadedBy = null,
+    deleteRemovedIt = false,
+  }: {
+    level: Collection["access_level"];
+    uploadedBy?: string | null;
+    /** DELETE answers 404 either way: was the file already gone, or was the caller refused? */
+    deleteRemovedIt?: boolean;
+  },
+): Promise<void> {
+  const failed = {
+    ...FAILED_DOC,
+    collection_id: FULL_COLLECTION_ID,
+    collection_name: SHARED_COLLECTION,
+    uploaded_by: uploadedBy,
+  };
+  const docs = [failed];
+  await mockLibraryData(page, docs, [
+    collection({}),
+    collection({ id: FULL_COLLECTION_ID, name: SHARED_COLLECTION, access_level: level, document_count: 1 }),
+  ]);
+  const notFound = { error: { code: "DOCUMENT_NOT_FOUND", message: "The requested document could not be found." } };
+  await page.route(`**/api/v1/documents/${failed.id}`, async (route) => {
+    if (route.request().method() === "DELETE") {
+      if (deleteRemovedIt) docs.length = 0;
+      return respond(route, notFound, 404);
+    }
+    return docs.length ? respond(route, failed) : respond(route, notFound, 404);
+  });
+  await page.route(`**/api/v1/documents/${failed.id}/retry`, (route) => respond(route, notFound, 404));
+}
+
 /** Holds the upload POST so the row stays Uploading. Call the result to let the request go. */
 export async function holdUploads(page: Page): Promise<() => Promise<void>> {
   const held: Route[] = [];
@@ -255,6 +315,22 @@ export async function rejectUploads(page: Page, filename: string): Promise<void>
           },
         ],
       },
+      201,
+    );
+  });
+}
+
+/** The server stores the file as `documentId`, which the document list doesn't show yet. */
+export async function acceptUploads(page: Page, filename: string, documentId: string): Promise<void> {
+  await mockLibraryData(page, [READY_DOC], [collection({ document_count: 1 })]);
+  await mockGet(page, /\/api\/v1\/documents\/[^/?]+$/, () =>
+    document({ id: documentId, filename, status: "queued", page_count: null, indexed_at: null }),
+  );
+  await page.route(UPLOAD_URL, async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    await respond(
+      route,
+      { items: [{ filename, status: "queued", document_id: documentId, job_id: id(33), duplicate: false, error: null }] },
       201,
     );
   });

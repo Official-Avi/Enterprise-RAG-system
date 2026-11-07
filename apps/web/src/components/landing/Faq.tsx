@@ -14,7 +14,7 @@ const ITEMS: { id?: string; q: string; a: string; open?: boolean }[] = [
   },
   {
     q: "Does it make things up?",
-    a: "By default no AI model writes the answer: RackFlow quotes the passages that match your question. If an admin turns on Claude, Claude writes the answer from those passages, and every claim still links to its source. If nothing matches, it says so.",
+    a: "RackFlow answers only from your documents. Depending on how your admin set it up, it either quotes the passages that match your question, or an AI model writes the answer from those passages. Either way the answer links to its sources so you can check it, and if nothing matches, it says so.",
   },
   {
     q: "Who can see my files?",
@@ -27,7 +27,7 @@ const ITEMS: { id?: string; q: string; a: string; open?: boolean }[] = [
   },
   {
     q: "Where does my data go?",
-    a: "Files are stored and searched on the server running RackFlow. In the default mode nothing is sent to an outside AI service. If Claude is turned on, only your question and the few matching passages go to Anthropic to write the answer.",
+    a: "Files are stored and searched on the server running RackFlow, and whole files are never sent anywhere else. RackFlow can run without an AI model, and then nothing leaves that server. If an admin connects one, your question and the few passages that match it go to that model to write the answer. A follow-up can include your earlier question too. The model may run on your own servers or at an outside service such as Anthropic, OpenAI or Groq, so ask your admin which one this workspace uses.",
   },
 ];
 

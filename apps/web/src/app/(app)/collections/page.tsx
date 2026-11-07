@@ -25,7 +25,7 @@ import { MY_DOCUMENTS } from "@/lib/workspace";
 
 /** The workspace finds "My documents", and evaluation seeding finds its corpus, by exact name.
  *  Renaming one would quietly make the next upload or seed create a new, empty collection. */
-const nameIsFixed = (c: Collection) => c.name === MY_DOCUMENTS || c.name.startsWith("Evaluation");
+const nameIsFixed = (c: Collection) => c.name === MY_DOCUMENTS || /^Evaluation (corpus|restricted) \(v\d+\)$/.test(c.name);
 
 function CreateCollection({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false);
@@ -364,7 +364,7 @@ export default function CollectionsPage() {
                     <Td className="text-muted">{formatTime(c.updated_at)}</Td>
                     <Td className="whitespace-nowrap text-right">
                       <span className="inline-flex gap-1.5">
-                        {manageable && <Button aria-label={`Manage access to ${c.name}`} onClick={() => setManaging(c)}>Manage access</Button>}
+                        {manageable && canManage && <Button aria-label={`Manage access to ${c.name}`} onClick={() => setManaging(c)}>Manage access</Button>}
                         {manageable && canManage && <Button aria-label={`Edit ${c.name}`} onClick={() => setEditing(c)}>Edit</Button>}
                         {manageable && canManage && <Button variant="danger" aria-label={`Delete ${c.name}`} onClick={() => setDeleting(c)}>Delete</Button>}
                       </span>

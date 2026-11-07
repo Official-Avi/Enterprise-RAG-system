@@ -308,6 +308,25 @@ def test_flagged_heading_does_not_count_as_evidence() -> None:
     ("How do I rotate certificates?", False),
     ("Is it possible to rotate certificates?", False),
     ("What does it say about TLS?", False),  # names its own subject
+    # A name says what is asked, not whose it is.
+    ("What is its SLA?", True),
+    ("Does it run on Linux?", True),
+    ("What is its 2026 budget?", True),
+    ("What is the SLA for it?", True),
+    ("What is the SLA for that?", True),
+    ("What about its SLA?", True),
+    ("Who approves it?", True),
+    ("How do I replace its seal?", True),
+    ("What happens if it fails?", True),
+    ("What does it say about seals?", True),
+    # The question itself says what the pronoun refers to.
+    ("How do I restart the pump when it overheats?", False),
+    ("How should engineers store their laptops?", False),
+    ("How often are filters replaced and who approves them?", False),
+    ("What is the Marlowe pump pressure and how often is it serviced?", False),
+    ("Does the Marlowe pump need it?", False),
+    ("How long does it take to rotate certificates?", False),
+    ("Is it recommended to rotate certificates?", False),
 ])
 def test_is_followup(question: str, expected: bool) -> None:
     assert is_followup(question) is expected
@@ -320,6 +339,23 @@ def test_followup_context_walks_back_to_the_turn_that_named_the_subject() -> Non
     assert followup_context("Tell me more about it", [first, second]) == first
     assert followup_context("How do I rotate certificates?", [first]) is None
     assert followup_context("Tell me more about it", []) is None
+
+
+def test_followup_with_a_name_keeps_the_thread_subject() -> None:
+    marlowe = "What is the Marlowe pump maximum inlet pressure?"
+    assert followup_context("What is its SLA?", [marlowe]) == marlowe
+    assert followup_context("Does it run on Linux?", [marlowe, "What is its SLA?"]) == marlowe
+    answer = extractive("What is its SLA?", "Zephyr Guide\n\nThe Zephyr rack SLA is 4 hours.",
+                        "Marlowe Notes\n\nThe Marlowe pump SLA is 9 hours.", context=marlowe)
+    assert "9 hours" in answer and "4 hours" not in answer
+
+
+def test_self_contained_question_does_not_take_the_previous_subject() -> None:
+    backups = "How often are backups rotated?"
+    question = "How do I restart the pump when it overheats?"
+    assert followup_context(question, [backups]) is None
+    text = "Pump Notes\n\nRestart the pump when it overheats by pressing the reset button."
+    assert "reset button" in extractive(question, text)
 
 
 def test_followup_context_is_bounded() -> None:

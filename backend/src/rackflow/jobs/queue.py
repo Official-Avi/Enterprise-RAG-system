@@ -244,15 +244,45 @@ def request_cancel(db: Session, job: ProcessingJob) -> ProcessingJob:
     return job
 
 
+def delete_gave_up(db: Session, document_id: uuid.UUID) -> bool:
+    """The last thing asked of this document was a delete that did not finish. Its row is back as
+    failed so that it can be deleted again, not because anyone wants the content back."""
+    latest = db.scalars(
+        select(ProcessingJob)
+        .where(ProcessingJob.document_id == document_id)
+        .order_by(ProcessingJob.queued_at.desc(), ProcessingJob.id.desc())
+        .limit(1)
+    ).first()
+    return (latest is not None and latest.job_type == JobType.DELETE_DOCUMENT
+            and latest.status in (JobStatus.FAILED, JobStatus.CANCELLED))
+
+
+def _check_ingest_retry(db: Session, doc: Document) -> None:
+    # A newer run may already have indexed this document. Running this old job again would take a
+    # healthy document out of search, and leave it failed if the run failed.
+    if doc.status != DocumentStatus.FAILED:
+        raise InvalidTransition(
+            f"This job is out of date: the document is now {doc.status.value}.")
+    # Retrieval hides a row with deleted_at set for good, so it would read as indexed yet never be
+    # answerable. A delete that gave up was still a request to remove this content.
+    if doc.deleted_at is not None or delete_gave_up(db, doc.id):
+        raise InvalidTransition("A file being deleted can only be deleted again.")
+
+
 def manual_retry(db: Session, job: ProcessingJob) -> ProcessingJob:
-    """Re-queue a FAILED/CANCELLED job with a fresh attempt budget (history is preserved)."""
+    """Re-queue a FAILED/CANCELLED job with a fresh attempt budget (history is preserved).
+
+    InvalidTransition messages say why it was refused, and API clients are shown them."""
     if job.status not in (JobStatus.FAILED, JobStatus.CANCELLED):
-        raise InvalidTransition(f"cannot retry a {job.status.value} job")
+        raise InvalidTransition("Only failed or cancelled jobs can be retried.")
     doc = db.get(Document, job.document_id) if job.document_id else None
+    if job.job_type == JobType.INGEST_DOCUMENT and doc is not None:
+        _check_ingest_retry(db, doc)
     if job.job_type == JobType.DELETE_DOCUMENT and doc is not None:
         # The file may have been re-processed since this delete gave up: never delete it unasked.
         if doc.status not in (DocumentStatus.FAILED, DocumentStatus.DELETING):
-            raise InvalidTransition(f"cannot retry a delete of a {doc.status.value} document")
+            raise InvalidTransition(
+                f"This delete is out of date: the document is now {doc.status.value}.")
         doc.status = DocumentStatus.DELETING
         doc.deleted_at = doc.deleted_at or _now()
     now = _now()

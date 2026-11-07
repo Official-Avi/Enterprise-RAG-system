@@ -130,8 +130,7 @@ def retry_job(
     try:
         manual_retry(db, job)
     except InvalidTransition as exc:
-        raise ConflictError(code="INVALID_JOB_STATE",
-                            message="Only failed or cancelled jobs can be retried.") from exc
+        raise ConflictError(code="INVALID_JOB_STATE", message=str(exc)) from exc
     record_audit(db, action="job.retry", resource_type="job", resource_id=job.id,
                  principal=principal)
     db.commit()

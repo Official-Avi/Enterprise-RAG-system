@@ -130,6 +130,56 @@ test.describe("login page", () => {
   });
 });
 
+test.describe("where sign-in sends you", () => {
+  /** Signs in from /login?next=... through a demo row, counting any request to the hostile host. */
+  const signInWithNext = async (page: Page, title: string, next: string): Promise<string[]> => {
+    const escaped: string[] = [];
+    await page.context().route(
+      (url) => url.hostname === "evil.example",
+      (route) => {
+        escaped.push(route.request().url());
+        return route.fulfill({ status: 200, contentType: "text/html", body: "<h1>Not RackFlow</h1>" });
+      },
+    );
+    await page.goto(`/login?next=${encodeURIComponent(next)}`);
+    await page
+      .getByRole("region", { name: "Use a demo account" })
+      .getByRole("button", { name: new RegExp(`^${escapeRegExp(title)}\\b`) })
+      .click();
+    return escaped;
+  };
+
+  for (const next of ["/.//evil.example", "/..//evil.example", "/%2e//evil.example"]) {
+    test(`?next=${next} stays on this site`, async ({ page, request }) => {
+      const demo = await demoInfo(request);
+      test.skip(!demo.personas.some((p) => p.key === "engineer"), "The Engineer demo persona isn't offered on this server");
+
+      const escaped = await signInWithNext(page, "Engineer", next);
+      await expect(page).toHaveURL(/\/ask$/);
+      expect(new URL(page.url()).hostname).not.toBe("evil.example");
+      expect(escaped).toEqual([]);
+    });
+  }
+
+  test("a real ?next= is kept, with its query and hash", async ({ page, request }) => {
+    const demo = await demoInfo(request);
+    test.skip(!demo.personas.some((p) => p.key === "engineer"), "The Engineer demo persona isn't offered on this server");
+
+    await signInWithNext(page, "Engineer", "/library?x=1#y");
+    await expect(page).toHaveURL(/\/library\?x=1#y$/);
+  });
+
+  for (const next of ["/ask", "/ask#x", "/library#x"]) {
+    test(`an Auditor sent to ${next} goes to their home instead`, async ({ page, request }) => {
+      const demo = await demoInfo(request);
+      test.skip(!demo.personas.some((p) => p.key === "auditor"), "The Auditor demo persona isn't offered on this server");
+
+      await signInWithNext(page, "Auditor", next);
+      await expect(page).toHaveURL(/\/overview$/);
+    });
+  }
+});
+
 test.describe("at a 320px viewport (§9 #15)", () => {
   test.use({ viewport: { width: 320, height: 640 } });
 

@@ -76,7 +76,7 @@ citations saved → JSON answer.
 ## Doc/code differences (as of this file)
 
 - `DECISIONS.md` ADR-012 names Tesseract; the code uses RapidOCR (ADR-015).
-- `ARCHITECTURE.md` mentions optional hybrid search, reranking and a Redis broker; none are implemented.
+- `ARCHITECTURE.md` mentions optional hybrid search and reranking; neither is implemented. There is no Redis broker (ADR-005).
 - `prometheus-client` is a dependency but is not used; metrics come from PostgreSQL.
 - `OBJECT_STORAGE_ENDPOINT`/`BUCKET` are ignored; only local storage exists.
 - Top-level `eval/` and `infra/` are empty; evaluation lives in `backend/src/rackflow/evaluation`.

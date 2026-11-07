@@ -22,6 +22,11 @@ import { formatMs, formatTime } from "@/lib/format";
 import { useApi, useCan } from "@/lib/hooks";
 import type { Collection, EvalDataset, EvalMetricValue, EvalRun, EvalRunDetail } from "@/lib/types";
 
+/** The collections evaluation seeding creates for the dataset (evaluation/seed.py). Exact, so that
+ *  a collection someone happens to call "Evaluation reports" stays out of the labelled metrics. */
+const DATASET = "v1";
+const CORPUS_NAMES = [`Evaluation corpus (${DATASET})`, `Evaluation restricted (${DATASET})`];
+
 const METRICS: { key: string; label: string; help: string; higherIsBetter?: boolean; percent?: boolean }[] = [
   { key: "retrieval_hit_rate", label: "Retrieval hit rate", help: "Expected source found among retrieved passages", higherIsBetter: true, percent: true },
   { key: "mrr", label: "MRR", help: "Mean reciprocal rank of the first expected source", higherIsBetter: true },
@@ -88,8 +93,9 @@ function RunDetailDialog({ runId, onClose }: { runId: string; onClose: () => voi
               ))}
             </tbody>
           </TableWrap>
-          {run.data.results.some((r) => r.answer === undefined) && (
-            <p className="text-xs text-muted">Questions and answers are hidden for roles without document-content access.</p>
+          {/* A row that errored never had a question; a scored row without one had it hidden by the API. */}
+          {run.data.results.some((r) => !r.error && r.question === undefined) && (
+            <p className="text-xs text-muted">Questions and answers are hidden unless you can read document content in every collection this run searched.</p>
           )}
         </div>
       )}
@@ -111,21 +117,27 @@ export default function EvaluationPage() {
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
 
-  const evalCollections = (collections.data ?? []).filter((c) => c.name.startsWith("Evaluation") && c.access_level);
+  const evalCollections = (collections.data ?? []).filter((c) => CORPUS_NAMES.includes(c.name) && c.access_level);
   const canStart = evalCollections.length > 0;
 
   const seed = async () => {
     if (seeding) return;
     setSeeding(true);
     setError(null);
+    setMessage(null);
     try {
-      const res = await api<{ queued: number; duplicates: number }>("/evaluation/datasets/v1/seed", { method: "POST" });
+      const res = await api<{ queued: number; duplicates: number; rejected: string[] }>(`/evaluation/datasets/${DATASET}/seed`, { method: "POST" });
       setStartedRunId(null);
-      setMessage(
-        res.queued
-          ? `Corpus prepared: ${res.queued} documents queued for indexing, ${res.duplicates} already present. Wait until Documents shows them as indexed before running.`
-          : `Corpus is ready: all ${res.duplicates} documents are already present.`,
-      );
+      if (res.rejected.length) {
+        // Scores from a partial corpus would look like real results, so never call this one ready.
+        setError(`The corpus isn't ready: ${res.rejected.length} file${res.rejected.length === 1 ? " was" : "s were"} refused (${res.queued} queued, ${res.duplicates} already present). Fix this and prepare it again before running. ${res.rejected.join("; ")}.`);
+      } else {
+        setMessage(
+          res.queued
+            ? `Corpus prepared: ${res.queued} documents queued for indexing, ${res.duplicates} already present. Wait until Documents shows them as indexed before running.`
+            : `Corpus is ready: all ${res.duplicates} documents are already present.`,
+        );
+      }
       collections.reload();
     } catch (e) {
       setError(errorText(e));
@@ -138,7 +150,7 @@ export default function EvaluationPage() {
     setStarting(true);
     setError(null);
     try {
-      const run = await api<EvalRun>("/evaluation/runs", { method: "POST", json: { dataset_version: "v1", collection_ids: evalCollections.map((c) => c.id) } });
+      const run = await api<EvalRun>("/evaluation/runs", { method: "POST", json: { dataset_version: DATASET, collection_ids: evalCollections.map((c) => c.id) } });
       setMessage(null);
       setStartedRunId(run.id);
       runs.reload();

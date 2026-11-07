@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,6 +20,13 @@ def demo_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
     patched = get_settings().model_copy(update={"demo_mode": True})
     monkeypatch.setattr(auth, "get_settings", lambda: patched)
+
+
+def test_demo_mode_defaults_to_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rackflow.core.config import Settings
+
+    monkeypatch.delenv("DEMO_MODE")  # conftest forces it, which would hide a changed default
+    assert Settings(_env_file=None).demo_mode is False
 
 
 def test_demo_is_disabled_by_default(client: TestClient, factory: Factory) -> None:
@@ -60,8 +69,14 @@ def test_demo_mode_is_refused_in_production() -> None:
 
     from rackflow.core.config import Settings
 
-    with pytest.raises(ValidationError):
-        Settings(app_env="production", cookie_secure=True, demo_mode=True)
+    # The test suite's hash embeddings are refused in production too, and would hide this check.
+    production: dict[str, Any] = {
+        "app_env": "production", "cookie_secure": True, "embedding_provider": "fastembed",
+        "_env_file": None,
+    }
+    assert Settings(**production, demo_mode=False).demo_mode is False
+    with pytest.raises(ValidationError, match="DEMO_MODE"):
+        Settings(**production, demo_mode=True)
 
 
 def test_demo_persona_copy_fits_the_card() -> None:

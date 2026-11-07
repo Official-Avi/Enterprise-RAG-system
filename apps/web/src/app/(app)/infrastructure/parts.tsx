@@ -76,6 +76,11 @@ function EditDialog({
   children: ReactNode;
 }) {
   const [error, setError] = useState<string | null>(null);
+  // This component outlives the dialog, so an error would otherwise greet the next opening.
+  const close = () => {
+    setError(null);
+    onClose();
+  };
   const submit = async (ev: FormEvent<HTMLFormElement>) => {
     ev.preventDefault();
     const body = build(new FormData(ev.currentTarget));
@@ -93,13 +98,13 @@ function EditDialog({
     }
   };
   return (
-    <Dialog open={open} title={`${title} ${name}`} onClose={onClose}>
+    <Dialog open={open} title={`${title} ${name}`} onClose={close}>
       <form onSubmit={submit} className="space-y-3">
         {children}
         {note && <p className="text-xs text-muted">{note}</p>}
         {error && <p role="alert" className="text-sm text-bad">{error}</p>}
         <div className="flex justify-end gap-2">
-          <Button type="button" onClick={onClose}>Cancel</Button>
+          <Button type="button" onClick={close}>Cancel</Button>
           <Button type="submit" variant="primary">Save</Button>
         </div>
       </form>

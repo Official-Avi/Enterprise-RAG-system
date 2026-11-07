@@ -24,6 +24,8 @@ import { WorkspaceContext } from "./WorkspaceContext";
 const OPERATOR_NOTE =
   "Operators can't add documents. You can ask about documents already here. An Engineer or Admin can add files.";
 const GONE_MESSAGE = "This file isn't available any more.";
+const OPENED_GONE_NOTE =
+  "The file in that link isn't available any more. It may have been deleted, or this account can't open it.";
 const READY_PREFIX = "(Ready) ";
 // useDocStatus pauses while the tab is hidden (§5.5), but the "(Ready) " title and a held question
 // only make sense in a hidden tab, so one slow check keeps those working.
@@ -330,7 +332,20 @@ export function UploadsProvider({ children, canUpload }: { children: ReactNode; 
       const now = Date.now();
       const ready: TrackedUpload[] = [];
       let changed = false;
-      const next = rowsRef.current.map((row) => {
+      // A row from ?doc= that never learned its name: the user didn't add it, so it isn't an upload
+      // that was refused. It leaves the composer, with a note saying why, instead of a "Loading…" chip.
+      const openedGone = rowsRef.current.filter(
+        (r) => r.filename === LOADING_FILENAME && r.documentId && gone.has(r.documentId),
+      );
+      const kept = openedGone.length
+        ? rowsRef.current.filter((r) => !openedGone.includes(r))
+        : rowsRef.current;
+      if (openedGone.length) {
+        changed = true;
+        setRejectedNote(OPENED_GONE_NOTE);
+        announce(OPENED_GONE_NOTE);
+      }
+      const next = kept.map((row) => {
         const id = row.documentId;
         if (!id || row.phase === "uploading" || row.phase === "rejected") return row;
         if (gone.has(id)) {

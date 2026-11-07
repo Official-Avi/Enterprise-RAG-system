@@ -80,7 +80,7 @@ flowchart TB
 - Transient failure → bounded exponential retry with jitter.
 - Permanent/invalid input → failed state with safe error code and diagnostic correlation ID.
 - Retry exhaustion → terminal failed state and operator-visible event.
-- Worker loss → queue redelivery/lease expiry based on chosen broker; never assume this works until integration-tested.
+- Worker loss → the job's lease expires and it is reclaimed (ADR-005; covered by a process-kill test).
 
 ### 4.4 Scale flow
 - API replicas scale independently from worker replicas.
@@ -93,7 +93,7 @@ flowchart TB
 - PostgreSQL: tenants, users, roles, collections, document metadata, jobs, conversations, rack registry, audit metadata, evaluation runs.
 - Object storage: original files and optional extracted-text artifacts under tenant-scoped keys.
 - Vector DB: chunk embeddings plus minimal filterable metadata; never rely on vector-store filters as the only authorization check.
-- Redis/queue broker: transient coordination and job transport; configure persistence/visibility semantics appropriately.
+- Job queue: PostgreSQL `ProcessingJob` rows with `SKIP LOCKED` and leases (ADR-005). There is no Redis or other broker.
 - Logs/metrics: operational data only; avoid raw documents, secrets, and full prompts by default.
 
 ## 6. Provider interfaces

@@ -1,7 +1,14 @@
 """Grounding policy for answer generation (FR-033/034/036). Kept byte-stable so it can be
 prompt-cached; per-request content goes only in the user turn."""
 
+import re
+
 INSUFFICIENT_MARKER = "INSUFFICIENT_EVIDENCE:"
+
+# How a model cites a source. Document text in the prompt may not contain these (rag/context.py).
+MARKER_RE = re.compile(r"\[(\d{1,3})\]")
+# Some OpenAI-compatible models (gpt-oss) cite as 【1】 or 【1†L3-L5】 whatever the prompt asks for.
+FULLWIDTH_MARKER_RE = re.compile(r"【\s*(\d{1,3})(?:†[^】]*)?\s*】")
 
 # The user turn's layout. Document text and filenames are neutralised in rag/context.py and cannot
 # contain SOURCES_END, so its first occurrence is always the real end of the sources.

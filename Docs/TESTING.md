@@ -47,6 +47,85 @@ Do not treat an LLM judge as the only quality signal; include deterministic chec
 
 ---
 
+## Running the tests locally
+
+- **Backend:** `pytest` needs PostgreSQL, Qdrant and `TEST_DATABASE_URL` in the process environment. A
+  line in `.env` is not read. Unset, it falls back to CI's login, which fails locally with setup errors.
+  The database name must contain `test`, and every session **drops its public schema**.
+- **Parallel runs** need their own database and `TEST_VECTOR_COLLECTION` (prefix `rackflow_test_`), or
+  they drop each other's schema. Commands are in the root README and `backend/tests/conftest.py`.
+- **Backend test settings:** the suite forces `EMBEDDING_PROVIDER=hash` and `MODEL_PROVIDER=extractive`,
+  so no model is called.
+- **Browser:** `npm run test:e2e` in `apps/web` runs against an already-running stack with
+  `DEMO_MODE=true`, with one worker, in Edge by default on Windows. The engineer journey asks one live
+  question. See `apps/web/README.md`.
+- **CI** (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull requests: ruff, mypy, pytest,
+  eslint, tsc, build, and `compose-smoke`. It does **not** run Playwright or axe, and does not check
+  that `/` builds as Static.
+
+---
+
+## Final gate for branch `ui-redesign-2026-10`, 2026-11-06
+
+Run on the uncommitted working tree on top of `45cd0dd`, after the fixes in "2026-11-06 — review fixes"
+below. Environment: Windows 11, Python 3.12, PostgreSQL 18.6, Qdrant 1.20.0, Edge via Playwright, Next dev
+server for the browser runs.
+
+| Check | Command | Result |
+|---|---|---|
+| Backend lint | `ruff check src tests migrations` | All checks passed |
+| Backend types | `mypy` | No issues in 80 source files |
+| Backend tests | `pytest -q` on `rackflow_test` | **350 passed, 0 failed**, 394 s (after the last backend change) |
+| `test_chat_citations.py::test_answer_is_withheld_once_access_can_no_longer_be_checked` (failing at last owner run) | same run | Passed, alone and in both full runs. The cause of the earlier 409 was not reproduced. |
+| Web lint | `eslint` | Exit 0, no problems |
+| Web types | `npx tsc --noEmit` | Exit 0 |
+| Web build, `/` still Static | `npm ci`, `next build` in a clean copy | Exit 0; `/` is Static (`○`) |
+| Browser E2E, no-LLM backend (`MODEL_PROVIDER=extractive`), one spec per command | `playwright test e2e/<spec>` | landing 19, a11y 14, ask 16, library 19, roles 15, engineer-journey 6: all passed. Each count includes 4 sign-in setup tests. |
+| Accessibility gates, same backend | `playwright test e2e/a11y-gates.spec.ts` | 128 passed, 5.9 min (includes the 4 setup tests) |
+| Engineer journey with Groq on | `playwright test e2e/engineer-journey.spec.ts` | 6 passed, after the prompt fix |
+| Open redirect, browser, `/.//evil.example`, `/..//evil.example`, `/%2e//evil.example` | through the form and a demo row | 6 of 6 stayed on the site and landed on `/ask`, 0 requests to `evil.example`. Now also permanent in `e2e/landing.spec.ts`. |
+
+**Not re-run after the last change:** the browser suite on the no-LLM backend ran before the plain-text
+prompt rule was removed. That prompt is not used by the extractive provider, and no web file changed after.
+The build ran on the same web source as the browser suite. Docker Compose and CI were not executed.
+
+### Evaluation, dataset v1, 13 questions, Evaluation corpus and restricted collections
+
+Through the API as the demo admin. Groq is `openai_compatible`, `qwen/qwen3.8-27b`, free plan of 8000 tokens
+per minute.
+
+| Metric | Extractive | Groq, with plain-text rule (2 runs, same scores) | Groq, final |
+|---|---|---|---|
+| Questions scored / errors | 13 / 0 | 13 / 0 | **13 / 0** |
+| Retrieval hit rate | 1.00 | 1.00 | 1.00 |
+| MRR | 1.00 | 1.00 | 1.00 |
+| Citation precision | 1.00 | 1.00 | 1.00 |
+| Citation correctness | 1.00 | 1.00 | 1.00 |
+| Answer term recall | 0.95 | 0.77 | **0.91** |
+| Abstention accuracy | 1.00 | 1.00 | 1.00 |
+| False abstention rate | 0.00 | **0.55** | **0.09** |
+| Injection resistance | 1.00 | 1.00 | 1.00 |
+| Restricted leaks | 0 | 0 | 0 |
+| Average latency / p95, ms | 35 / 57 | 678 / 1610; 718 / 1981 | 753 / 1525 |
+| Whole run | under 1 s | about 66 s | 67 s |
+
+- **The review fixes had added a bug, found only by this run.** A new prompt rule, "write plain text only, do
+  not use Markdown", made the model refuse 6 of 11 answerable questions, one reply arguing with itself in
+  front of the reader. The backend suite never calls a real model, so it cannot show this. In a side test
+  with the rule removed, 4 of 4 refused questions were answered; softer wording still refused 1 of 5. The
+  rule was removed, and the client still handles bold and headings. A guard test holds this.
+- **Final Groq run, the one remaining miss:** `r1` abstains, because its document says it is restricted to HR
+  and leadership, although the admin has access. It scores 0 term recall and is the 0.09.
+- **Citation scores cover only questions answered,** so the 1.00 for the earlier Groq column hides the refusals.
+- **The evaluation retry worked against the real limit.** The final run hit the provider's limit and waited
+  through several back-offs, with 0 errors. It took about a minute, not the 13 to 15 minutes estimated earlier.
+- **One live answer through the API:** "How do I resolve connection pool exhausted errors?" gave `supported`,
+  citation [1] `database-runbook.md`, no page (Markdown), correct steps. One attempt right after other model
+  calls got a 503, most likely the rate limit (its error code was not captured); the same question passed 65 s
+  later.
+
+---
+
 ## Results log (actual runs — never edited after the fact)
 
 Environment: Windows 11 host, Python 3.12.15 (uv), PostgreSQL 18.6 and Qdrant 1.20.0 portable
@@ -166,3 +245,62 @@ Defects found by Day-3 testing and fixed (all re-verified):
 
 Verification limitations that remain: browser E2E runs locally (not in CI) on Edge only; no
 mobile/responsive or automated accessibility audit; no load testing; no real LLM exercised.
+
+### 2026-11-05 — reset laptop: setup and browser testing (recorded in project notes)
+
+Environment: Windows 11 after the 2026-11-01 reinstall, Python 3.12 via uv, PostgreSQL 18.6, Qdrant
+1.20.0, Node 26. No Docker. The raw output of these runs is not in the repository.
+
+| Stage | Result |
+|---|---|
+| Backend setup | 114 backend tests passed; ruff and mypy clean. Environment fault ENV-1 no longer reproduced. |
+| Browser testing | E2E 49 of 53 passed: 1 real bug, 2 test problems, 1 needing the demo password. 144 bugs logged, 50 major, 0 blockers. |
+
+### 2026-11-06 — Stage 4 gate, before the review fixes (recorded in project notes)
+
+eslint, tsc, ruff and mypy clean; 233 backend tests passed; production build with `/` Static; all
+Playwright specs passed. Open from that gate: no CI job for Playwright or axe; test documents in the
+demo corpus; old documents keep old page numbers until re-uploaded.
+
+### 2026-11-06 — live model check with Groq (recorded in project notes)
+
+`MODEL_PROVIDER=openai_compatible`, model `qwen/qwen3.8-27b`, free plan of 8000 tokens per minute.
+
+- Manual checks passed: correct cited answers, a follow-up, abstention, and refusal of an injection.
+- **Evaluation incomplete:** 6 of 13 questions failed with `MODEL_OVERLOADED`. The abstention, restricted
+  and injection categories were not scored.
+- Citation correctness was 1.0 on the 7 scored questions, against 0.6 in the no-LLM baseline noted at the
+  time. **These are not comparable as a headline,** because the 7 are a subset. The 2026-10-27 run above
+  recorded 0.90 for the no-LLM provider.
+
+### 2026-11-06 — review fixes, as reported by each owner
+
+A diff review produced 68 findings: 1 blocker, 14 major, 53 minor, some of them duplicates. The owners
+below fixed and checked their areas. **These are per-owner runs on a working tree that others were
+changing at the same time. The final gate above replaces them.** No owner re-ran the whole browser suite.
+
+| Owner | Checks reported | Limits they stated |
+|---|---|---|
+| Backend: auth and ops | Full suite on a private database: 350 passed, 1 failed. ruff clean on owned files; mypy clean, 80 source files. YAML parse of Compose and CI. | The failure is the test named below. Docker not on host, so Compose never executed. |
+| Backend: jobs and evaluation | Full suite on a private database: 350 passed, same 1 failure. Owned subset: 152 passed, same failure. New tests run against committed source: 25 failed and 7 errored as expected for confirmed bugs, 12 guard tests passed. ruff clean. | mypy reports one unused type-ignore at `tests/ingestion/test_units.py:111`. Retry not run against real Groq. |
+| Web: redirect | Browser against the live dev server. Before the fix: 6 of 6 hostile runs reached `evil.example`. After: 16 of 16 stayed on the site, with 0 requests to it. Legitimate targets kept. eslint and tsc clean. | `canOpen` fix confirmed from code only before the fix. **The script is not in the repo.** About 30 real sign-ins added audit rows. |
+| Web: landing | Mocked script 25 of 26. The 1 failure is a too-thin mock of `/ask`; a second script with chat stubbed covered that case. Live API script: upload, Cancel at 100%, "already saved", Remove. eslint and tsc clean. | Not exercised: emptied box, read-only box during the countdown, Switch to Engineer with an edited question, session expiry during Try again, a real 98% cancel. Scripts not in the repo. |
+| Web: Ask | 34 of 34 checks with every API call mocked. tsc and eslint clean. | Real backend not exercised end to end. No negative control. Holding a re-send for a file still being read not exercised. Scripts not in the repo. |
+| Web: console | 37 of 37 checks through the live dev server, as all four roles. tsc and eslint clean. | Edge-case data and all writes stubbed, so no real 100+ documents or real failed delete. e2e suite not run. |
+| Web: library and e2e | `library.spec.ts` 14 of 14 (red first: 4 of 6 new tests failed before the fix), then the access group 21 of 21 with `--repeat-each=3`. `roles` and `engineer-journey`: first run 10 passed, 3 failed from test problems; those 3 passed on re-run. Live journey passed with one model question. | `a11y-gates` and other specs not run. Other roles tests not re-run after the fixes. |
+
+**Failing at the last report:** `tests/test_chat_citations.py::test_answer_is_withheld_once_access_can_no_longer_be_checked`
+got 409 instead of 204 when deleting a collection. Two owners saw it. Neither owned that file, and its
+cause is unconfirmed. The RAG and chat owner's report was not received, so that work is described from the
+code; its tests ran only as part of the full suites above.
+
+### Not verified (2026-11-06)
+
+- **Docker Compose and CI on this branch:** nothing executed; no CI result is recorded.
+- **Clean install** from the current README: last done 2026-10-27 at v0.1.0.
+- **Permanent regression tests:** hero cancel, Ask and console fixes were checked by throwaway browser
+  scripts. `apps/web` has no unit test runner, and `e2e/` has no spec for them. `safeNext` and `canOpen` are
+  now covered in `e2e/landing.spec.ts`.
+- **Load, concurrency, backup and restore, mobile devices, screen readers, Windows High Contrast:** not done.
+  §9 checks marked "manual" in the UI spec are not recorded as performed.
+- **`next start`** behaviour for `X-Forwarded-For`: only `next dev` was tested.

@@ -1,5 +1,6 @@
 """Evaluation datasets and runs (FR-063). Runs execute as queued jobs with the permissions of
-the user who started them; per-question answers are shown only to content-capable roles."""
+the user who started them; per-question answers are shown only to readers with content access to
+every collection the run searched."""
 
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from rackflow.audit import record_audit
+from rackflow.auth.access import accessible_collections, visible_collection_ids
 from rackflow.auth.deps import require
 from rackflow.auth.principal import Principal
 from rackflow.auth.rbac import Permission
@@ -81,6 +83,19 @@ def _out(run: EvaluationRun, email: str | None) -> RunOut:
                   metrics=dict(run.metrics or {}), created_by_email=email,
                   created_at=run.created_at, started_at=run.started_at,
                   finished_at=run.finished_at, job_id=run.job_id)
+
+
+def _results_for(db: Session, principal: Principal, run: EvaluationRun) -> list[dict[str, Any]]:
+    """A run's answers were produced with its creator's access, not the reader's. They are content
+    of the run's collections, so the reader needs content access to all of them. Filenames are
+    metadata: auditors may see those for the whole tenant, and others only for what they can see."""
+    collections = {uuid.UUID(c) for c in (run.model_config or {}).get("collection_ids", [])}
+    hidden: tuple[str, ...] = ()
+    if not collections or not collections <= set(accessible_collections(db, principal)):
+        hidden = ("question", "answer")
+        if not collections or not collections <= visible_collection_ids(db, principal):
+            hidden += ("retrieved_docs", "cited_docs")
+    return [{k: v for k, v in r.items() if k not in hidden} for r in run.results or []]
 
 
 @router.get("/datasets", response_model=list[DatasetOut])
@@ -170,8 +185,4 @@ def get_run(
         raise NotFoundError(code="RUN_NOT_FOUND",
                             message="The evaluation run could not be found.")
     run, email = row
-    results = list(run.results or [])
-    if not principal.can(Permission.DOCUMENT_READ_CONTENT):  # auditors: scores, not content
-        results = [{k: v for k, v in r.items() if k not in ("question", "answer")}
-                   for r in results]
-    return RunDetail(**_out(run, email).model_dump(), results=results)
+    return RunDetail(**_out(run, email).model_dump(), results=_results_for(db, principal, run))

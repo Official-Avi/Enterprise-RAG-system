@@ -10,6 +10,12 @@ export interface SessionDetail {
   messages: ChatMessage[];
 }
 
+/** A turn whose saved answer is hidden has `withheldNote` and no `answer`, so nothing can show the
+ *  answer's sources or badges, and it can never read as "Not found in your documents". */
+export interface SavedTurn extends Turn {
+  withheldNote?: string;
+}
+
 export const APP_NAME = "RackFlow AI";
 export const MAX_SCOPE = 50;
 export const DRAFT_KEY = "rf.draft";
@@ -19,6 +25,14 @@ export const MAX_MESSAGE_CHARS = 4000;
 export const TITLE_CHARS = 80;
 /** The title a session has until its first answered question renames it. */
 export const UNTITLED = "New conversation";
+
+/** The first TITLE_CHARS of a question. A cut through an emoji would leave half a surrogate pair,
+ *  which the API refuses, and the question could then never start a chat. */
+export function titleFrom(text: string): string {
+  const cut = text.slice(0, TITLE_CHARS);
+  const end = cut.charCodeAt(cut.length - 1);
+  return end >= 0xd800 && end <= 0xdbff ? cut.slice(0, -1) : cut;
+}
 
 /** document.title per §9 #17. */
 export function pageTitle(chat: string | null): string {
@@ -30,7 +44,7 @@ export function chatTitle(sessionTitle: string | null, turns: Turn[]): string | 
   const title = sessionTitle?.trim();
   if (title && title !== UNTITLED) return title;
   const first = turns[0]?.question.trim();
-  return first ? first.slice(0, TITLE_CHARS) : null;
+  return first ? titleFrom(first) : null;
 }
 
 export function modeOf(model: ModelRef | null | undefined): AnswerMode | null {
@@ -83,14 +97,19 @@ export function answerFromResponse(res: AnswerResponse): AnswerView {
 const MISSING_ANSWER = new ApiError(500, "MISSING_ANSWER", "This question has no saved answer.", null);
 
 /** Rebuild turns from saved messages: each user message is answered by the next assistant one. */
-export function turnsFromMessages(messages: ChatMessage[]): Turn[] {
-  const turns: Turn[] = [];
+export function turnsFromMessages(messages: ChatMessage[]): SavedTurn[] {
+  const turns: SavedTurn[] = [];
   let open: Turn | null = null;
   for (const m of messages) {
     const at = Date.parse(m.created_at) || 0;
     if (m.role === "user") {
       if (open) turns.push({ ...open, status: "error", error: MISSING_ANSWER });
       open = { id: `h-${m.id}`, question: m.content, status: "answered", startedAt: at };
+      continue;
+    }
+    if (m.content_withheld) {
+      if (open) turns.push({ ...open, withheldNote: m.content });
+      open = null;
       continue;
     }
     const answer: AnswerView = {
@@ -169,17 +188,30 @@ export function writeScope(sessionId: string, value: ScopeValue | null) {
   }
 }
 
-export function readDraft(): string {
+/** The question saved for `owner`, or "". The tab can sign in as someone else before it is read, so
+ *  a draft that isn't theirs (or has no owner) is discarded rather than shown. */
+export function readDraft(owner: string): string {
   try {
-    return storage()?.getItem(DRAFT_KEY) ?? "";
+    const s = storage();
+    const raw = s?.getItem(DRAFT_KEY);
+    if (!raw) return "";
+    let saved: { owner?: unknown; text?: unknown } | null = null;
+    try {
+      saved = JSON.parse(raw) as { owner?: unknown; text?: unknown } | null;
+    } catch {
+      // Unreadable: treated like a draft with no owner.
+    }
+    if (saved?.owner === owner && typeof saved.text === "string") return saved.text;
+    s?.removeItem(DRAFT_KEY);
+    return "";
   } catch {
     return "";
   }
 }
 
-export function saveDraft(text: string) {
+export function saveDraft(text: string, owner: string) {
   try {
-    storage()?.setItem(DRAFT_KEY, text);
+    storage()?.setItem(DRAFT_KEY, JSON.stringify({ owner, text }));
   } catch {
     // Nothing else to do: the question is still visible in the thread.
   }

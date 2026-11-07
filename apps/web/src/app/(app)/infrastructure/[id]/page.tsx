@@ -85,7 +85,7 @@ function NewNode({ rack, onCreated }: { rack: RackDetail; onCreated: () => void 
   };
   return (
     <>
-      <Button variant="primary" onClick={() => setOpen(true)}>Add node</Button>
+      <Button variant="primary" onClick={() => { setError(null); setOpen(true); }}>Add node</Button>
       <Dialog open={open} title={`Add node to ${rack.name}`} onClose={() => setOpen(false)}>
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">

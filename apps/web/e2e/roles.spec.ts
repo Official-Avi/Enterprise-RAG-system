@@ -168,8 +168,10 @@ test.describe("Operator", () => {
     await page.goto("/overview");
     await mainNav(page).getByRole("link", { name: "Racks & workloads" }).click();
     await expect(page.getByText(/No hardware is discovered or controlled/)).toBeVisible();
+    const rack = page.getByRole("link", { name: new RegExp(SIM_RACK) });
+    await expect(rack).toContainText("Simulated");
     await page.screenshot({ path: join(SHOTS, "07-infrastructure.png"), fullPage: true });
-    await page.getByRole("link", { name: new RegExp(SIM_RACK) }).click();
+    await rack.click();
     await expect(page.getByText("Simulated rack: all values are demo data")).toBeVisible();
     await expect(page.getByRole("list", { name: "Rack units from top" })).toBeVisible();
     await page.screenshot({ path: join(SHOTS, "08-rack-detail.png"), fullPage: true });
@@ -190,7 +192,12 @@ test.describe("Operator", () => {
     await expect(page.getByText("Healthy").first()).toBeVisible();
 
     await mainNav(page).getByRole("link", { name: "Model serving" }).click();
-    await expect(page.getByText(/Extractive mode is a built-in fallback/)).toBeVisible();
+    await expect(page.getByText("Configured endpoint")).toBeVisible();
+    // The fallback note is only for the extractive provider; this stack may run a real model.
+    const models = (await (await page.request.get("/api/v1/models")).json()) as { items: { provider: string }[] };
+    await expect(page.getByText(/Extractive mode is a built-in fallback/)).toHaveCount(
+      models.items[0]?.provider === "extractive" ? 1 : 0,
+    );
 
     await mainNav(page).getByRole("link", { name: "Evaluation" }).click();
     await expect(page.getByText("Retrieval hit rate").first()).toBeVisible();

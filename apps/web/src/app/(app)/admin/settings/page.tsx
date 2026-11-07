@@ -54,12 +54,12 @@ function SettingsForm({ data, onSaved }: { data: TenantSettings; onSaved: () => 
   };
   return (
     <form onSubmit={submit} onChange={() => setStatus(null)} className="space-y-4">
-      <p className="text-sm text-muted">Leave a field empty to use the deployment default (shown as placeholder).</p>
+      <p className="text-sm text-muted">Leave a field empty to use the deployment default.</p>
       <div className="grid gap-4 md:grid-cols-2">
         {NUMERIC.map((field) => (
           <div key={field.key}>
             <label htmlFor={field.key} className="mb-1 block text-sm font-medium">{field.label}</label>
-            <input id={field.key} name={field.key} type="number" min={field.min} max={field.max} step={field.step ?? "1"} defaultValue={o[field.key] === null ? "" : String(o[field.key])} placeholder={`Default: ${data.effective[field.key] ?? "—"}`} className={inputClass} />
+            <input id={field.key} name={field.key} type="number" min={field.min} max={field.max} step={field.step ?? "1"} defaultValue={o[field.key] === null ? "" : String(o[field.key])} placeholder={o[field.key] === null ? `Default: ${data.effective[field.key] ?? "—"}` : "Deployment default"} className={inputClass} />
             <p className="mt-0.5 text-xs text-muted">{field.help}</p>
           </div>
         ))}
@@ -71,7 +71,8 @@ function SettingsForm({ data, onSaved }: { data: TenantSettings; onSaved: () => 
         <div>
           <label htmlFor="ocr_enabled" className="mb-1 block text-sm font-medium">OCR for scanned pages</label>
           <select id="ocr_enabled" name="ocr_enabled" defaultValue={ocrValue} className={inputClass}>
-            <option value="default">Deployment default ({data.effective.ocr_enabled ? "on" : "off"})</option>
+            {/* The API reports only the effective value, which is the default while nothing overrides it. */}
+            <option value="default">Deployment default{o.ocr_enabled === null ? ` (${data.effective.ocr_enabled ? "on" : "off"})` : ""}</option>
             <option value="on">On</option>
             <option value="off">Off</option>
           </select>

@@ -1,13 +1,22 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useSyncExternalStore, type RefObject } from "react";
 import { announce } from "@/lib/announce";
 import { api, ApiError, errorText, isAbortError, isNetworkError, UPLOAD_INTERRUPTED_COPY } from "@/lib/api";
 import { pendingStore } from "@/lib/pendingStore";
 import { reasonCopy } from "@/lib/status";
 import type { Me, UploadItem } from "@/lib/types";
-import { currentUser, fetchDemoInfo, fileRejection, partitionFiles, skippedNote, uploadToMyDocuments } from "@/lib/workspace";
+import {
+  currentUser,
+  ensureMyDocuments,
+  fetchDemoInfo,
+  fileRejection,
+  partitionFiles,
+  requestGroups,
+  skippedNote,
+  uploadInGroups,
+} from "@/lib/workspace";
 import { isUnreachable, useVisitor } from "./Visitor";
 
 // The §3.2 hero flow. Every state that follows a pick, drop or Enter carries its job, so any failure
@@ -19,6 +28,12 @@ export type HeroJob =
   | { kind: "upload"; files: File[]; handOff: File[] }
   | { kind: "ask"; question: string };
 
+/** A file this run put on the server. `duplicate` results are not listed: those were already there. */
+export interface StoredFile {
+  id: string;
+  name: string;
+}
+
 export type HeroState =
   | { kind: "idle" }
   | { kind: "rejected"; message: string }
@@ -26,11 +41,16 @@ export type HeroState =
   /** Waiting on GET /auth/me, before anything can be said about the session. */
   | { kind: "checking"; job: HeroJob }
   | { kind: "signing_in"; job: HeroJob }
-  | { kind: "uploading"; job: HeroJob; progress: number; demoStep: boolean }
+  /** `stopping`: Cancel came after the request's body had gone, so it waits for the server's answer. */
+  | { kind: "uploading"; job: HeroJob; progress: number; demoStep: boolean; stopping: boolean }
   | { kind: "opening"; job: HeroJob; demoStep: boolean }
-  /** Cancelled: the files stay on screen, ready to send again. */
-  | { kind: "kept"; job: HeroJob }
-  | { kind: "demo_off"; job: HeroJob; personaMissing: boolean }
+  /** Cancelled with nothing left on the server: the files stay on screen, ready to send again.
+   *  `removed` counts the saved copies just taken back. */
+  | { kind: "kept"; job: HeroJob; removed?: number }
+  /** Stopped, by Cancel or a failure, after the server had already stored some files. */
+  | { kind: "stored"; job: HeroJob; stored: StoredFile[]; cause: "cancelled" | "failed"; removeFailed?: boolean }
+  | { kind: "removing"; job: HeroJob; stored: StoredFile[] }
+  | { kind: "demo_off"; job: HeroJob; personaMissing: boolean; sessionEnded?: boolean }
   | { kind: "role_cannot_upload"; job: HeroJob; role: string; demoOn: boolean }
   | { kind: "rate_limited"; job: HeroJob; seconds: number }
   | { kind: "api_down"; job: HeroJob }
@@ -41,6 +61,7 @@ type ActiveState = Exclude<HeroState, { kind: "idle" }>;
 type HeroEvent =
   | { type: "reset" }
   | { type: "progress"; fraction: number }
+  | { type: "stopping" }
   | { type: "enter"; state: ActiveState };
 
 const IDLE: HeroState = { kind: "idle" };
@@ -54,10 +75,19 @@ function reducer(state: HeroState, event: HeroEvent): HeroState {
     case "progress":
       // A progress event can land just after the upload was cancelled.
       return state.kind === "uploading" ? { ...state, progress: event.fraction } : state;
+    case "stopping":
+      return state.kind === "uploading" ? { ...state, stopping: true } : state;
   }
 }
 
-const BUSY_KINDS: ReadonlySet<HeroState["kind"]> = new Set(["checking", "signing_in", "uploading", "opening", "rate_limited"]);
+const BUSY_KINDS: ReadonlySet<HeroState["kind"]> = new Set([
+  "checking",
+  "signing_in",
+  "uploading",
+  "opening",
+  "rate_limited",
+  "removing",
+]);
 
 export function isBusy(state: HeroState): boolean {
   return BUSY_KINDS.has(state.kind);
@@ -68,6 +98,9 @@ export const SIGN_IN_HREF = "/login?next=/ask&resume=1";
 const RETRY_AFTER_FALLBACK_S = 20;
 /** §3.2: each step stays on screen at least this long. */
 const MIN_STEP_MS = 500;
+/** From here on the server may get the whole body however fast we abort, and an aborted request never
+ *  says what the server did. Waiting for the answer costs little, so it starts just short of 100%. */
+const BODY_SENT_FRACTION = 0.98;
 
 const abortedError = () => new ApiError(0, "ABORTED", "The request was cancelled.", null);
 
@@ -105,16 +138,39 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 // The hero and the closing band are separate instances, and both can receive a pick. One run at a
 // time keeps a second drop from racing the first through the demo login.
 let activeRun: AbortController | null = null;
+const runListeners = new Set<() => void>();
 
 function claimRun(run: AbortController): boolean {
   if (activeRun) return false;
   activeRun = run;
+  runListeners.forEach((listener) => listener());
   return true;
 }
 
 function releaseRun(run: AbortController): void {
-  if (activeRun === run) activeRun = null;
+  if (activeRun !== run) return;
+  activeRun = null;
+  runListeners.forEach((listener) => listener());
 }
+
+function subscribeToRuns(listener: () => void): () => void {
+  runListeners.add(listener);
+  return () => {
+    runListeners.delete(listener);
+  };
+}
+
+/** Whether either card is running, so the one that is not can say so instead of taking a file it
+ *  would have to refuse. */
+export function useRunActive(): boolean {
+  return useSyncExternalStore(
+    subscribeToRuns,
+    () => activeRun !== null,
+    () => false,
+  );
+}
+
+const ANOTHER_RUN_COPY = "Another upload is running on this page. Add this file again when it finishes.";
 
 /** The question or files wait in the pending store while the visitor signs in. A question is restored
  *  into the composer unsent (§3.2 Ask box). */
@@ -141,6 +197,12 @@ interface RunContext {
   demoStep: boolean;
   stepAt: number | null;
   user: Me | null;
+  /** What the server holds from this run, across groups and retries. */
+  stored: StoredFile[];
+  /** The current request's body has gone, so aborting it could no longer say what the server did. */
+  bodySent: boolean;
+  /** Cancel pressed while bodySent: stop as soon as that request answers. */
+  cancelWanted: boolean;
 }
 
 /** Where a failure lands in the §3.2 table. */
@@ -160,11 +222,13 @@ function failureState(e: unknown, job: HeroJob, ctx: RunContext, demoOn: boolean
   return { kind: "server_rejected", message: reasonCopy(e.code) };
 }
 
-export function useHeroUpload() {
-  const { demo, reload, signInAs } = useVisitor();
+/** `questionBox` is the ask box: a held question is read back from it, since it stays editable. */
+export function useHeroUpload(questionBox?: RefObject<HTMLTextAreaElement | null>) {
+  const { demo, me, persona, reload, signInAs } = useVisitor();
   const router = useRouter();
   const [state, dispatch] = useReducer(reducer, IDLE);
   const controller = useRef<AbortController | null>(null);
+  const liveRun = useRef<RunContext | null>(null);
 
   useEffect(
     () => () => {
@@ -193,6 +257,12 @@ export function useHeroUpload() {
     } else {
       const user = await currentUser(signal);
       if (user) return user;
+      // This tab belonged to a real account whose session has ended. Signing in to the shared demo
+      // here would put a private file where other people can see it.
+      if (me && !persona && !ctx.loggedOut) {
+        toSignIn(job, false, true);
+        return null;
+      }
     }
 
     // `demo` is null until the page's own check finishes, or when that check failed.
@@ -221,14 +291,52 @@ export function useHeroUpload() {
   };
 
   /** demo_off and persona_missing. A question on a demo-off server goes straight to the login page. */
-  const toSignIn = (job: HeroJob, personaMissing: boolean) => {
+  const toSignIn = (job: HeroJob, personaMissing: boolean, sessionEnded = false) => {
     storeForSignIn(job);
     if (job.kind === "ask" && !personaMissing) {
       dispatch({ type: "reset" });
       router.push(SIGN_IN_HREF);
       return;
     }
-    enter({ kind: "demo_off", job, personaMissing });
+    enter({ kind: "demo_off", job, personaMissing, sessionEnded });
+  };
+
+  /** The upload step, one request at a time, so what a finished request stored is known even if a
+   *  later one is cancelled or fails. Results come back in input order. */
+  const sendFiles = async (files: File[], user: Me, ctx: RunContext, signal: AbortSignal): Promise<UploadItem[]> => {
+    const collection = await ensureMyDocuments(user.display_name, signal);
+    const totalBytes = files.reduce((n, f) => n + f.size, 0) || 1;
+    const items: UploadItem[] = [];
+    let doneBytes = 0;
+    for (const group of requestGroups(files, (f) => f.size)) {
+      const groupBytes = group.reduce((n, f) => n + f.size, 0);
+      const sentBefore = doneBytes;
+      let results: UploadItem[];
+      try {
+        results = await uploadInGroups(
+          collection.id,
+          group,
+          (fraction) => {
+            ctx.bodySent = fraction >= BODY_SENT_FRACTION;
+            dispatch({ type: "progress", fraction: Math.min(1, (sentBefore + fraction * groupBytes) / totalBytes) });
+          },
+          signal,
+        );
+      } finally {
+        ctx.bodySent = false;
+      }
+      items.push(...results);
+      doneBytes += groupBytes;
+      for (const item of results) {
+        const id = item.document_id;
+        if (item.status === "queued" && id && !ctx.stored.some((f) => f.id === id)) {
+          ctx.stored.push({ id, name: item.filename });
+        }
+      }
+      if (ctx.cancelWanted) controller.current?.abort();
+      if (signal.aborted) throw abortedError();
+    }
+    return items;
   };
 
   const attempt = async (job: HeroJob, ctx: RunContext, signal: AbortSignal) => {
@@ -255,14 +363,10 @@ export function useHeroUpload() {
 
     ctx.phase = "upload";
     await holdStep(ctx, signal);
-    enter({ kind: "uploading", job, progress: 0, demoStep: ctx.demoStep });
+    enter({ kind: "uploading", job, progress: 0, demoStep: ctx.demoStep, stopping: false });
     announce("Uploading");
-    const { items } = await uploadToMyDocuments(
-      job.files,
-      (fraction) => dispatch({ type: "progress", fraction }),
-      user.display_name,
-      signal,
-    );
+    const items = await sendFiles(job.files, user, ctx, signal);
+    dispatch({ type: "progress", fraction: 1 });
 
     const accepted = items.filter((i) => i.status !== "rejected" && i.document_id);
     if (!accepted.length) {
@@ -286,10 +390,12 @@ export function useHeroUpload() {
     router.push(`/ask?doc=${accepted.map((i) => i.document_id).join(",")}`);
   };
 
-  const run = async (job: HeroJob, switching = false) => {
+  const run = async (job: HeroJob, switching = false, alreadyStored: StoredFile[] = []) => {
     const self = new AbortController();
     if (!claimRun(self)) {
       announce("An upload is already running.");
+      // A held job keeps its panel, and the card says another run is going.
+      if (job.kind === "upload" && !("job" in state)) enter({ kind: "rejected", message: ANOTHER_RUN_COPY });
       return;
     }
     controller.current = self;
@@ -303,7 +409,11 @@ export function useHeroUpload() {
       demoStep: false,
       stepAt: null,
       user: null,
+      stored: [...alreadyStored],
+      bodySent: false,
+      cancelWanted: false,
     };
+    liveRun.current = ctx;
     enter({ kind: "checking", job });
     try {
       for (;;) {
@@ -311,7 +421,7 @@ export function useHeroUpload() {
         try {
           await attempt(job, ctx, signal);
         } catch (e) {
-          if (signal.aborted || !(e instanceof ApiError) || e.status !== 429) throw e;
+          if (signal.aborted || ctx.cancelWanted || !(e instanceof ApiError) || e.status !== 429) throw e;
           wait = Math.max(1, e.retryAfter ?? RETRY_AFTER_FALLBACK_S);
           announce("Lots of people are using the demo right now. Trying again soon.");
         }
@@ -324,12 +434,12 @@ export function useHeroUpload() {
         ctx.stepAt = null;
       }
     } catch (e) {
-      if (signal.aborted || isAbortError(e)) {
-        if (job.kind === "ask") dispatch({ type: "reset" });
-        else enter({ kind: "kept", job });
-        return;
-      }
-      enter(failureState(e, job, ctx, demo?.enabled ?? false));
+      const cancelled = signal.aborted || ctx.cancelWanted || isAbortError(e);
+      // Whatever went wrong, the visitor is told what the server already holds.
+      if (ctx.stored.length) enter({ kind: "stored", job, stored: ctx.stored, cause: cancelled ? "cancelled" : "failed" });
+      else if (!cancelled) enter(failureState(e, job, ctx, demo?.enabled ?? false));
+      else if (job.kind === "ask") dispatch({ type: "reset" });
+      else enter({ kind: "kept", job });
     } finally {
       releaseRun(self);
       // Logged out, or a sign-in that was cut short: the top bar may be out of date.
@@ -355,21 +465,70 @@ export function useHeroUpload() {
     if (question && !isBusy(state)) void run({ kind: "ask", question });
   };
 
+  /** Take back what this run stored. A document already gone or going counts as removed. */
+  const removeStored = async () => {
+    if (state.kind !== "stored") return;
+    const { job, stored, cause } = state;
+    const self = new AbortController();
+    if (!claimRun(self)) return;
+    enter({ kind: "removing", job, stored });
+    const removed = await Promise.all(
+      stored.map((file) =>
+        api(`/documents/${encodeURIComponent(file.id)}`, { method: "DELETE", noAuthRedirect: true }).then(
+          () => true,
+          (e: unknown) => e instanceof ApiError && (e.status === 404 || e.status === 409),
+        ),
+      ),
+    );
+    releaseRun(self);
+    const left = stored.filter((_, i) => !removed[i]);
+    if (left.length) {
+      announce("Some files could not be removed.");
+      enter({ kind: "stored", job, stored: left, cause, removeFailed: true });
+    } else {
+      announce(stored.length === 1 ? "Saved file removed." : "Saved files removed.");
+      enter({ kind: "kept", job, removed: stored.length });
+    }
+  };
+
   const jobOf = "job" in state ? state.job : null;
+
+  /** The held job as it stands now: a question is whatever the ask box says, not what it said at the
+   *  first Enter. Null when there is nothing to send, including a box the visitor has emptied. */
+  const currentJob = (): HeroJob | null => {
+    if (jobOf?.kind !== "ask") return jobOf;
+    const question = questionBox?.current?.value.trim();
+    return question ? { kind: "ask", question } : null;
+  };
 
   return {
     state,
     addFiles,
     ask,
-    /** Cancel a running step: it aborts the request and keeps the file. */
-    cancel: () => controller.current?.abort(),
+    removeStored,
+    /** Cancel a running step: it aborts the request and keeps the file. A body already sent can't be
+     *  called back, so that request is left to answer and the card then says what the server stored. */
+    cancel: () => {
+      const ctx = liveRun.current;
+      if (!ctx?.bodySent) {
+        controller.current?.abort();
+      } else if (!ctx.cancelWanted) {
+        ctx.cancelWanted = true;
+        dispatch({ type: "stopping" });
+        announce("Stopping. Waiting for the server to answer.");
+      }
+    },
     /** Try again, or send again after a cancel, with the files already held. */
     retry: () => {
-      if (jobOf) void run(jobOf);
+      const job = currentJob();
+      if (job) void run(job, false, state.kind === "stored" ? state.stored : []);
+      else dispatch({ type: "reset" });
     },
     /** role_cannot_upload, demo on: log out, demo login, continue with the same job. */
     switchToEngineer: () => {
-      if (jobOf) void run(jobOf, true);
+      const job = currentJob();
+      if (job) void run(job, true);
+      else dispatch({ type: "reset" });
     },
     /** Drop the kept job and go back to the empty card. */
     clear: () => {
@@ -378,7 +537,9 @@ export function useHeroUpload() {
     },
     /** role_cannot_upload, demo off: the job waits in the pending store through sign-in. */
     keepForSignIn: () => {
-      if (jobOf) storeForSignIn(jobOf);
+      const job = currentJob();
+      if (job) storeForSignIn(job);
+      else pendingStore.set({ question: null, autoSend: false });
     },
   };
 }

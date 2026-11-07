@@ -22,7 +22,7 @@ import type { AuditEvent, Page } from "@/lib/types";
 // Every action the API records, by family. The API filters by prefix, so "chat" matches all of
 // chat.*. Add new record_audit actions here as well.
 const ACTION_FAMILIES: { family: string; actions: string[] }[] = [
-  { family: "auth", actions: ["auth.login", "auth.demo_login", "auth.logout"] },
+  { family: "auth", actions: ["auth.login", "auth.demo_login", "auth.logout", "auth.access_denied"] },
   { family: "chat", actions: ["chat.session.rename", "chat.session.update", "chat.session.delete"] },
   { family: "collection", actions: ["collection.create", "collection.update", "collection.delete", "collection.grant", "collection.revoke"] },
   { family: "document", actions: ["document.upload", "document.download", "document.reindex", "document.retry", "document.delete"] },
@@ -41,11 +41,15 @@ const ACTION_FAMILIES: { family: string; actions: string[] }[] = [
   { family: "settings", actions: ["settings.update"] },
 ];
 
+/** A rejected sign-in has no actor because nobody was authenticated, which is not the same as
+ *  RackFlow itself doing something. */
+const actorLabel = (e: AuditEvent) => e.actor_email ?? (e.action.startsWith("auth.") ? "Not signed in" : "system");
+
 function EventDetails({ event, onClose }: { event: AuditEvent | null; onClose: () => void }) {
   const rows: [string, string][] = event
     ? [
         ["Time", formatTime(event.created_at)],
-        ["Actor", event.actor_email ?? "system"],
+        ["Actor", actorLabel(event)],
         ["Action", event.action],
         ["Resource", event.resource_type],
         ["Resource ID", event.resource_id ?? "None"],
@@ -119,7 +123,7 @@ export default function AuditPage() {
               {events.data.items.map((e) => (
                 <tr key={e.id}>
                   <Td className="whitespace-nowrap text-muted">{formatTime(e.created_at)}</Td>
-                  <Td>{e.actor_email ?? <span className="text-muted">system</span>}</Td>
+                  <Td>{e.actor_email ?? <span className="text-muted">{actorLabel(e)}</span>}</Td>
                   <Td className="font-mono text-xs whitespace-nowrap">{e.action}</Td>
                   <Td className="text-xs">{e.resource_type} <span className="font-mono text-muted">{shortId(e.resource_id)}</span></Td>
                   <Td><StatusBadge status={e.outcome === "success" ? "succeeded" : "failed"} label={e.outcome} /></Td>

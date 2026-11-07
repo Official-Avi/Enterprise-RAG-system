@@ -5,10 +5,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
@@ -29,19 +29,35 @@ from rackflow.db.models import (
 )
 from rackflow.db.session import get_db
 from rackflow.rag.answer import answer_question, prior_user_turns
-from rackflow.rag.retrieval import authorized_collections, retrieve
+from rackflow.rag.retrieval import PAGINATED_FILE_TYPES, authorized_collections, retrieve
 from rackflow.tenant_settings import effective_settings
 
 router = APIRouter(tags=["chat"])
 
+# Shown in place of a saved answer the caller can no longer check access for. An answer can be
+# verbatim document text (the extractive provider's always is), so hiding only its citations would
+# leave the content readable after access was revoked.
+ANSWER_WITHHELD_NOTE = ("This answer is hidden because it used a document you no longer have "
+                        "access to. Ask again to search the documents you can open now.")
+
+
+def _no_nul(value: str) -> str:
+    """PostgreSQL text can't hold NUL: refuse it here, not with a 500 after answering."""
+    if "\x00" in value:
+        raise ValueError("must not contain NUL characters")
+    return value
+
+
+StoredText = Annotated[str, AfterValidator(_no_nul)]
+
 
 class SessionIn(BaseModel):
-    title: str | None = Field(default=None, max_length=200)
+    title: StoredText | None = Field(default=None, max_length=200)
     collection_ids: list[uuid.UUID] = Field(min_length=1, max_length=50)
 
 
 class SessionPatch(BaseModel):
-    title: str | None = Field(default=None, min_length=1, max_length=200)
+    title: StoredText | None = Field(default=None, min_length=1, max_length=200)
     collection_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=50)
 
 
@@ -86,6 +102,8 @@ class MessageOut(BaseModel):
     latency_ms: int | None
     created_at: datetime
     retrieved_count: int | None = None  # passages found when asked; None on the user's messages
+    # `content` is ANSWER_WITHHELD_NOTE and `evidence_status` is None: there is no answer to judge.
+    content_withheld: bool = False
 
 
 class SessionDetail(BaseModel):
@@ -94,7 +112,7 @@ class SessionDetail(BaseModel):
 
 
 class AskIn(BaseModel):
-    message: str = Field(min_length=1, max_length=4000)
+    message: StoredText = Field(min_length=1, max_length=4000)
     collection_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
 
 
@@ -128,8 +146,8 @@ class InspectOut(BaseModel):
     items: list[InspectItem]
 
 
-def _stored_citation(cit: Citation, filename: str | None, collection_id: uuid.UUID | None,
-                     status: DocumentStatus | None,
+def _stored_citation(cit: Citation, filename: str | None, file_type: str | None,
+                     collection_id: uuid.UUID | None, status: DocumentStatus | None,
                      allowed: Mapping[uuid.UUID, Any]) -> CitationOut | None:
     """A saved citation as the caller may see it now, or None if they lost access (ADR-009).
 
@@ -137,6 +155,8 @@ def _stored_citation(cit: Citation, filename: str | None, collection_id: uuid.UU
     when the answer was given, never document content. Once the tombstone is gone too (its
     collection was deleted) access can't be re-checked, so only the marker survives. Keeping it
     stops the client crediting that sentence to the next source.
+
+    Citations saved before unpaginated formats lost their page numbers still hold page 1.
     """
     if collection_id is None or filename is None:
         return CitationOut(marker=cit.marker, document_id=None, filename="", page=None,
@@ -145,7 +165,8 @@ def _stored_citation(cit: Citation, filename: str | None, collection_id: uuid.UU
         return None
     deleted = status in (DocumentStatus.DELETING, DocumentStatus.DELETED)
     return CitationOut(marker=cit.marker, document_id=cit.document_id, filename=filename,
-                       page=cit.page, chunk_id=None if deleted else cit.chunk_id, quote=cit.quote,
+                       page=cit.page if file_type in PAGINATED_FILE_TYPES else None,
+                       chunk_id=None if deleted else cit.chunk_id, quote=cit.quote,
                        score=cit.rank_score, document_deleted=deleted)
 
 
@@ -225,25 +246,33 @@ def get_session(
     messages = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conv.id)
                           .order_by(ChatMessage.created_at)).all()
     # Re-authorise stored citations on every read (ADR-009). Outer join: a citation outlives its
-    # document's row, and its tenant is checked here rather than through the document.
+    # document's row, and its tenant is checked here rather than through the document. A message
+    # with any citation that fails the check is withheld: its text may hold that source's content.
     allowed = accessible_collections(db, principal)
     rows = db.execute(
-        select(Citation, Document.filename, Document.collection_id, Document.status)
+        select(Citation, Document.filename, Document.file_type, Document.collection_id,
+               Document.status)
         .outerjoin(Document, Document.id == Citation.document_id)
         .where(Citation.message_id.in_([m.id for m in messages]),
                Citation.tenant_id == principal.tenant_id)
         .order_by(Citation.marker)
     ).all() if messages else []
     by_message: dict[uuid.UUID, list[CitationOut]] = {}
-    for cit, filename, collection_id, status in rows:
-        out = _stored_citation(cit, filename, collection_id, status, allowed)
+    withheld: set[uuid.UUID] = set()
+    for cit, filename, file_type, collection_id, status in rows:
+        out = _stored_citation(cit, filename, file_type, collection_id, status, allowed)
         if out is not None:
             by_message.setdefault(cit.message_id, []).append(out)
+        if collection_id not in allowed:
+            withheld.add(cit.message_id)
     return SessionDetail(session=_session_out(conv), messages=[
         MessageOut(
-            id=m.id, role=m.role, content=m.content,
-            evidence_status=m.evidence_status.value if m.evidence_status else None,
+            id=m.id, role=m.role,
+            content=ANSWER_WITHHELD_NOTE if m.id in withheld else m.content,
+            evidence_status=m.evidence_status.value
+            if m.evidence_status and m.id not in withheld else None,
             citations=by_message.get(m.id, []),
+            content_withheld=m.id in withheld,
             model=ModelRef(provider=m.model_provider, name=m.model_name or "")
             if m.model_provider else None,
             latency_ms=m.latency_ms, created_at=m.created_at,

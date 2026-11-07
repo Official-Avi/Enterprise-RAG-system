@@ -57,7 +57,7 @@ function NewRack({ onCreated }: { onCreated: () => void }) {
   };
   return (
     <>
-      <Button variant="primary" onClick={() => setOpen(true)}>Register rack</Button>
+      <Button variant="primary" onClick={() => { setError(null); setOpen(true); }}>Register rack</Button>
       <Dialog open={open} title="Register logical rack" onClose={() => setOpen(false)}>
         <form onSubmit={submit} className="space-y-3">
           <div><label htmlFor="r-name" className="mb-1 block text-sm font-medium">Name</label><input id="r-name" name="name" required maxLength={120} className={inputClass} /></div>
@@ -108,7 +108,7 @@ function NewWorkload({ nodes, onCreated }: { nodes: NodeResource[]; onCreated: (
   };
   return (
     <>
-      <Button onClick={() => setOpen(true)}>Register workload</Button>
+      <Button onClick={() => { setError(null); setOpen(true); }}>Register workload</Button>
       <Dialog open={open} title="Register logical workload" onClose={() => setOpen(false)}>
         <form onSubmit={submit} className="space-y-3">
           <div><label htmlFor="w-name" className="mb-1 block text-sm font-medium">Name</label><input id="w-name" name="name" required maxLength={120} className={inputClass} /></div>

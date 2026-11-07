@@ -198,6 +198,9 @@ export interface ChatMessage {
   /** Passages retrieved for this answer. Null on user messages and older answers. */
   retrieved_count: number | null;
   created_at: string;
+  /** The caller lost access to a source: `content` is the API's note instead of the answer, and
+   *  evidence_status is null. */
+  content_withheld?: boolean;
 }
 
 /** GET /chat/sessions/{id} (SessionDetail in routers/chat.py). */

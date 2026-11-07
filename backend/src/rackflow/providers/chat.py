@@ -233,6 +233,6 @@ def get_chat_provider() -> ChatProvider:
         return AnthropicProvider(s.model_name or DEFAULT_ANTHROPIC_MODEL, key or "",
                                  s.model_timeout_seconds, s.model_max_concurrency)
     if s.model_provider == "openai_compatible":
-        return OpenAICompatibleProvider(s.model_name or "qwen2.5:1.5b", s.model_base_url, key,
+        return OpenAICompatibleProvider(s.model_name, s.model_base_url, key,
                                         s.model_timeout_seconds, s.model_max_concurrency)
     return ExtractiveProvider()

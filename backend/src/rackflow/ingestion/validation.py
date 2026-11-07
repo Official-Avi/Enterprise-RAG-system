@@ -22,6 +22,7 @@ MIME_TYPES = {
 DOCX_MAX_UNCOMPRESSED = 200 * 1024 * 1024
 DOCX_MAX_RATIO = 100
 DOCX_MAX_ENTRIES = 2000
+_UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
 _WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
                      *(f"lpt{i}" for i in range(1, 10))}
 
@@ -63,7 +64,9 @@ def _extension(filename: str) -> str:
 def _check_docx(data: bytes) -> None:
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile as exc:
+    # A crafted central directory also raises NotImplementedError (extract version) and
+    # UnicodeDecodeError, a ValueError (entry name). One bad file must not fail the whole batch.
+    except (zipfile.BadZipFile, NotImplementedError, ValueError) as exc:
         raise UploadRejected("CORRUPT_FILE", "The DOCX file is corrupt.") from exc
     with zf:
         infos = zf.infolist()
@@ -81,7 +84,9 @@ def _check_docx(data: bytes) -> None:
 
 
 def _check_text(data: bytes) -> None:
-    if b"\x00" in data[:65536]:
+    # UTF-16 text is full of NUL bytes, and its byte order mark says it means to be. Notepad and
+    # PowerShell 5.1 write it, and the extractor decodes it by the same detection as below.
+    if not data.startswith(_UTF16_BOMS) and b"\x00" in data[:65536]:
         raise UploadRejected("CONTENT_MISMATCH", "The file is not a text document.")
     best = from_bytes(data[:262144]).best()
     if best is None:

@@ -200,11 +200,15 @@ def cmd_reindex(args: argparse.Namespace) -> int:
 
     Each document gets a fresh ingest job and DocumentVersion; the worker re-runs every stage,
     re-embeds and upserts, then FINALIZE drops the old version's chunks and vectors. Documents
-    are moved to `queued`, so running the command again does not queue them twice."""
+    are moved to `queued`, so running the command again does not queue them twice.
+
+    A delete that gave up also leaves a document failed. Those are skipped: indexing one would make
+    content searchable again that someone asked to remove. They only need deleting again."""
     from rackflow.audit import record_audit
     from rackflow.db.models import Document, DocumentStatus, JobType
     from rackflow.ingestion.service import next_ingest_version
     from rackflow.jobs.enqueue import enqueue_job
+    from rackflow.jobs.queue import delete_gave_up
 
     statuses = [DocumentStatus.INDEXED] + ([DocumentStatus.FAILED] if args.include_failed else [])
     with session_scope() as db:
@@ -220,7 +224,12 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         ).all()
         verb = "would queue" if args.dry_run else "queued"
         counts = {s.value: 0 for s in statuses}
+        skipped = 0
         for doc in docs:
+            if doc.status == DocumentStatus.FAILED and delete_gave_up(db, doc.id):
+                skipped += 1
+                print(f"{'skipped':11s} {doc.id}  delete did not finish  {doc.filename}")
+                continue
             counts[doc.status.value] += 1
             version = next_ingest_version(db, doc.id)
             print(f"{verb:11s} {doc.id}  v{version}  {doc.status.value:8s} {doc.filename}")
@@ -238,7 +247,9 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         if args.dry_run:
             db.rollback()
     found = ", ".join(f"{n} {status}" for status, n in counts.items())
-    print(f"\n{args.tenant}: {found} -> {verb} {len(docs)} document(s)."
+    print(f"\n{args.tenant}: {found} -> {verb} {len(docs) - skipped} document(s)."
+          + (f" Skipped {skipped} whose delete did not finish: delete them again." if skipped
+             else "")
           + (" Dry run: nothing was changed." if args.dry_run
              else " Run a worker to re-index them."))
     return 0
@@ -274,7 +285,8 @@ def main(argv: list[str] | None = None) -> int:
     ri = sub.add_parser("reindex", help="re-queue ingestion to rebuild a tenant's vectors")
     ri.add_argument("--tenant", required=True, help="tenant slug")
     ri.add_argument("--include-failed", action="store_true",
-                    help="also re-queue documents whose ingestion failed")
+                    help="also re-queue documents whose ingestion failed (not those whose "
+                         "delete failed)")
     ri.add_argument("--dry-run", action="store_true", help="list the documents, change nothing")
     ri.set_defaults(func=cmd_reindex)
 

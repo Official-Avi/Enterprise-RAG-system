@@ -87,8 +87,26 @@ _ANAPHOR_RE = re.compile(
     re.IGNORECASE)
 _EXPLETIVE_RE = re.compile(
     r"\b(?:is\s+it|it(?:'s|\s+is|\s+was))\s+"
-    r"(?:possible|ok|okay|safe|required|necessary|true)\b",
+    r"(?:possible|ok|okay|safe|required|necessary|true|recommended|allowed|mandatory)\b"
+    r"|\bdoes\s+it\s+(?:take|cost)\s+to\b",
     re.IGNORECASE)
+# "What does it say about TLS?": "it" is the document in front of the reader.
+_ABOUT_DOCUMENT_RE = re.compile(r"\b(?:do|does|did)\s+(?:it|they)\s+(?:say|state|mention)\b",
+                                re.IGNORECASE)
+# A pronoun in a later clause can refer to what the first clause is about.
+_LATER_CLAUSE_RE = re.compile(
+    r"\b(?:when|whenever|while|if|once|after|before|until|because|since|unless|and)\b",
+    re.IGNORECASE)
+# "How should engineers store their laptops?": the sentence's own subject owns what follows.
+_OWN_SUBJECT_RE = re.compile(
+    r"^\s*(?:(?:how(?:\s+(?:often|long|much|many))?|when|where|why|what|which)\s+)?"
+    r"(?:do|does|did|should|must|can|could|will|would|may|might|has|have)\s+"
+    r"(?:(?:the|all|our)\s+)?"
+    r"(?!(?:i|we|you|they|he|she|it|its|their|his|her|this|that|these|those)\b)[a-z0-9_-]+",
+    re.IGNORECASE)
+_ENDS_WITH_PREPOSITION_RE = re.compile(r"\b(?:about|for|from|in|of|on|to|with)\s*$", re.IGNORECASE)
+_POSSESSIVES = frozenset(["its", "their", "his", "her"])
+_DEMONSTRATIVES = ("this", "that", "these", "those")
 
 
 def _stem(word: str) -> str:
@@ -116,6 +134,7 @@ def terms(text: str) -> set[str]:
 
 _FIGURE_TERMS = frozenset(terms("dates date deadlines deadline numbers number amounts amount due"))
 _PEOPLE_TERMS = frozenset(terms("responsible"))
+_NO_SUBJECT_TERMS = frozenset(terms("happen happens occur occurs go goes"))
 _OVERVIEW_TERMS = _FIGURE_TERMS | _PEOPLE_TERMS | frozenset(terms(
     "main key important summary summarise summarize overview outline listed list rules rule steps "
     "step findings finding"))
@@ -277,14 +296,38 @@ def is_quotable(sentence: str) -> bool:
 # ---------------------------------------------------------------------- follow-ups
 
 
+def _pronoun_has_antecedent(pronoun: re.Match[str], question: str, named: set[str]) -> bool:
+    """Does the question itself say what this pronoun refers to?"""
+    word = pronoun.group(0).lower()
+    if word.startswith(_DEMONSTRATIVES):
+        return False
+    possessive = word in _POSSESSIVES
+    before = question[:pronoun.start()]
+    # "What is the SLA for it?" names what is asked, not the "it" it is asked about.
+    if named & terms(before) and (possessive or not _ENDS_WITH_PREPOSITION_RE.search(before)):
+        return True
+    if any(terms(before[:clause.start()]) - _NO_SUBJECT_TERMS
+           for clause in _LATER_CLAUSE_RE.finditer(before)):
+        return True
+    return possessive and bool(_OWN_SUBJECT_RE.match(before))
+
+
 def is_followup(question: str) -> bool:
-    """Does this question lean on an earlier turn for what it is about?"""
+    """Does this question lean on an earlier turn for what it is about?
+
+    A name alone doesn't settle it: "What is its SLA?" names what is asked but not whose. A pronoun
+    answered inside the question doesn't either: "restart the pump when it overheats" is complete.
+    """
     if not terms(question):
         return True
-    if named_terms(question):
-        return False  # it names its own subject
+    named = named_terms(question)
     stripped = _EXPLETIVE_RE.sub(" ", question)
-    return bool(_CONTINUATION_RE.search(stripped) or _ANAPHOR_RE.search(stripped))
+    if named and _ABOUT_DOCUMENT_RE.search(stripped):
+        return False
+    if not named and _CONTINUATION_RE.search(stripped):
+        return True
+    return any(not _pronoun_has_antecedent(match, stripped, named)
+               for match in _ANAPHOR_RE.finditer(stripped))
 
 
 def _clip(text: str, limit: int) -> str:

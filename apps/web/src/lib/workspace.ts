@@ -240,16 +240,3 @@ export async function uploadInGroups(
   }
   return items;
 }
-
-/** Upload files into "My documents" and return the per-file results, in input order. Aborting
- *  `signal` stops at whichever step is running and rejects with an isAbortError error. */
-export async function uploadToMyDocuments(
-  files: File[],
-  onProgress: (fraction: number) => void,
-  displayName?: string,
-  signal?: AbortSignal,
-): Promise<{ collection: Collection; items: UploadItem[] }> {
-  const collection = await ensureMyDocuments(displayName, signal);
-  const items = await uploadInGroups(collection.id, files, onProgress, signal);
-  return { collection, items };
-}

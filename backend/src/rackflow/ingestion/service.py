@@ -59,18 +59,20 @@ def accept_upload(
     except UploadRejected as exc:
         return AcceptResult(filename=(filename or "upload")[:200], status="rejected",
                             error_code=exc.code, error_message=exc.message)
-    quota = settings.max_storage_bytes
-    if quota is not None and used_bytes + len(data) > quota:
-        return AcceptResult(filename=checked.filename, status="rejected",
-                            error_code="QUOTA_EXCEEDED",
-                            error_message="The workspace storage quota has been reached.")
 
+    # Before the quota: a duplicate stores no new bytes, so a full workspace can still report it.
     content_hash = hashlib.sha256(data).hexdigest()
     existing = db.scalar(select(Document.id).where(
         Document.tenant_id == tenant_id, Document.collection_id == collection_id,
         Document.content_hash == content_hash, Document.deleted_at.is_(None)))
     if existing is not None:
         return AcceptResult(filename=checked.filename, status="duplicate", document_id=existing)
+
+    quota = settings.max_storage_bytes
+    if quota is not None and used_bytes + len(data) > quota:
+        return AcceptResult(filename=checked.filename, status="rejected",
+                            error_code="QUOTA_EXCEEDED",
+                            error_message="The workspace storage quota has been reached.")
 
     storage = get_object_storage()
     doc_id = uuid.uuid4()

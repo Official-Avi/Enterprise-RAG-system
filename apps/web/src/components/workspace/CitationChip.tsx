@@ -6,7 +6,7 @@ import type { Citation } from "./types";
 
 export const SOURCE_GONE = "Source no longer available";
 
-const SECTION_EXT = /\.(txt|md|markdown)$/i;
+const SECTION_EXT = /\.(txt|md|markdown|docx)$/i;
 
 /** True when the API says the cited document was deleted. Its filename, page and quote may be null. */
 export function isDocumentDeleted(citation: Citation): boolean {
@@ -18,7 +18,7 @@ export function citationName(citation: Citation): string {
   return citation.filename || "";
 }
 
-/** Where the passage is: "page 12" or "section" (TXT/MD have no pages, §5.7). Every surface uses it. */
+/** Where the passage is: "page 12" or "section" (TXT/MD/DOCX have no pages, §5.7). Every surface uses it. */
 export function citationPlace(citation: Citation): string {
   if (citation.page == null || SECTION_EXT.test(citationName(citation))) return "section";
   return `page ${citation.page}`;

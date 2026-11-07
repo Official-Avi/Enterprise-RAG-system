@@ -15,16 +15,17 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from rackflow.cli import ensure_tenant
+from rackflow.cli import main as admin_cli
 from rackflow.core.errors import AppError
 from rackflow.db.models import (
     Document,
@@ -33,6 +34,7 @@ from rackflow.db.models import (
     JobType,
     ProcessingJob,
     Role,
+    TenantSettings,
     WorkerHeartbeat,
 )
 from rackflow.db.session import get_sessionmaker, session_scope
@@ -46,6 +48,8 @@ from rackflow.jobs.errors import (
     PermanentJobError,
     is_database_outage,
 )
+from rackflow.providers.chat import _model_error
+from rackflow.rag import indexing
 from rackflow.worker import main as worker_main
 from tests.conftest import TEST_DB, Actor, Factory
 from tests.ingestion.test_pipeline import make_collection, run_worker, upload
@@ -125,9 +129,10 @@ def _good_answer() -> SimpleNamespace:
 
 
 def _run_evaluation(client: TestClient, actor: Actor,
-                    answer: Callable[..., Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+                    answer: Callable[..., Any], monkeypatch: pytest.MonkeyPatch,
+                    visibility: str = "tenant") -> dict[str, Any]:
     monkeypatch.setattr(eval_runner, "answer_question", answer)
-    collection = make_collection(client, actor, f"Eval {uuid.uuid4().hex[:6]}")
+    collection = make_collection(client, actor, f"Eval {uuid.uuid4().hex[:6]}", visibility)
     created = client.post("/api/v1/evaluation/runs", headers=actor.headers,
                           json={"dataset_version": "v1", "collection_ids": [collection]})
     assert created.status_code == 202, created.text
@@ -168,6 +173,194 @@ def test_run_without_errors_is_completed(
     run = _run_evaluation(client, factory.actor(Role.ORG_ADMIN),
                           lambda *_, **__: _good_answer(), monkeypatch)
     assert run["status"] == "completed" and run["metrics"]["errors"] == 0
+
+
+# ------------------------------------------------- evaluation: who may read a run's answers
+
+
+def _answer_citing_a_file(*_: Any, **__: Any) -> SimpleNamespace:
+    source = SimpleNamespace(filename="secret-plan.md")
+    return SimpleNamespace(sources=[source], citations=[SimpleNamespace(chunk=source)],
+                           answer="The secret plan says this.", evidence_status="supported",
+                           latency_ms=5)
+
+
+def test_run_answers_stay_inside_the_collections_they_came_from(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    admin = factory.actor(Role.ORG_ADMIN)
+    engineer = factory.actor(Role.ENGINEER)
+    auditor = factory.actor(Role.AUDITOR)
+    run = _run_evaluation(client, admin, _answer_citing_a_file, monkeypatch, "restricted")
+    assert all(r["answer"] and r["cited_docs"] == ["secret-plan.md"] for r in run["results"])
+    url = f"/api/v1/evaluation/runs/{run['id']}"
+
+    # The engineer may read document content, just not in this collection.
+    seen = client.get(url, headers=engineer.headers).json()
+    assert seen["metrics"] == run["metrics"] and len(seen["results"]) == len(run["results"])
+    assert "secret" not in str(seen["results"]).lower()
+    for result in seen["results"]:
+        assert not {"question", "answer", "retrieved_docs", "cited_docs"} & set(result)
+        assert result["id"] and "retrieval_hit" in result
+
+    # Auditors see filenames across the tenant, as metadata, and never question or answer.
+    audited = client.get(url, headers=auditor.headers).json()
+    assert all(r["cited_docs"] == ["secret-plan.md"] for r in audited["results"])
+    assert all("answer" not in r and "question" not in r for r in audited["results"])
+
+
+def test_run_answers_show_to_a_reader_with_access_to_every_collection(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    admin = factory.actor(Role.ORG_ADMIN)
+    engineer = factory.actor(Role.ENGINEER)
+    run = _run_evaluation(client, admin, _answer_citing_a_file, monkeypatch)
+    seen = client.get(f"/api/v1/evaluation/runs/{run['id']}", headers=engineer.headers).json()
+    assert seen["results"] == run["results"]
+
+
+def test_run_answers_hide_when_one_of_several_collections_is_off_limits(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    admin = factory.actor(Role.ORG_ADMIN)
+    engineer = factory.actor(Role.ENGINEER)
+    monkeypatch.setattr(eval_runner, "answer_question", _answer_citing_a_file)
+    open_one = make_collection(client, admin, "Open one")
+    closed_one = make_collection(client, admin, "Closed one", "restricted")
+    created = client.post("/api/v1/evaluation/runs", headers=admin.headers, json={
+        "dataset_version": "v1", "collection_ids": [open_one, closed_one]})
+    assert created.status_code == 202, created.text
+    run_worker()
+    seen = client.get(f"/api/v1/evaluation/runs/{created.json()['id']}",
+                      headers=engineer.headers).json()
+    assert seen["results"] and all("answer" not in r for r in seen["results"])
+
+
+# ---------------------------------------------- evaluation: waiting for a rate-limited model
+
+
+class _BusyFor(AppError):
+    """A busy error that says how long to wait, as a provider's Retry-After does."""
+
+    def __init__(self, seconds: float) -> None:
+        super().__init__("Busy.", code="MODEL_OVERLOADED", status_code=503)
+        self.retry_after = seconds
+
+
+@pytest.fixture()
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Every wait the runner asks for. Nothing in these tests really sleeps."""
+    recorded: list[float] = []
+    monkeypatch.setattr(eval_runner, "_sleep", recorded.append)
+    return recorded
+
+
+def test_small_rate_limited_model_scores_the_whole_dataset(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch,
+        waits: list[float]) -> None:
+    """A model that takes one question a minute, with time passing only through the run's waits."""
+    answered_at: list[float] = []
+
+    def limited(*_: Any, **__: Any) -> Any:
+        now = sum(waits)
+        if answered_at and now - answered_at[-1] < 60:
+            raise _model_error("MODEL_OVERLOADED")
+        answered_at.append(now)
+        return _good_answer()
+
+    run = _run_evaluation(client, factory.actor(Role.ORG_ADMIN), limited, monkeypatch)
+    assert run["status"] == "completed"
+    assert run["metrics"]["errors"] == 0 and run["metrics"]["questions"] == 13
+    assert sum(waits) >= 60 * 12  # one window between each pair of questions
+
+
+def test_dead_model_fails_fast_after_one_full_wait(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch,
+        waits: list[float]) -> None:
+    calls = {"n": 0}
+
+    def dead(*_: Any, **__: Any) -> Any:
+        calls["n"] += 1
+        raise _model_error("MODEL_OVERLOADED")
+
+    run = _run_evaluation(client, factory.actor(Role.ORG_ADMIN), dead, monkeypatch)
+    assert run["status"] == "completed_with_errors"
+    assert run["metrics"]["errors"] == run["metrics"]["questions"] == 13
+    assert all(r["error"] == "MODEL_OVERLOADED" for r in run["results"])
+    assert sum(waits) == sum(eval_runner.BUSY_BACKOFF_SECONDS)  # bounded, and spent only once
+    assert calls["n"] == len(eval_runner.BUSY_BACKOFF_SECONDS) + 13
+
+
+def test_patience_returns_once_the_model_answers_again(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch,
+        waits: list[float]) -> None:
+    budget = sum(eval_runner.BUSY_BACKOFF_SECONDS)
+    calls = {"n": 0}
+
+    def flaky(*_: Any, **__: Any) -> Any:
+        calls["n"] += 1
+        # Q1 uses every wait, Q2 gets one try and fails, Q3 answers, Q4 may wait again.
+        attempts_before_q3 = len(eval_runner.BUSY_BACKOFF_SECONDS) + 2
+        if calls["n"] <= attempts_before_q3 or calls["n"] == attempts_before_q3 + 2:
+            raise _model_error("MODEL_OVERLOADED")
+        return _good_answer()
+
+    run = _run_evaluation(client, factory.actor(Role.ORG_ADMIN), flaky, monkeypatch)
+    assert run["metrics"]["errors"] == 2
+    assert sum(waits) == budget + eval_runner.BUSY_BACKOFF_SECONDS[0]
+
+
+@pytest.mark.parametrize(("retry_after", "waited", "errors"), [(60, 61, 0), (3600, 0, 1)],
+                         ids=["a-minute-is-waited-out", "an-hour-is-not"])
+def test_run_honours_the_wait_the_model_asks_for(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch,
+        waits: list[float], retry_after: int, waited: int, errors: int) -> None:
+    calls = {"n": 0}
+
+    def once(*_: Any, **__: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _BusyFor(retry_after)
+        return _good_answer()
+
+    run = _run_evaluation(client, factory.actor(Role.ORG_ADMIN), once, monkeypatch)
+    assert sum(waits) == waited and run["metrics"]["errors"] == errors
+
+
+def test_other_errors_are_not_waited_for(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch,
+        waits: list[float]) -> None:
+    def refused(*_: Any, **__: Any) -> Any:
+        raise _model_error("MODEL_MISCONFIGURED")
+
+    run = _run_evaluation(client, factory.actor(Role.ORG_ADMIN), refused, monkeypatch)
+    assert waits == [] and run["metrics"]["errors"] == 13
+
+
+def test_cancel_is_noticed_during_a_wait(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    def cancel_instead_of_sleeping(_: float) -> None:
+        with session_scope() as s:
+            s.execute(update(ProcessingJob)
+                      .where(ProcessingJob.job_type == JobType.EVALUATION_RUN)
+                      .values(cancel_requested=True))
+
+    def busy(*_: Any, **__: Any) -> Any:
+        raise _model_error("MODEL_OVERLOADED")
+
+    monkeypatch.setattr(eval_runner, "_sleep", cancel_instead_of_sleeping)
+    run = _run_evaluation(client, factory.actor(Role.ORG_ADMIN), busy, monkeypatch)
+    assert run["status"] == "cancelled"
+
+
+def test_long_wait_keeps_the_lease(waits: list[float]) -> None:
+    beats = {"n": 0}
+
+    def beat() -> None:
+        beats["n"] += 1
+
+    ctx = SimpleNamespace(check_cancelled=lambda: None, heartbeat=beat,
+                          db=SimpleNamespace(rollback=lambda: None))
+    eval_runner._wait(cast(JobContext, ctx), 65.0)
+    assert sum(waits) == 65.0 and max(waits) <= eval_runner.WAIT_TICK_SECONDS
+    assert beats["n"] == len(waits)  # the runner renews the lease from these, at 1/4 of its length
 
 
 # ------------------------------------------------------------- worker: database outage
@@ -545,6 +738,270 @@ def test_old_delete_job_cannot_delete_a_document_that_came_back(
         queue.manual_retry(db, _reload(db, ProcessingJob, job_id))
     db.rollback()
     assert _reload(db, Document, uuid.UUID(doc_id)).status == DocumentStatus.INDEXED
+
+
+# ------------------------------------------ retrying or re-indexing what should stay as it is
+
+
+def _ingest_job_of(db: Session, doc_id: str) -> uuid.UUID:
+    job_id = db.scalar(select(ProcessingJob.id).where(
+        ProcessingJob.document_id == uuid.UUID(doc_id),
+        ProcessingJob.job_type == JobType.INGEST_DOCUMENT))
+    assert job_id is not None
+    return job_id
+
+
+def _refused_retry(client: TestClient, actor: Actor, job_id: uuid.UUID) -> str:
+    resp = client.post(f"/api/v1/jobs/{job_id}/retry", headers=actor.headers)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "INVALID_JOB_STATE"
+    return str(resp.json()["error"]["message"])
+
+
+def test_stale_ingest_job_cannot_reprocess_a_healthy_document(
+        client: TestClient, factory: Factory, db: Session) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    op = factory.actor(Role.OPERATOR)
+
+    def bad(ctx: JobContext) -> None:
+        raise PermanentJobError("NO_EXTRACTABLE_TEXT", "No usable text.")
+
+    registry.register_handler(JobType.INGEST_DOCUMENT, bad)
+    cid = make_collection(client, eng, f"Stale {uuid.uuid4().hex[:6]}")
+    doc_id = upload(client, eng, cid, [("a.md", b"# A\n\nSome text.")])[0]["document_id"]
+    assert _next_outcome() == "failed"
+    stale = _ingest_job_of(db, doc_id)
+
+    # The owner's retry made a second job, and it worked.
+    assert client.post(f"/api/v1/documents/{doc_id}/retry",
+                       headers=eng.headers).status_code == 202
+    registry.register_handler(JobType.INGEST_DOCUMENT, lambda ctx: None)
+    assert _next_outcome() == "succeeded"
+    doc = _reload(db, Document, uuid.UUID(doc_id))
+    doc.status = DocumentStatus.INDEXED
+    db.commit()
+
+    assert "out of date" in _refused_retry(client, op, stale)
+    assert _reload(db, ProcessingJob, stale).status == JobStatus.FAILED
+    assert _reload(db, Document, uuid.UUID(doc_id)).status == DocumentStatus.INDEXED
+
+
+def test_failed_ingest_job_of_a_failed_document_can_still_be_retried(
+        client: TestClient, factory: Factory, db: Session) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    op = factory.actor(Role.OPERATOR)
+
+    def bad(ctx: JobContext) -> None:
+        raise PermanentJobError("NO_EXTRACTABLE_TEXT", "No usable text.")
+
+    registry.register_handler(JobType.INGEST_DOCUMENT, bad)
+    cid = make_collection(client, eng, f"Again {uuid.uuid4().hex[:6]}")
+    doc_id = upload(client, eng, cid, [("a.md", b"# A\n\nSome text.")])[0]["document_id"]
+    assert _next_outcome() == "failed"
+    resp = client.post(f"/api/v1/jobs/{_ingest_job_of(db, doc_id)}/retry", headers=op.headers)
+    assert resp.status_code == 200, resp.text
+    assert _reload(db, Document, uuid.UUID(doc_id)).status == DocumentStatus.QUEUED
+
+
+def test_job_retry_refuses_a_row_that_keeps_deleted_at(
+        client: TestClient, factory: Factory, db: Session) -> None:
+    """Retrieval hides it for good, so it would read as indexed and never be answerable."""
+    eng = factory.actor(Role.ENGINEER)
+    op = factory.actor(Role.OPERATOR)
+    _fail_deletes()
+    content = b"# Copy\n\nThe same bytes uploaded twice."
+    doc_id, _, cid = _request_delete(client, eng, content)
+    upload(client, eng, cid, [("del.md", content)])  # the copy takes the dedup slot
+    assert _next_outcome() == "failed"
+    doc = _reload(db, Document, uuid.UUID(doc_id))
+    assert doc.status == DocumentStatus.FAILED and doc.deleted_at is not None
+
+    ingest = _ingest_job_of(db, doc_id)
+    assert _reload(db, ProcessingJob, ingest).status == JobStatus.CANCELLED
+    assert "deleted again" in _refused_retry(client, op, ingest)
+    assert _reload(db, Document, uuid.UUID(doc_id)).status == DocumentStatus.FAILED
+
+
+def test_job_retry_refuses_the_ingest_job_a_delete_cancelled(
+        client: TestClient, factory: Factory, db: Session) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    op = factory.actor(Role.OPERATOR)
+    _fail_deletes()
+    doc_id, _, _ = _request_delete(client, eng)
+    assert _next_outcome() == "failed"
+    assert _reload(db, Document, uuid.UUID(doc_id)).deleted_at is None
+    assert "deleted again" in _refused_retry(client, op, _ingest_job_of(db, doc_id))
+
+
+def test_reindex_include_failed_skips_documents_someone_asked_to_delete(
+        client: TestClient, factory: Factory, db: Session,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    _fail_deletes()
+    deleted_id, _, cid = _request_delete(client, eng)
+    assert _next_outcome() == "failed"
+    assert _reload(db, Document, uuid.UUID(deleted_id)).deleted_at is None
+    # A document whose ingestion really did fail, which the flag exists for.
+    failed_id = upload(client, eng, cid, [("f.md", b"# F\n\nIngestion failed.")])[0]["document_id"]
+    db.execute(update(Document).where(Document.id == uuid.UUID(failed_id))
+               .values(status=DocumentStatus.FAILED))
+    db.commit()
+    capsys.readouterr()
+
+    assert admin_cli(["reindex", "--tenant", "acme", "--include-failed", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert f"skipped     {deleted_id}" in out and "would queue 1 document(s)" in out
+
+    assert admin_cli(["reindex", "--tenant", "acme", "--include-failed"]) == 0
+    out = capsys.readouterr().out
+    assert f"skipped     {deleted_id}" in out and "queued 1 document(s)" in out
+    assert "Skipped 1 whose delete did not finish" in out
+    keys = db.scalars(select(ProcessingJob.idempotency_key)
+                      .where(ProcessingJob.idempotency_key.like("reindex:%"))).all()
+    assert keys == [f"reindex:{failed_id}:2"]
+    db.expire_all()
+    assert _reload(db, Document, uuid.UUID(deleted_id)).status == DocumentStatus.FAILED
+
+
+def test_reindex_includes_a_document_retried_after_its_delete_gave_up(
+        client: TestClient, factory: Factory, db: Session,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """The owner chose to keep it, and that attempt failed: it is an ordinary failure now."""
+    eng = factory.actor(Role.ENGINEER)
+    _fail_deletes()
+    doc_id, _, _ = _request_delete(client, eng)
+    assert _next_outcome() == "failed"
+    assert client.post(f"/api/v1/documents/{doc_id}/retry", headers=eng.headers).status_code == 202
+    db.execute(update(Document).where(Document.id == uuid.UUID(doc_id))
+               .values(status=DocumentStatus.FAILED))
+    db.commit()
+    assert admin_cli(["reindex", "--tenant", "acme", "--include-failed"]) == 0
+    assert "queued 1 document(s)" in capsys.readouterr().out
+
+
+# ------------------------------------------------- a delete that overtakes a running ingest
+
+
+_READABLE = b"# Runbook\n\n" + b"Rotate the TLS certificates every ninety days. " * 8
+
+
+def _ingest_with_interruption(monkeypatch: pytest.MonkeyPatch, status: DocumentStatus,
+                              doc_id: uuid.UUID) -> list[uuid.UUID]:
+    """Runs the real pipeline, with the cancel arriving while the vectors are being written."""
+    discarded: list[uuid.UUID] = []
+
+    def writes_vectors(ctx: JobContext, version_id: uuid.UUID) -> None:
+        with session_scope() as s:
+            s.execute(update(ProcessingJob).where(ProcessingJob.id == ctx.job_id)
+                      .values(cancel_requested=True))
+            s.execute(update(Document).where(Document.id == doc_id).values(status=status))
+
+    def discard(_: uuid.UUID, document_id: uuid.UUID, **__: Any) -> None:
+        discarded.append(document_id)
+
+    monkeypatch.setattr(indexing, "index_document_version", writes_vectors)
+    monkeypatch.setattr(indexing, "delete_document_vectors", discard)
+    assert _next_outcome() == "cancelled"
+    return discarded
+
+
+@pytest.mark.parametrize("status", [DocumentStatus.DELETING, DocumentStatus.DELETED])
+def test_vectors_written_after_a_delete_are_discarded(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch,
+        status: DocumentStatus) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    cid = make_collection(client, eng, f"Race {uuid.uuid4().hex[:6]}")
+    doc_id = uuid.UUID(upload(client, eng, cid, [("a.md", _READABLE)])[0]["document_id"])
+    assert _ingest_with_interruption(monkeypatch, status, doc_id) == [doc_id]
+
+
+def test_cancelled_ingest_of_a_live_document_keeps_its_vectors(
+        client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    cid = make_collection(client, eng, f"Race {uuid.uuid4().hex[:6]}")
+    doc_id = uuid.UUID(upload(client, eng, cid, [("a.md", _READABLE)])[0]["document_id"])
+    assert _ingest_with_interruption(monkeypatch, DocumentStatus.PROCESSING, doc_id) == []
+
+
+# ----------------------------------------------------------------------- upload quota
+
+
+def test_duplicate_upload_is_reported_even_when_the_workspace_is_full(
+        client: TestClient, factory: Factory) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    cid = make_collection(client, eng, f"Full {uuid.uuid4().hex[:6]}")
+    content = b"# Stored\n\nAlready in the workspace."
+    first = upload(client, eng, cid, [("stored.md", content)])[0]
+    assert first["status"] == "queued"
+    with session_scope() as s:
+        s.merge(TenantSettings(tenant_id=eng.tenant_id, max_storage_bytes=len(content)))
+
+    same, new = upload(client, eng, cid, [("stored.md", content), ("new.md", b"# New\n\nBytes.")])
+    assert same["status"] == "duplicate" and same["document_id"] == first["document_id"]
+    assert new["status"] == "rejected" and new["error"]["code"] == "QUOTA_EXCEEDED"
+
+
+# ------------------------------------------------------------------- infrastructure PATCH
+
+
+def _inventory(client: TestClient, actor: Actor) -> dict[str, str]:
+    def post(path: str, body: dict[str, Any]) -> str:
+        resp = client.post(f"/api/v1/infrastructure/{path}", headers=actor.headers, json=body)
+        assert resp.status_code == 201, resp.text
+        return str(resp.json()["id"])
+
+    rack = post("racks", {"name": "r1", "location_label": "Row A"})
+    node = post("nodes", {"name": "n1", "rack_id": rack, "cpu_cores": 8})
+    workload = post("workloads", {"name": "w1", "workload_type": "api", "node_id": node,
+                                  "state_source": "simulated",
+                                  "resource_request": {"cpu_cores": 0.5}})
+    return {"racks": rack, "nodes": node, "workloads": workload}
+
+
+@pytest.mark.parametrize(("kind", "field"), [
+    ("racks", "name"), ("racks", "environment"), ("racks", "description"), ("racks", "status"),
+    ("nodes", "name"), ("nodes", "status"),
+    ("workloads", "desired_state"), ("workloads", "observed_state"),
+    ("workloads", "resource_request"),
+])
+def test_patch_refuses_null_for_required_fields(
+        client: TestClient, factory: Factory, kind: str, field: str) -> None:
+    admin = factory.actor(Role.ORG_ADMIN)
+    ids = _inventory(client, admin)
+    resp = client.patch(f"/api/v1/infrastructure/{kind}/{ids[kind]}", headers=admin.headers,
+                        json={field: None})
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize(("kind", "field"), [
+    ("racks", "location_label"), ("nodes", "rack_id"), ("nodes", "rack_unit_position"),
+    ("nodes", "cpu_cores"), ("nodes", "memory_bytes"), ("nodes", "accelerator_info"),
+    ("nodes", "storage_bytes"), ("workloads", "node_id"),
+])
+def test_patch_still_clears_optional_fields(
+        client: TestClient, factory: Factory, kind: str, field: str) -> None:
+    admin = factory.actor(Role.ORG_ADMIN)
+    ids = _inventory(client, admin)
+    resp = client.patch(f"/api/v1/infrastructure/{kind}/{ids[kind]}", headers=admin.headers,
+                        json={field: None})
+    assert resp.status_code == 200, resp.text
+
+
+def test_allocated_cpu_keeps_fractions(client: TestClient, factory: Factory) -> None:
+    admin = factory.actor(Role.ORG_ADMIN)
+    ids = _inventory(client, admin)
+
+    def allocated() -> float:
+        rack = client.get(f"/api/v1/infrastructure/racks/{ids['racks']}",
+                          headers=admin.headers).json()
+        return float(rack["nodes"][0]["allocated"]["cpu_cores"])
+
+    assert allocated() == 0.5
+    for name, cores in (("w2", 3), ("w3", 0.1), ("w4", 0.2)):
+        assert client.post("/api/v1/infrastructure/workloads", headers=admin.headers, json={
+            "name": name, "workload_type": "api", "node_id": ids["nodes"],
+            "resource_request": {"cpu_cores": cores}}).status_code == 201
+    assert allocated() == 3.8  # rounded: floating point would make this 3.8000000000000003
 
 
 # ----------------------------------------------------------------- retry timestamps

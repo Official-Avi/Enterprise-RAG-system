@@ -11,7 +11,7 @@ import { middleTruncate } from "@/lib/status";
 import { useFileDrop } from "@/lib/useFileDrop";
 import { ACCEPT_ATTR, MAX_FILE_BYTES, MAX_FILES } from "@/lib/workspace";
 import { fileKind, KIND_LABEL, TypeTile } from "@/components/workspace/library/parts";
-import { isBusy, SIGN_IN_HREF, useHeroUpload, type HeroJob, type HeroState } from "./useHeroUpload";
+import { isBusy, SIGN_IN_HREF, useHeroUpload, useRunActive, type HeroJob, type HeroState } from "./useHeroUpload";
 import { useVisitor } from "./Visitor";
 
 const MAX_MB = Math.round(MAX_FILE_BYTES / (1024 * 1024));
@@ -104,6 +104,57 @@ function Actions({ children }: { children: ReactNode }) {
   return <div className="flex w-full flex-wrap items-center gap-2">{children}</div>;
 }
 
+/** Says what the server really holds after a stop, and how to take it back. */
+function StoredPanel({
+  state,
+  hero,
+  demoRunning,
+}: {
+  state: Extract<HeroState, { kind: "stored" }>;
+  hero: ReturnType<typeof useHeroUpload>;
+  demoRunning: boolean;
+}) {
+  const { stored, job } = state;
+  const total = job.kind === "upload" ? job.files.length : stored.length;
+  const one = stored.length === 1;
+  const saved = one
+    ? `${middleTruncate(stored[0].name, 44)} was`
+    : `${stored.length === total ? stored.length : `${stored.length} of ${total}`} files were`;
+  const lead = state.cause === "cancelled" ? "Upload stopped, but" : "The upload stopped partway, and";
+  const audience = demoRunning ? "anyone using this demo can see" : "people with access can search";
+  return (
+    <>
+      <Note tone="plain" alert>
+        {lead} {saved} already saved to My documents. Until you remove {one ? "it" : "them"}, {audience}{" "}
+        {one ? "it" : "them"}.
+      </Note>
+      {state.removeFailed && (
+        <Note tone="bad" alert>
+          {one ? "That file" : `${stored.length} files`} couldn&apos;t be removed. Try again, or delete{" "}
+          {one ? "it" : "them"} in the{" "}
+          <Link href="/library" className="underline">
+            Library
+          </Link>
+          .
+        </Note>
+      )}
+      <Actions>
+        <button type="button" onClick={hero.removeStored} className={PRIMARY_ACTION}>
+          {one ? "Remove saved file" : "Remove saved files"}
+        </button>
+        {stored.length < total && (
+          <button type="button" onClick={hero.retry} className={OUTLINE_ACTION}>
+            Upload the rest
+          </button>
+        )}
+        <button type="button" onClick={hero.clear} className={OUTLINE_ACTION}>
+          Keep and close
+        </button>
+      </Actions>
+    </>
+  );
+}
+
 interface PanelProps {
   state: Exclude<HeroState, { kind: "idle" | "rejected" | "server_rejected" }>;
   hero: ReturnType<typeof useHeroUpload>;
@@ -151,7 +202,15 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
               </Step>
             </ul>
             <ProgressBar fraction={state.progress} />
-            <Actions>{cancel}</Actions>
+            <Actions>
+              {state.stopping ? (
+                <button type="button" aria-disabled="true" className={cx(OUTLINE_ACTION, "cursor-wait opacity-60")}>
+                  Stopping…
+                </button>
+              ) : (
+                cancel
+              )}
+            </Actions>
           </>
         );
       }
@@ -166,7 +225,14 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
       case "kept":
         return (
           <>
-            <Note tone="plain">Upload cancelled. {files.length > 1 ? "Your files are" : "Your file is"} still here.</Note>
+            <Note tone="plain">
+              {state.removed
+                ? state.removed === 1
+                  ? "Saved copy removed."
+                  : "Saved copies removed."
+                : "Upload cancelled."}{" "}
+              {files.length > 1 ? "Your files are" : "Your file is"} still here.
+            </Note>
             <Actions>
               <button type="button" onClick={hero.retry} className={PRIMARY_ACTION}>
                 Upload
@@ -175,9 +241,22 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
             </Actions>
           </>
         );
+      case "stored":
+        return <StoredPanel state={state} hero={hero} demoRunning={demoRunning} />;
+      case "removing":
+        return (
+          <ul className="w-full space-y-1.5">
+            <Step done={false}>Removing the saved {state.stored.length === 1 ? "copy" : "copies"}</Step>
+          </ul>
+        );
       case "demo_off":
         return (
           <>
+            {state.sessionEnded && (
+              <Note tone="plain" alert>
+                Your session has ended, so nothing was sent.
+              </Note>
+            )}
             {state.personaMissing && (
               <Note tone="plain" alert>
                 The Engineer demo account isn&apos;t set up on this server.
@@ -194,7 +273,7 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
               </div>
             )}
             <Actions>
-              <Link href={SIGN_IN_HREF} className={PRIMARY_ACTION}>
+              <Link href={SIGN_IN_HREF} onClick={hero.keepForSignIn} className={PRIMARY_ACTION}>
                 Sign in
               </Link>
               {remove}
@@ -306,17 +385,20 @@ function isDropTarget(card: HTMLElement | null): boolean {
 export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" }) {
   const compact = variant === "compact";
   const { ready, me, demo, persona } = useVisitor();
-  const hero = useHeroUpload();
+  const textarea = useRef<HTMLTextAreaElement>(null);
+  const hero = useHeroUpload(textarea);
   const { state } = hero;
   const busy = isBusy(state);
+  const runActive = useRunActive();
+  // The other card is running. This one can't take anything until it ends, and says so.
+  const elsewhere = runActive && !busy;
 
   const card = useRef<HTMLDivElement>(null);
   const zone = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
-  const textarea = useRef<HTMLTextAreaElement>(null);
 
   const { dragging } = useFileDrop({
-    enabled: !busy,
+    enabled: !runActive && !busy,
     onFiles: (files) => {
       if (isDropTarget(card.current)) hero.addFiles(files);
     },
@@ -350,7 +432,7 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
     }
   };
 
-  const pickable = state.kind === "idle" || state.kind === "rejected" || state.kind === "server_rejected";
+  const pickable = !elsewhere && (state.kind === "idle" || state.kind === "rejected" || state.kind === "server_rejected");
   const refused = state.kind === "rejected" || state.kind === "server_rejected";
   const uploadPanel = "job" in state && state.job.kind === "upload" ? state : null;
   const askPanel = "job" in state && state.job.kind === "ask" ? state : null;
@@ -358,13 +440,15 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
   // The note about the shared account: a demo session is running, or about to be.
   const demoRunning = persona !== null || state.kind === "signing_in" || (state.kind === "uploading" && state.demoStep);
   const sharedNote = demoRunning && (state.kind === "signing_in" || state.kind === "uploading");
-  const askFooter = !ready
-    ? "Press Enter"
-    : me && !persona
-      ? "Uses your documents · press Enter"
-      : demo?.enabled
-        ? "Uses the demo documents · press Enter"
-        : "Sign in first · press Enter";
+  const askFooter = elsewhere
+    ? "Upload running · ask when it finishes"
+    : !ready
+      ? "Press Enter"
+      : me && !persona
+        ? "Uses your documents · press Enter"
+        : demo?.enabled
+          ? "Uses the demo documents · press Enter"
+          : "Sign in first · press Enter";
 
   const Zone = pickable ? "label" : "div";
 
@@ -376,7 +460,7 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
         className={cx(
           "pointer-events-none fixed inset-4 z-50 grid place-items-center rounded-3xl bg-accent/8 p-6 backdrop-blur-[2px] pointer-coarse:hidden",
           "transition-[opacity,visibility] ease-(--ease-snappy)",
-          dragging && !busy ? "visible opacity-100 duration-120" : "invisible opacity-0 duration-100",
+          dragging && !busy && !runActive ? "visible opacity-100 duration-120" : "invisible opacity-0 duration-100",
         )}
       >
         <svg className="absolute top-px left-px h-[calc(100%-2px)] w-[calc(100%-2px)] overflow-visible text-dropzone-border">
@@ -468,7 +552,11 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
                   <JobPanel state={uploadPanel} hero={hero} demoRunning={demoRunning} />
                 ) : (
                   <>
-                    {refused ? (
+                    {elsewhere && !refused ? (
+                      <span role="status" className="block max-w-md text-sm font-medium [overflow-wrap:anywhere]">
+                        Another upload is running on this page. You can add files here when it finishes.
+                      </span>
+                    ) : refused ? (
                       <>
                         <AlertWell />
                         <span role="alert" className="block max-w-md text-sm font-medium text-bad [overflow-wrap:anywhere]">
@@ -487,41 +575,45 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
                         <span className="hidden text-base font-semibold pointer-coarse:inline">Tap to choose a file</span>
                       </>
                     )}
-                    <button
-                      type="button"
-                      // The wrapping <label> would otherwise become the button's accessible name.
-                      aria-label={refused ? "Choose another file" : "Choose a file"}
-                      onClick={() => input.current?.click()}
-                      className={cx(
-                        "inline-flex h-11 items-center justify-center rounded-lg border px-4 text-sm font-medium",
-                        "transition-colors duration-150",
-                        "group-hover:border-transparent group-hover:bg-accent group-hover:text-accent-contrast",
-                        "pointer-coarse:h-12 pointer-coarse:w-full pointer-coarse:max-w-[360px]",
-                        hot
-                          ? "border-transparent bg-accent text-accent-contrast"
-                          : "border-border-strong bg-panel text-text",
-                      )}
-                    >
-                      {refused ? "Choose another file" : "Choose a file"}
-                    </button>
-                    {!refused && (
-                      <span className="text-[13px] leading-5 text-muted">
-                        Up to {MAX_MB} MB each · {MAX_FILES} at a time
-                      </span>
+                    {!elsewhere && (
+                      <>
+                        <button
+                          type="button"
+                          // The wrapping <label> would otherwise become the button's accessible name.
+                          aria-label={refused ? "Choose another file" : "Choose a file"}
+                          onClick={() => input.current?.click()}
+                          className={cx(
+                            "inline-flex h-11 items-center justify-center rounded-lg border px-4 text-sm font-medium",
+                            "transition-colors duration-150",
+                            "group-hover:border-transparent group-hover:bg-accent group-hover:text-accent-contrast",
+                            "pointer-coarse:h-12 pointer-coarse:w-full pointer-coarse:max-w-[360px]",
+                            hot
+                              ? "border-transparent bg-accent text-accent-contrast"
+                              : "border-border-strong bg-panel text-text",
+                          )}
+                        >
+                          {refused ? "Choose another file" : "Choose a file"}
+                        </button>
+                        {!refused && (
+                          <span className="text-[13px] leading-5 text-muted">
+                            Up to {MAX_MB} MB each · {MAX_FILES} at a time
+                          </span>
+                        )}
+                        <input
+                          ref={input}
+                          type="file"
+                          multiple
+                          accept={ACCEPT_ATTR}
+                          className="sr-only"
+                          tabIndex={-1}
+                          aria-label="Choose files to add"
+                          onChange={(e) => {
+                            hero.addFiles(Array.from(e.target.files ?? []));
+                            e.target.value = "";
+                          }}
+                        />
+                      </>
                     )}
-                    <input
-                      ref={input}
-                      type="file"
-                      multiple
-                      accept={ACCEPT_ATTR}
-                      className="sr-only"
-                      tabIndex={-1}
-                      aria-label="Choose files to add"
-                      onChange={(e) => {
-                        hero.addFiles(Array.from(e.target.files ?? []));
-                        e.target.value = "";
-                      }}
-                    />
                   </>
                 )}
               </Zone>
@@ -540,6 +632,8 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
                   name="q"
                   maxLength={4000}
                   rows={2}
+                  // A question on its way can't change under the visitor. Once it is held, an edit counts.
+                  readOnly={askPanel !== null && busy}
                   placeholder="Or ask a question, e.g. How long are backups retained?"
                   className="min-h-12 flex-1 resize-none bg-transparent text-base leading-6 outline-none placeholder:text-muted"
                   onKeyDown={onQuestionKey}
@@ -554,7 +648,7 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
                   <button
                     type="submit"
                     aria-label="Send question"
-                    aria-disabled={busy || undefined}
+                    aria-disabled={busy || elsewhere || undefined}
                     className={cx(
                       "grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-accent-contrast transition-opacity duration-150",
                       "hover:opacity-90 aria-disabled:cursor-wait aria-disabled:opacity-60 pointer-coarse:size-11",
@@ -566,6 +660,11 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
               </form>
             )}
           </div>
+          {elsewhere && (uploadPanel || askPanel) && (
+            <p role="status" className="mt-3 text-sm text-muted">
+              Another upload is running on this page. Try this one again when it finishes.
+            </p>
+          )}
         </div>
         <p className="mt-3 flex min-h-5 items-start justify-center gap-1.5 text-center text-[13px] leading-5 text-muted">
           {ready && (

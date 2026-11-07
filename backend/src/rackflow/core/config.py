@@ -7,6 +7,7 @@ secret-free message instead of failing later on a request path.
 from __future__ import annotations
 
 from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
 from typing import Literal
 
@@ -65,6 +66,8 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     auth_issuer: str = ""
     demo_mode: bool = False  # one-click demo personas on the landing page; never in production
+    # Peers allowed to state the client's address in X-Forwarded-For. Empty trusts nobody.
+    trusted_proxy_ips: str = ""
 
     @field_validator("object_storage_path", mode="after")
     @classmethod
@@ -79,6 +82,9 @@ class Settings(BaseSettings):
             raise ValueError("MODEL_PROVIDER=anthropic requires MODEL_API_KEY to be set")
         if self.model_provider == "openai_compatible" and not self.model_base_url:
             raise ValueError("MODEL_PROVIDER=openai_compatible requires MODEL_BASE_URL")
+        if self.model_provider == "openai_compatible" and not self.model_name.strip():
+            raise ValueError("MODEL_PROVIDER=openai_compatible requires MODEL_NAME")
+        self._check_trusted_proxies()
         if self.app_env == "production":
             if not self.cookie_secure:
                 raise ValueError("COOKIE_SECURE must be true in production")
@@ -87,6 +93,24 @@ class Settings(BaseSettings):
             if self.demo_mode:
                 raise ValueError("DEMO_MODE must be false in production")
         return self
+
+    def _check_trusted_proxies(self) -> None:
+        for entry in self.trusted_proxy_ips.split(","):
+            if not entry.strip():
+                continue
+            try:
+                network = ip_network(entry.strip(), strict=False)
+            except ValueError as exc:
+                raise ValueError(
+                    "TRUSTED_PROXY_IPS must list IP addresses or CIDR ranges"
+                ) from exc
+            if network.prefixlen == 0:
+                raise ValueError("TRUSTED_PROXY_IPS must not trust every address")
+
+    @property
+    def trusted_proxy_networks(self) -> list[IPv4Network | IPv6Network]:
+        return [ip_network(e.strip(), strict=False)
+                for e in self.trusted_proxy_ips.split(",") if e.strip()]
 
     @property
     def cors_origins(self) -> list[str]:

@@ -196,12 +196,12 @@ Native `<details>`: 820px, radius 12, `--panel-2`, 8px gap, summary min-h 56 (16
 
 1. **What files can I use?** PDF, Word (.docx), plain text and Markdown, up to 25 MB and 500 pages each. Scanned PDFs work too: RackFlow reads them with text recognition (OCR).
 2. **How long until I can ask?** Usually 5 to 60 seconds. You'll see Waiting, then Reading, then Ready. Scanned files take the longest.
-3. **Does it make things up?** By default no AI model writes the answer: RackFlow quotes the passages that match your question. If an admin turns on Claude, Claude writes the answer from those passages, and every claim still links to its source. If nothing matches, it says so.
+3. **Does it make things up?** RackFlow answers only from your documents. Depending on how your admin set it up, it either quotes the passages that match your question, or an AI model writes the answer from those passages. Either way the answer links to its sources so you can check it, and if nothing matches, it says so.
 4. **Who can see my files?** People in your workspace whose role allows it. The demo accounts are shared, so anyone using the demo can see what you upload.
 5. **Why can't Operators or Auditors upload?** Their jobs don't involve adding documents. Operators keep processing running and can ask questions. Auditors review the activity log and never see document content.
-6. **Where does my data go?** Files are stored and searched on the server running RackFlow. In the default mode nothing is sent to an outside AI service. If Claude is turned on, only your question and the few matching passages go to Anthropic to write the answer.
+6. **Where does my data go?** Files are stored and searched on the server running RackFlow, and whole files are never sent anywhere else. RackFlow can run without an AI model, and then nothing leaves that server. If an admin connects one, your question and the few passages that match it go to that model to write the answer. A follow-up can include your earlier question too. The model may run on your own servers or at an outside service such as Anthropic, OpenAI or Groq, so ask your admin which one this workspace uses.
 
-Before shipping, verify items 3 and 6 against config: local fastembed, the extractive default, and Anthropic used only when enabled.
+Before shipping, verify items 3 and 6 against config: local fastembed, and which `MODEL_PROVIDER` the deployment uses.
 
 ### 3.8 Footer
 

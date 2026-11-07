@@ -36,6 +36,8 @@ const SEARCH_DEBOUNCE_MS = 250;
 
 const UNREACHABLE = "Can't reach RackFlow. Check that the server is running, then try again.";
 
+const DELETE_NO_ACCESS = "You don't have write access to this file's collection, so you can't delete it.";
+
 function deleteErrorText(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.status === 0) return UNREACHABLE;
@@ -50,7 +52,7 @@ function deleteErrorText(e: unknown): string {
 function retryErrorText(e: unknown, filename: string): string {
   if (e instanceof ApiError) {
     if (e.status === 0) return `Couldn't try ${filename} again. ${UNREACHABLE}`;
-    if (e.status === 403 || e.status === 404) return `Your role can't retry ${filename}. An Engineer or Admin can.`;
+    if (e.status === 403 || e.status === 404) return `Couldn't try ${filename} again. It takes write access to its collection.`;
     if (e.status === 429) return `Couldn't try ${filename} again. Too many requests right now. Wait a few seconds, then try again.`;
   }
   return `Couldn't try ${filename} again. Something went wrong on our side.`;
@@ -163,6 +165,12 @@ export function LibraryView() {
   }, [note]);
 
   // ---------- rows ----------
+  // Only files this page saw being uploaded went to My documents. A document watched through
+  // "Ask about this" can be in any collection, so it only ever appears through the list below.
+  const [ownUploads, setOwnUploads] = useState<ReadonlySet<string>>(() => new Set());
+  const newUploads = uploads.items.filter((u) => !u.documentId && !ownUploads.has(u.key));
+  if (newUploads.length) setOwnUploads(new Set([...ownUploads, ...newUploads.map((u) => u.key)]));
+
   const docIds = new Set(docs.items.map((d) => d.id));
   const uploadVisible = (u: TrackedUpload) => {
     if (u.filename === LOADING_FILENAME) return false;
@@ -171,7 +179,7 @@ export function LibraryView() {
     // Still uploading, or not accepted: there is no document to list.
     if (!u.documentId) return true;
     // Accepted, and the list hasn't caught up yet. Duplicates point at a document already listed.
-    if (docIds.has(u.documentId) || removed.has(u.documentId)) return false;
+    if (!ownUploads.has(u.key) || docIds.has(u.documentId) || removed.has(u.documentId)) return false;
     return u.phase !== "rejected" && u.phase !== "duplicate";
   };
   const seenKeys = new Set<string>();
@@ -218,10 +226,30 @@ export function LibraryView() {
 
   const mayDelete = (doc: DocumentItem) => {
     if (!can("document:delete")) return false;
-    if (me.role === "org_admin" || doc.uploaded_by === me.user_id) return true;
-    // The API also lets a collection's managers delete; unknown levels are left to the API.
+    if (me.role === "org_admin") return true;
+    // In the API's order: write access first, then the uploader or a manager. Unknown levels (the
+    // collections haven't loaded, or failed) are left to the API.
     const level = levels.get(doc.collection_id);
-    return level === undefined || level === "manage";
+    return level === undefined || level === "manage" || (level === "write" && doc.uploaded_by === me.user_id);
+  };
+
+  // Document retry needs write access to the collection; job:manage needs only read (see retry).
+  const mayRetry = (doc: DocumentItem) => {
+    if (!can("document:retry")) return false;
+    const level = levels.get(doc.collection_id);
+    return can("job:manage") || level === undefined || level === "write" || level === "manage";
+  };
+
+  /** A 404 on delete means either that the file is gone or that the caller lacks write access, which
+   *  the API won't tell apart, so ask. True when a live file is still there. */
+  const stillListed = async (id: string) => {
+    try {
+      const doc = await api<DocumentItem>(`/documents/${encodeURIComponent(id)}`);
+      return doc.status !== "deleting" && doc.status !== "deleted";
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return false;
+      throw e;
+    }
   };
 
   const retry = async (doc: DocumentItem) => {
@@ -275,11 +303,22 @@ export function LibraryView() {
     try {
       await api(`/documents/${encodeURIComponent(target.id)}`, { method: "DELETE" });
     } catch (e) {
-      // 404: already gone. 409: someone else is already removing it. Both end the same way.
-      const settled = e instanceof ApiError && (e.status === 404 || e.status === 409);
-      if (!settled) {
-        setDeleteError(deleteErrorText(e));
+      let problem: string | null = deleteErrorText(e);
+      try {
+        // 409: someone else is already removing it. 404: already gone, if it really is.
+        if (e instanceof ApiError && e.status === 409) problem = null;
+        if (e instanceof ApiError && e.status === 404) problem = (await stillListed(target.id)) ? DELETE_NO_ACCESS : null;
+      } catch (checkError) {
+        problem = deleteErrorText(checkError);
+      }
+      if (problem) {
+        setDeleteError(problem);
         setDeleteBusy(false);
+        if (problem === DELETE_NO_ACCESS) {
+          // What we knew about this collection was out of date, so the Delete action may go too.
+          collectionsQ.reload();
+          docs.refresh();
+        }
         return;
       }
     }
@@ -306,7 +345,7 @@ export function LibraryView() {
         actions.push({ label: "Download", href: `/api/v1/documents/${encodeURIComponent(doc.id)}/download`, download: true });
       }
       // A failed delete offers Delete below: reading the file again could not restore it.
-      if (row.phase === "failed" && can("document:retry") && doc.latest_job?.job_type !== "delete_document") {
+      if (row.phase === "failed" && mayRetry(doc) && doc.latest_job?.job_type !== "delete_document") {
         actions.push({ label: retrying.has(doc.id) ? "Trying again…" : "Try again", onSelect: () => void retry(doc) });
       }
       if (mayDelete(doc)) {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Literal
 
@@ -17,11 +18,20 @@ from rackflow.auth.rbac import ROLE_PERMISSIONS
 from rackflow.auth.sessions import SESSION_COOKIE, create_session, revoke_session
 from rackflow.core.config import get_settings
 from rackflow.core.errors import NotFoundError, UnauthenticatedError
-from rackflow.core.ratelimit import demo_login_limiter, login_limiter
+from rackflow.core.ratelimit import (
+    anonymous_audit_client_limiter,
+    anonymous_audit_tenant_limiter,
+    client_ip,
+    demo_login_limiter,
+    login_client_limiter,
+    login_limiter,
+    rejected_login_audit_limiter,
+)
 from rackflow.db.models import Role, Tenant, TenantMembership, User
 from rackflow.db.session import get_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+log = logging.getLogger("rackflow.api")
 
 
 class LoginRequest(BaseModel):
@@ -98,6 +108,7 @@ def _me(db: Session, principal: Principal) -> MeOut:
 
 def _audit_rejected_login(
     db: Session, user: User | None, tenant_slug: str | None, outcome: str, reason: str,
+    client: str,
 ) -> None:
     """Puts a rejected sign-in where an auditor can see it: the audit log is read per tenant.
 
@@ -105,12 +116,19 @@ def _audit_rejected_login(
     naming the account. Nothing identifies an unknown account: the address typed is not stored, as
     it may be a mistyped one or someone else's. Its attempt goes to the tenant asked for, else to
     the only active tenant. With several tenants and none asked for, it belongs to no tenant, so
-    it stays out of every tenant's log. The actor stays empty because nobody was authenticated.
+    it stays out of every tenant's log. A known account with no active tenant is likewise in no
+    tenant's log, as no auditor could be told about it. The actor stays empty because nobody was
+    authenticated. Nobody needs an account to write these rows, so all of them are capped.
     """
-    tenants = {m.tenant_slug: m.tenant_id for m in _memberships(db, user.id)} if user else {}
-    if user is not None and tenants:
-        targets = [tenants[tenant_slug]] if tenant_slug in tenants else list(tenants.values())
+    if user is not None:
+        tenants = {m.tenant_slug: m.tenant_id for m in _memberships(db, user.id)}
+        targets: list[uuid.UUID | None] = (
+            [tenants[tenant_slug]] if tenant_slug in tenants else list(tenants.values())
+        ) or [None]
         for tenant_id in targets:
+            if not rejected_login_audit_limiter.allow(f"{tenant_id}:{user.id}"):
+                log.warning("login_audit_capped", extra={"reason": reason})
+                continue
             record_audit(db, action="auth.login", resource_type="user", resource_id=user.id,
                          outcome=outcome, tenant_id=tenant_id,
                          metadata={"reason": reason, "email": user.email})
@@ -120,27 +138,32 @@ def _audit_rejected_login(
     if tenant_slug is not None:
         active = active.where(Tenant.slug == tenant_slug)
     candidates = db.scalars(active.limit(2)).all()
-    record_audit(db, action="auth.login", resource_type="user", outcome=outcome,
-                 tenant_id=candidates[0] if len(candidates) == 1 else None,
-                 metadata={"reason": "unknown_account"})
+    target = candidates[0] if len(candidates) == 1 else None
+    if not (anonymous_audit_client_limiter.allow(f"{target}:{client}")
+            and anonymous_audit_tenant_limiter.allow(str(target))):
+        log.warning("login_audit_capped", extra={"reason": reason})
+        return
+    record_audit(db, action="auth.login", resource_type="user", outcome=outcome, tenant_id=target,
+                 metadata={"reason": reason})
 
 
 @router.post("/login", response_model=LoginOut)
 def login(
     body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)
 ) -> LoginOut:
-    client = request.client.host if request.client else "unknown"
+    client = client_ip(request)
+    login_client_limiter.hit(client)
     login_limiter.hit(f"{client}:{body.email.lower()}")
 
     user = db.scalar(select(User).where(User.email == body.email.lower()))
     password_ok = verify_password(body.password, user.password_hash if user else None)
     if user is None or not password_ok or user.status != "active":
         if user is None:
-            _audit_rejected_login(db, None, body.tenant_slug, "failure", "unknown_account")
+            _audit_rejected_login(db, None, body.tenant_slug, "failure", "unknown_account", client)
         elif not password_ok:
-            _audit_rejected_login(db, user, body.tenant_slug, "failure", "wrong_password")
+            _audit_rejected_login(db, user, body.tenant_slug, "failure", "wrong_password", client)
         else:
-            _audit_rejected_login(db, user, body.tenant_slug, "denied", "account_disabled")
+            _audit_rejected_login(db, user, body.tenant_slug, "denied", "account_disabled", client)
         db.commit()
         raise UnauthenticatedError(code="INVALID_CREDENTIALS",
                                    message="Email or password is incorrect.")
@@ -151,7 +174,8 @@ def login(
         None,
     )
     if chosen is None:
-        _audit_rejected_login(db, user, body.tenant_slug, "denied", "not_a_member_of_tenant")
+        _audit_rejected_login(db, user, body.tenant_slug, "denied", "not_a_member_of_tenant",
+                              client)
         db.commit()
         raise UnauthenticatedError(code="INVALID_CREDENTIALS",
                                    message="Email or password is incorrect.")
@@ -225,8 +249,7 @@ def demo_login(
     """Public: sign in as a demo persona without a password (DEMO_MODE only)."""
     if not get_settings().demo_mode:
         raise NotFoundError()
-    client = request.client.host if request.client else "unknown"
-    demo_login_limiter.hit(client)
+    demo_login_limiter.hit(client_ip(request))
     account = _demo_account(db, body.persona)
     if account is None:
         raise NotFoundError(code="DEMO_PERSONA_NOT_FOUND",

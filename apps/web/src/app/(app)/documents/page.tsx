@@ -33,6 +33,10 @@ const LINK_BUTTON =
   "inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-3 py-1.5 text-sm font-medium " +
   "text-text transition-colors hover:bg-panel-2";
 
+/** The collections evaluation seeding creates (evaluation/seed.py). Exact, so that a collection
+ *  someone happens to call "Evaluation reports" is an ordinary one. */
+const EVALUATION_CORPUS = /^Evaluation (corpus|restricted) \(v\d+\)$/;
+
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 function resultSummary(items: UploadItem[]): string {
@@ -70,7 +74,7 @@ function UploadPanel({
   const preferred =
     writable.find((c) => c.id === filterCollection) ??
     writable.find((c) => c.name === MY_DOCUMENTS) ??
-    writable.find((c) => !c.name.startsWith("Evaluation")) ??
+    writable.find((c) => !EVALUATION_CORPUS.test(c.name)) ??
     writable[0];
   const collectionId =
     picked?.filter === filterCollection && writable.some((c) => c.id === picked.id)
@@ -206,7 +210,7 @@ function UploadPanel({
 
 function retryErrorText(e: unknown, filename: string): string {
   if (e instanceof ApiError && (e.status === 403 || e.status === 404)) {
-    return `Your role can't retry ${filename}. An Engineer or Admin can.`;
+    return `Couldn't retry ${filename}. It takes write access to its collection.`;
   }
   return `Couldn't retry ${filename}. ${errorText(e)}`;
 }
@@ -223,6 +227,12 @@ function DocumentsInner() {
   if (status) qs.set("status", status);
   if (params.get("q")) qs.set("q", params.get("q")!);
   qs.set("limit", "100");
+  // The cursors of the pages walked so far. Tied to the filters: a new filter starts at its newest.
+  const filterKey = qs.toString();
+  const [paging, setPaging] = useState<{ filter: string; trail: string[] }>({ filter: filterKey, trail: [] });
+  const trail = paging.filter === filterKey ? paging.trail : [];
+  if (trail.length) qs.set("cursor", trail[trail.length - 1]);
+  const listRef = useRef<HTMLDivElement>(null);
   const docs = useApi<Page<DocumentItem>>(`/documents?${qs}`, (d) =>
     d.items.some((x) => ACTIVE.has(x.status)) ? 2500 : 15000,
   );
@@ -237,6 +247,14 @@ function DocumentsInner() {
   const [pendingDelete, setPendingDelete] = useState<DocumentItem | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  /** The button pressed may be gone once the page loads, so the list takes focus and the reader
+   *  starts from the top of the new page. */
+  const goToPage = (next: string[]) => {
+    setPaging({ filter: filterKey, trail: next });
+    listRef.current?.focus({ preventScroll: true });
+    listRef.current?.scrollIntoView({ block: "start" });
+  };
 
   const setParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
@@ -267,7 +285,8 @@ function DocumentsInner() {
   const mayDelete = (doc: DocumentItem) => {
     if (!canDelete || ["deleting", "deleted"].includes(doc.status)) return false;
     const level = levelOf(doc);
-    return me.role === "org_admin" || doc.uploaded_by === me.user_id || level === undefined || level === "manage";
+    // The API wants write access before it looks at who uploaded the file.
+    return me.role === "org_admin" || level === undefined || level === "manage" || (level === "write" && doc.uploaded_by === me.user_id);
   };
   const mayDownload = (doc: DocumentItem) =>
     canDownload && !["deleting", "deleted"].includes(doc.status) && levelOf(doc) !== null;
@@ -285,8 +304,14 @@ function DocumentsInner() {
       announce(`Retrying ${doc.filename}.`);
       focusRow(doc.id);
     } catch (e) {
-      // 409: someone else already re-queued it, and the reload below shows that.
-      if (!(e instanceof ApiError && e.status === 409)) setNotice(retryErrorText(e, doc.filename));
+      if (e instanceof ApiError && e.status === 409) {
+        // Usually someone else already re-queued it, and the reload below shows that. A document
+        // that is still failed was refused for good, and the reason needs saying.
+        const now = await api<DocumentItem>(`/documents/${doc.id}`).catch(() => null);
+        if (now?.status === "failed") setNotice(retryErrorText(e, doc.filename));
+      } else {
+        setNotice(retryErrorText(e, doc.filename));
+      }
     } finally {
       setRetrying(null);
       docs.reload();
@@ -321,7 +346,7 @@ function DocumentsInner() {
       />
       {canUpload && collections.data && (
         <div className="mb-4">
-          <UploadPanel collections={collections.data} documents={docs.data?.items ?? []} filterCollection={collection} onUploaded={docs.reload} />
+          <UploadPanel collections={collections.data} documents={docs.data?.items ?? []} filterCollection={collection} onUploaded={() => { setPaging({ filter: filterKey, trail: [] }); docs.reload(); }} />
         </div>
       )}
       <div className="mb-3 flex flex-wrap items-end gap-3">
@@ -348,66 +373,80 @@ function DocumentsInner() {
         </form>
       </div>
       {notice && <p role="alert" className="mb-3 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">{notice}</p>}
-      {docs.loading && <Loading />}
-      {docs.error && <ErrorState error={docs.error} onRetry={docs.reload} />}
-      {docs.data && docs.data.items.length === 0 && <Empty title="No documents match">{canUpload ? "Upload files or adjust the filters." : "Adjust the filters."}</Empty>}
-      {docs.data && docs.data.items.length > 0 && (
-        <TableWrap>
-          <thead>
-            <tr><Th>File</Th><Th>Collection</Th><Th>Status</Th><Th>Pages / chunks</Th><Th>Size</Th><Th>Uploaded</Th><Th className="relative"><span className="sr-only">Actions</span></Th></tr>
-          </thead>
-          <tbody>
-            {docs.data.items.map((d) => (
-              <tr key={d.id} className="hover:bg-panel-2">
-                <Td>
-                  <Link id={`doc-${d.id}`} href={`/documents/${d.id}`} className="font-medium hover:underline">{d.filename}</Link>
-                  <div className="text-xs uppercase text-muted">{d.file_type}{d.extraction_method === "ocr" || d.extraction_method === "mixed" ? " · OCR" : ""}</div>
-                </Td>
-                <Td className="text-muted">{d.collection_name}</Td>
-                <Td>
-                  <StatusBadge status={d.status} />
-                  {d.latest_job && ["running", "retry_wait"].includes(d.latest_job.status) && (
-                    <div className="mt-0.5 text-xs text-muted">{d.latest_job.stage ?? d.latest_job.status} · attempt {d.latest_job.attempt_count}/{d.latest_job.max_attempts}</div>
-                  )}
-                  {d.status === "failed" && d.latest_job?.safe_error_message && <div className="mt-0.5 max-w-xs text-xs text-bad">{d.latest_job.safe_error_message}</div>}
-                  {d.warnings.length > 0 && <div className="mt-0.5 text-xs text-warn">{d.warnings.length} warning{d.warnings.length > 1 ? "s" : ""}</div>}
-                </Td>
-                <Td className="tabular-nums">{d.page_count ?? "—"} / {d.chunk_count ?? "—"}</Td>
-                <Td className="tabular-nums text-muted">{formatBytes(d.size_bytes)}</Td>
-                <Td className="text-muted">{formatTime(d.created_at)}</Td>
-                <Td className="whitespace-nowrap text-right">
-                  <span className="inline-flex gap-1.5">
-                    {mayDownload(d) && (
-                      <a href={`/api/v1/documents/${d.id}/download`} download aria-label={`Download ${d.filename}`} className={LINK_BUTTON}>Download</a>
+      <div ref={listRef} tabIndex={-1} className="scroll-mt-4 outline-none">
+        {docs.loading && <Loading />}
+        {docs.error && <ErrorState error={docs.error} onRetry={docs.reload} />}
+        {docs.data && docs.data.items.length === 0 && (
+          trail.length
+            ? <Empty title="No more documents">Go back to an earlier page.</Empty>
+            : <Empty title="No documents match">{canUpload ? "Upload files or adjust the filters." : "Adjust the filters."}</Empty>
+        )}
+        {docs.data && docs.data.items.length > 0 && (
+          <TableWrap>
+            <thead>
+              <tr><Th>File</Th><Th>Collection</Th><Th>Status</Th><Th>Pages / chunks</Th><Th>Size</Th><Th>Uploaded</Th><Th className="relative"><span className="sr-only">Actions</span></Th></tr>
+            </thead>
+            <tbody>
+              {docs.data.items.map((d) => (
+                <tr key={d.id} className="hover:bg-panel-2">
+                  <Td>
+                    <Link id={`doc-${d.id}`} href={`/documents/${d.id}`} className="font-medium hover:underline">{d.filename}</Link>
+                    <div className="text-xs uppercase text-muted">{d.file_type}{d.extraction_method === "ocr" || d.extraction_method === "mixed" ? " · OCR" : ""}</div>
+                  </Td>
+                  <Td className="text-muted">{d.collection_name}</Td>
+                  <Td>
+                    <StatusBadge status={d.status} />
+                    {d.latest_job && ["running", "retry_wait"].includes(d.latest_job.status) && (
+                      <div className="mt-0.5 text-xs text-muted">{d.latest_job.stage ?? d.latest_job.status} · attempt {d.latest_job.attempt_count}/{d.latest_job.max_attempts}</div>
                     )}
-                    {mayRetry(d) && (
-                      <Button
-                        aria-label={`Retry ${d.filename}`}
-                        aria-disabled={retrying === d.id || undefined}
-                        onClick={() => void retry(d)}
-                      >
-                        {retrying === d.id ? "Retrying…" : "Retry"}
-                      </Button>
-                    )}
-                    {mayDelete(d) && (
-                      <Button
-                        variant="danger"
-                        aria-label={`Delete ${d.filename}`}
-                        onClick={() => {
-                          setDeleteError(null);
-                          setPendingDelete(d);
-                        }}
-                      >
-                        Delete
-                      </Button>
-                    )}
-                  </span>
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </TableWrap>
-      )}
+                    {d.status === "failed" && d.latest_job?.safe_error_message && <div className="mt-0.5 max-w-xs text-xs text-bad">{d.latest_job.safe_error_message}</div>}
+                    {d.warnings.length > 0 && <div className="mt-0.5 text-xs text-warn">{d.warnings.length} warning{d.warnings.length > 1 ? "s" : ""}</div>}
+                  </Td>
+                  <Td className="tabular-nums">{d.page_count ?? "—"} / {d.chunk_count ?? "—"}</Td>
+                  <Td className="tabular-nums text-muted">{formatBytes(d.size_bytes)}</Td>
+                  <Td className="text-muted">{formatTime(d.created_at)}</Td>
+                  <Td className="whitespace-nowrap text-right">
+                    <span className="inline-flex gap-1.5">
+                      {mayDownload(d) && (
+                        <a href={`/api/v1/documents/${d.id}/download`} download aria-label={`Download ${d.filename}`} className={LINK_BUTTON}>Download</a>
+                      )}
+                      {mayRetry(d) && (
+                        <Button
+                          aria-label={`Retry ${d.filename}`}
+                          aria-disabled={retrying === d.id || undefined}
+                          onClick={() => void retry(d)}
+                        >
+                          {retrying === d.id ? "Retrying…" : "Retry"}
+                        </Button>
+                      )}
+                      {mayDelete(d) && (
+                        <Button
+                          variant="danger"
+                          aria-label={`Delete ${d.filename}`}
+                          onClick={() => {
+                            setDeleteError(null);
+                            setPendingDelete(d);
+                          }}
+                        >
+                          Delete
+                        </Button>
+                      )}
+                    </span>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </TableWrap>
+        )}
+        {(trail.length > 0 || docs.data?.next_cursor) && (
+          <nav aria-label="Document pages" className="mt-3 flex flex-wrap items-center justify-end gap-2">
+            <span className="mr-auto text-xs text-muted">Page {trail.length + 1}, newest first</span>
+            {trail.length > 1 && <Button onClick={() => goToPage([])}>First page</Button>}
+            {trail.length > 0 && <Button onClick={() => goToPage(trail.slice(0, -1))}>Previous page</Button>}
+            {docs.data?.next_cursor && <Button onClick={() => goToPage([...trail, docs.data!.next_cursor!])}>Next page</Button>}
+          </nav>
+        )}
+      </div>
       <Dialog open={pendingDelete !== null} title="Delete this document?" onClose={() => setPendingDelete(null)}>
         <p className="text-sm [overflow-wrap:anywhere]">
           <span className="font-medium">{pendingDelete?.filename}</span> will be deleted, along with its chunks and vectors.

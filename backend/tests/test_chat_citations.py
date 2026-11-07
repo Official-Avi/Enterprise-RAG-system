@@ -3,16 +3,20 @@ flagged, access is still re-checked on every read, and citations name the page t
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 
-from rackflow.db.models import Role
+from rackflow.api.routers.chat import ANSWER_WITHHELD_NOTE
+from rackflow.db.models import Citation, Role
+from rackflow.db.session import session_scope
 from tests.conftest import Actor, Factory
-from tests.fixtures import make_text_pdf
+from tests.fixtures import make_docx, make_text_pdf
 from tests.ingestion.test_pipeline import run_worker
-from tests.rag.test_rag import ask, indexed_collection
+from tests.rag.test_rag import QUESTION, ask, indexed_collection
 
 pytestmark = [pytest.mark.integration, pytest.mark.qdrant]
 
@@ -80,6 +84,93 @@ def test_deleted_document_stays_hidden_after_access_revoked(client: TestClient,
     assert client.patch(f"/api/v1/collections/{cid}", json={"visibility": "restricted"},
                         headers=admin.headers).status_code == 200
     assert saved_citations(client, eng, sid) == []
+
+
+def test_saved_answer_text_is_withheld_after_access_revoked(client: TestClient,
+                                                            factory: Factory) -> None:
+    """The extractive answer is verbatim document text, so hiding the citations alone leaked it."""
+    admin = factory.actor(Role.ORG_ADMIN)
+    eng = factory.actor(Role.ENGINEER)
+    cid = indexed_collection(client, admin)
+    sid, r = ask(client, eng, [cid])
+    assert "max_connections" in r.json()["answer"]
+    url = f"/api/v1/chat/sessions/{sid}"
+
+    before = client.get(url, headers=eng.headers).json()["messages"][1]
+    assert before["content"] == r.json()["answer"] and before["content_withheld"] is False
+
+    assert client.patch(f"/api/v1/collections/{cid}", json={"visibility": "restricted"},
+                        headers=admin.headers).status_code == 200
+    question, answer = client.get(url, headers=eng.headers).json()["messages"]
+    assert question["content"] == QUESTION and question["content_withheld"] is False
+    assert answer["content"] == ANSWER_WITHHELD_NOTE and answer["content_withheld"] is True
+    assert answer["evidence_status"] is None and answer["citations"] == []
+
+    # The saved answer comes back with the access.
+    assert client.patch(f"/api/v1/collections/{cid}", json={"visibility": "tenant"},
+                        headers=admin.headers).status_code == 200
+    restored = client.get(url, headers=eng.headers).json()["messages"][1]
+    assert restored["content"] == r.json()["answer"]
+    assert restored["evidence_status"] == "supported" and restored["content_withheld"] is False
+
+
+def test_answer_is_withheld_once_access_can_no_longer_be_checked(client: TestClient,
+                                                                 factory: Factory) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    cid = indexed_collection(client, eng)
+    sid, r = ask(client, eng, [cid])
+    assert r.json()["citations"]
+    assert client.delete(f"/api/v1/documents/{only_document(client, eng)}",
+                         headers=eng.headers).status_code == 202
+    run_worker()
+    assert client.delete(f"/api/v1/collections/{cid}", headers=eng.headers).status_code == 204
+    question, answer = client.get(f"/api/v1/chat/sessions/{sid}",
+                                  headers=eng.headers).json()["messages"]
+    assert question["content"] == QUESTION
+    assert answer["content"] == ANSWER_WITHHELD_NOTE and answer["content_withheld"] is True
+
+
+def test_answer_from_a_deleted_document_stays_while_access_can_be_checked(
+        client: TestClient, factory: Factory) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    cid = indexed_collection(client, eng)
+    sid, r = ask(client, eng, [cid])
+    assert client.delete(f"/api/v1/documents/{only_document(client, eng)}",
+                         headers=eng.headers).status_code == 202
+    run_worker()
+    answer = client.get(f"/api/v1/chat/sessions/{sid}", headers=eng.headers).json()["messages"][1]
+    assert answer["content"] == r.json()["answer"] and answer["content_withheld"] is False
+
+
+@pytest.mark.parametrize(("filename", "content"), [
+    ("notes.txt", b"Pump Notes\n\nThe Marlowe pump maximum inlet pressure is 9 bar.\n"),
+    ("notes.md", b"# Pump Notes\n\nThe Marlowe pump maximum inlet pressure is 9 bar.\n"),
+    ("notes.docx", None),
+])
+def test_formats_without_real_pages_cite_no_page(client: TestClient, factory: Factory,
+                                                 filename: str, content: bytes | None) -> None:
+    """They are extracted as one page, so every citation used to say page 1."""
+    eng = factory.actor(Role.ENGINEER)
+    data = content if content is not None else make_docx(
+        "Pump Notes", ["The Marlowe pump maximum inlet pressure is 9 bar."])
+    cid = indexed_collection(client, eng, files=[(filename, data)])
+    sid, r = ask(client, eng, [cid], "What is the Marlowe pump maximum inlet pressure?")
+    assert r.json()["citations"], r.text
+    assert all(c["page"] is None for c in r.json()["citations"])
+    assert all(c["page"] is None for c in saved_citations(client, eng, sid))
+
+
+def test_citation_saved_with_a_page_on_a_docx_is_returned_without_it(client: TestClient,
+                                                                     factory: Factory) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    data = make_docx("Pump Notes", ["The Marlowe pump maximum inlet pressure is 9 bar."])
+    cid = indexed_collection(client, eng, files=[("notes.docx", data)])
+    sid, r = ask(client, eng, [cid], "What is the Marlowe pump maximum inlet pressure?")
+    cited = [uuid.UUID(c["chunk_id"]) for c in r.json()["citations"]]
+    assert cited
+    with session_scope() as s:  # what answers saved before this fix hold
+        s.execute(update(Citation).where(Citation.chunk_id.in_(cited)).values(page=1))
+    assert all(c["page"] is None for c in saved_citations(client, eng, sid))
 
 
 def test_saved_citations_are_not_readable_by_other_users(client: TestClient,

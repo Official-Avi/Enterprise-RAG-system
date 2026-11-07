@@ -18,6 +18,9 @@ import type { AnswerMode, AnswerView, Citation, ModelRef } from "./types";
 
 const MARKER_RE = /\[(\d{1,3})\]/g;
 const UNMATCHED_RE = /[ \t]*\[(\d{1,3})\]/g;
+// The model sometimes writes Markdown. Only these two are rendered; never raw HTML.
+const BOLD_RE = /\*\*(?=\S)([^\n]*?\S)\*\*/g;
+const HEADING_RE = /^#{1,6}[ \t]+/gm;
 
 const bodyText = "text-[16px] leading-[26px] text-text";
 const smallButton =
@@ -26,6 +29,11 @@ const smallButton =
 
 /** Keyboard activation of a <button> fires a click with detail 0. */
 const viaKeyboard = (e: MouseEvent) => e.detail === 0;
+
+/** What a written answer reads as without its Markdown, for Copy. */
+function withoutMarkdown(text: string): string {
+  return text.replace(HEADING_RE, "").replace(BOLD_RE, "$1");
+}
 
 /** Remove [n] markers that don't match a citation (and the space before them). */
 function stripUnmatched(text: string, byMarker: Map<number, Citation>): string {
@@ -240,24 +248,42 @@ function TextWithChips({
   activeMarker: number | null;
   onCite: (citation: Citation, viaKeyboard: boolean) => void;
 }) {
+  // `offset` keeps chip keys unique across the bold and plain runs.
+  const withChips = (run: string, offset: number): ReactNode[] => {
+    const nodes: ReactNode[] = [];
+    let last = 0;
+    for (const m of run.matchAll(MARKER_RE)) {
+      const citation = byMarker.get(Number(m[1]));
+      if (!citation) continue;
+      if (m.index > last) nodes.push(run.slice(last, m.index));
+      nodes.push(
+        <CitationChip
+          key={`c${offset + m.index}`}
+          citation={citation}
+          number={numbers.get(citation.marker) ?? citation.marker}
+          active={citation.marker === activeMarker}
+          onActivate={onCite}
+        />,
+      );
+      last = m.index + m[0].length;
+    }
+    if (last < run.length) nodes.push(run.slice(last));
+    return nodes;
+  };
+
+  const shown = text.replace(HEADING_RE, "");
   const parts: ReactNode[] = [];
   let last = 0;
-  for (const m of text.matchAll(MARKER_RE)) {
-    const citation = byMarker.get(Number(m[1]));
-    if (!citation) continue;
-    if (m.index > last) parts.push(text.slice(last, m.index));
+  for (const m of shown.matchAll(BOLD_RE)) {
+    parts.push(...withChips(shown.slice(last, m.index), last));
     parts.push(
-      <CitationChip
-        key={`c${m.index}`}
-        citation={citation}
-        number={numbers.get(citation.marker) ?? citation.marker}
-        active={citation.marker === activeMarker}
-        onActivate={onCite}
-      />,
+      <strong key={`b${m.index}`} className="font-semibold">
+        {withChips(m[1], m.index + 2)}
+      </strong>,
     );
     last = m.index + m[0].length;
   }
-  if (last < text.length) parts.push(text.slice(last));
+  parts.push(...withChips(shown.slice(last), last));
   return <p className={cx(bodyText, "whitespace-pre-wrap wrap-anywhere")}>{parts}</p>;
 }
 
@@ -304,7 +330,8 @@ export function AnswerBlock({
 
   async function copy() {
     const ordered = [...citations].sort((a, b) => a.marker - b.marker);
-    const body = text.replace(MARKER_RE, (m, n: string) => {
+    // Extractive answers are exact quotes, so their characters stay as the document has them.
+    const body = (extractive ? text : withoutMarkdown(text)).replace(MARKER_RE, (m, n: string) => {
       const number = numbers.get(Number(n));
       return number ? `[${number}]` : m;
     });

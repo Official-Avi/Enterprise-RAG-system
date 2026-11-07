@@ -14,13 +14,17 @@ export function canSeeConsole(permissions: string[]): boolean {
 }
 
 /** A same-site relative path from ?next=, or null (no open redirects). Browsers read "/\host" and
- *  "/<tab>/host" as "//host", so the parsed origin is checked as well as the prefix. Browser only. */
+ *  "/<tab>/host" as "//host", so the parsed origin is checked as well as the prefix. Dot segments
+ *  normalise too: "/.//host" stays same-origin with the pathname "//host", which is a different
+ *  site once returned as a path, so the normalised result is what gets validated. Browser only. */
 export function safeNext(next: string | null): string | null {
   if (!next || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) return null;
   try {
-    const url = new URL(next, window.location.origin);
-    if (url.origin !== window.location.origin || url.pathname.startsWith("/login")) return null;
-    return url.pathname + url.search + url.hash;
+    const { origin } = window.location;
+    const url = new URL(next, origin);
+    if (url.origin !== origin || url.pathname.startsWith("//") || url.pathname.startsWith("/login")) return null;
+    const path = url.pathname + url.search + url.hash;
+    return new URL(path, origin).origin === origin ? path : null;
   } catch {
     return null;
   }
@@ -29,7 +33,8 @@ export function safeNext(next: string | null): string | null {
 /** Whether these permissions can use the workspace page at `path`; the API still enforces them. */
 export function canOpen(path: string, permissions: string[]): boolean {
   const has = (p: string) => permissions.includes(p);
-  const under = (prefix: string) => path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}?`);
+  const pathname = path.split(/[?#]/, 1)[0];
+  const under = (prefix: string) => pathname === prefix || pathname.startsWith(`${prefix}/`);
   if (under("/ask") || under("/chat")) return has("chat:use");
   if (under("/library")) return has("collection:read") && (has("chat:use") || has("document:upload"));
   return true;

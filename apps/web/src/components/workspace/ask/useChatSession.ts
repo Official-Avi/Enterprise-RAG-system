@@ -26,18 +26,21 @@ import {
   MAX_MESSAGE_CHARS,
   readScope,
   saveDraft,
-  TITLE_CHARS,
+  titleFrom,
   turnsFromMessages,
   UNTITLED,
   withoutNote,
   writeScope,
   type AskRoute,
+  type SavedTurn,
 } from "./helpers";
 import type { AskData } from "./useAskData";
 
 const NOTHING_READY = "Add a document first, then ask anything about it.";
 const TOO_LONG = "Questions can be up to 4,000 characters. Shorten it and send again.";
-const STOPPED = "Stopped. Your question is back in the question box.";
+// The API can't be told to stop, so it may still finish and save the answer. Say so.
+const STOPPED = "Stopped waiting, and your question is back in the question box. The answer may still be saved to this chat.";
+const CHAT_GONE = "This chat isn't available any more. Your question will be in the box when you start a new chat.";
 const RATE_WAIT = "You're asking faster than RackFlow can answer. Wait for the countdown, then try again.";
 const STILL_BUSY = "Wait for the current question to finish, then try again.";
 
@@ -53,7 +56,7 @@ interface TurnRequest {
   note?: string;
 }
 
-export interface AskTurn extends Turn {
+export interface AskTurn extends SavedTurn {
   req?: TurnRequest;
   /** Rate limited: when the card's countdown ends and the question may go out again. */
   retryAt?: number;
@@ -79,6 +82,14 @@ const isCountingDown = (t: AskTurn) => t.retryAt !== undefined && t.retryAt > Da
 const unknownError = () => new AskError(500, "UNKNOWN", "Something went wrong.", null);
 const shownName = (name: string) => (name === LOADING_FILENAME ? "your file" : name);
 
+/** Everything unsent, for the one saved draft: held and signed-out questions, then what is typed. */
+function unsentText(turns: AskTurn[], draft: string): string {
+  const questions = turns
+    .filter((t) => t.status === "held" || t.error?.status === 401)
+    .map((t) => t.req?.text ?? t.question);
+  return [...new Set([...questions, draft.trim()].filter(Boolean))].join("\n\n");
+}
+
 function isFailedRow(r: TrackedUpload | undefined): r is TrackedUpload {
   return r !== undefined && (r.phase === "failed" || r.phase === "rejected");
 }
@@ -94,7 +105,8 @@ function isReadingDoc(d: DocumentItem | undefined): d is DocumentItem {
 /** One chat: lazy session, turns (held → waiting → answered | error), retries, Stop, scope and
  *  the draft (§5.3, §5.5, §5.6, §5.8). Never opens a chat the URL didn't name (§5.9). */
 export function useChatSession(options: Options) {
-  const { route, uploads, data, textareaRef } = options;
+  const { route, uploads, data, textareaRef, workspace } = options;
+  const owner = workspace.me.user_id;
   // The route the view opened on. Adopting /ask/c/{id} after the first answer reloads nothing.
   const [initial] = useState(route);
   const savedId = initial.kind === "saved" ? initial.id : null;
@@ -243,6 +255,23 @@ export function useChatSession(options: Options) {
     window.history.replaceState(null, "", path);
   };
 
+  /** The open chat was deleted elsewhere: every further send would fail the same way. The page's
+   *  not-found state offers a new chat, and the question goes there with the user. */
+  const chatGone = (question: string) => {
+    const L = live.current;
+    saveDraft([...new Set([question, L.draft.trim()].filter(Boolean))].join("\n\n"), L.workspace.me.user_id);
+    sessionRef.current = null;
+    unconfirmedTitle.current = null;
+    setSessionId(null);
+    setSessionTitle(null);
+    setTurns([]);
+    setDraft("");
+    setNotice(null);
+    setLoad("not_found");
+    L.workspace.announce(CHAT_GONE);
+    L.workspace.sessions.reload();
+  };
+
   const dispatch = async (turnId: string, req: TurnRequest) => {
     if (controllers.current.has(turnId)) return;
     const controller = new AbortController();
@@ -257,7 +286,7 @@ export function useChatSession(options: Options) {
       let sid = sessionRef.current;
       if (!sid) {
         // §5.8: the session is created on first send, never on page load.
-        const session = await createSession(ids, req.text.slice(0, TITLE_CHARS), controller.signal);
+        const session = await createSession(ids, titleFrom(req.text), controller.signal);
         sid = session.id;
         sessionRef.current = sid;
         unconfirmedTitle.current = session.title;
@@ -281,7 +310,7 @@ export function useChatSession(options: Options) {
       // A stopped or failed question named the chat, then a different one got the first answer.
       const named = unconfirmedTitle.current;
       unconfirmedTitle.current = null;
-      const title = req.text.slice(0, TITLE_CHARS);
+      const title = titleFrom(req.text);
       if (named !== null && named !== title) {
         setSessionTitle(title);
         void renameSession(sid, title)
@@ -297,9 +326,13 @@ export function useChatSession(options: Options) {
         return;
       }
       const error = e instanceof ApiError ? e : unknownError();
+      if (error.code === "SESSION_NOT_FOUND") {
+        chatGone(req.text);
+        return;
+      }
       // §5.6: "Your session ended." The question survives the sign-in round trip.
       if (error.status === 401) {
-        saveDraft(req.text);
+        saveDraft(req.text, live.current.workspace.me.user_id);
         signedOut = true;
       }
       if (error.code === "COLLECTION_NOT_FOUND") live.current.data.reloadCollections();
@@ -322,7 +355,7 @@ export function useChatSession(options: Options) {
     }
   };
 
-  /** Try again: the same text and scope (history turns use the current scope). */
+  /** The card's Try again: the same text and scope (history turns use the current scope). */
   const retry = (turnId: string) => {
     const L = live.current;
     if (L.turns.some(isActive) || controllers.current.size > 0) {
@@ -366,19 +399,32 @@ export function useChatSession(options: Options) {
       say(NOTHING_READY, text);
       return;
     }
-    // The question put back after an error is still that question, not a new one: one bubble, one
-    // card (§5.6). While its countdown runs it waits, whichever way it is sent.
+    // While a failed question's countdown runs it waits, whichever way it is sent.
     const kept = L.turns.findLast((t) => t.status === "error" && (t.req?.text ?? t.question) === text);
-    if (kept) {
-      retry(kept.id);
+    if (kept && isCountingDown(kept)) {
+      say(RATE_WAIT, L.draft);
       return;
     }
-    const req: TurnRequest = { text, scope: opts.scope ?? L.scope, waitKeys, waitDocs };
     const held = waitKeys.length > 0 || waitDocs.length > 0;
-    const turn: AskTurn = { id: localId("t"), question: text, status: held ? "held" : "waiting", startedAt: Date.now(), req };
+    // Unlike the card's Try again, Send means what the composer shows now: its scope and its files.
+    const req: TurnRequest = {
+      text,
+      scope: opts.scope ?? L.scope,
+      waitKeys,
+      waitDocs,
+      note: held ? undefined : kept?.req?.note,
+    };
+    const status = held ? "held" : "waiting";
+    // The question put back after an error is still that question: one bubble, one card (§5.6). Only
+    // as the newest turn, though: Thread follows the last turn, so an answer up-thread would go unseen.
+    const reused = kept && kept.id === L.turns.at(-1)?.id ? kept : null;
+    const turn: AskTurn = reused
+      ? { ...reused, status, startedAt: Date.now(), error: undefined, retryAt: undefined, req }
+      : { id: localId("t"), question: text, status, startedAt: Date.now(), req };
+    const withTurn = (ts: AskTurn[]) => (reused ? ts.map((t) => (t.id === turn.id ? turn : t)) : [...ts, turn]);
     // Visible to a second send in the same tick, before the layout effect refreshes `live`.
-    live.current = { ...L, turns: [...L.turns, turn] };
-    setTurns((ts) => [...ts, turn]);
+    live.current = { ...L, turns: withTurn(L.turns) };
+    setTurns(withTurn);
     // A suggestion chip sends something other than the draft: what the user typed stays.
     setDraft((d) => (d.trim() === text ? "" : d));
     if (!held) void dispatch(turn.id, req);
@@ -425,8 +471,10 @@ export function useChatSession(options: Options) {
   const stop = (turnId: string) => {
     controllers.current.get(turnId)?.abort();
     controllers.current.delete(turnId);
+    const { draft: typed, turns: current } = live.current;
+    const question = current.find((t) => t.id === turnId)?.question ?? "";
     dropTurn(turnId);
-    live.current.workspace.announce(STOPPED);
+    say(STOPPED, typed.trim() ? typed : question);
   };
 
   /** Not found → Rephrase: the question goes back into the composer, selected (§5.6). */
@@ -453,11 +501,15 @@ export function useChatSession(options: Options) {
     if (text) send(text, { scope: "all" });
   };
 
-  // The polls found the session gone: keep what is typed, whichever way the user leaves (§5.6).
-  const sessionEnded = data.sessionError !== undefined;
+  // The session or this chat is gone: keep what is unsent, whichever way the user leaves (§5.6).
+  // A question held for a file is only in `turns`, since sending cleared the draft.
+  const leaving =
+    data.sessionError !== undefined || load === "not_found" || turns.some((t) => t.error?.status === 401);
   useEffect(() => {
-    if (sessionEnded && draft.trim()) saveDraft(draft);
-  }, [sessionEnded, draft]);
+    if (!leaving) return;
+    const unsent = unsentText(turns, draft);
+    if (unsent) saveDraft(unsent, owner);
+  }, [leaving, turns, draft, owner]);
 
   // Held turns show the files they wait for by their current names (a ?doc= row starts as "Loading…").
   const viewTurns = useMemo<AskTurn[]>(() => {

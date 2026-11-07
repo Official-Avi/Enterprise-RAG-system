@@ -45,6 +45,9 @@ export function useDocStatus(
   // Survives id-set changes so settled documents aren't fetched again one by one.
   const cache = useRef(new Map<string, DocumentItem>());
   const goneIds = useRef(new Set<string>());
+  // A forced check (after a retry) that got no fresh data. The cache may say "failed" for a document
+  // that is being read again, so "everything settled" can't be trusted until one succeeds.
+  const forceOwed = useRef(false);
   const key = useMemo(() => [...new Set(ids)].sort().join(","), [ids]);
   const emit = useEffectEvent((update: DocStatusUpdate) => options.onUpdate?.(update));
 
@@ -58,6 +61,7 @@ export function useDocStatus(
     let forceAfter = false; // a refresh arrived mid-request; its answer may predate the change
     let step = 0;
     let lastTick = 0;
+    let signedOut = false; // polling can't help until a focus or refresh event says to look again
 
     const settled = (id: string) => {
       if (goneIds.current.has(id)) return true;
@@ -82,25 +86,42 @@ export function useDocStatus(
       emit({ docs: current, gone });
     };
 
-    const fetchOne = async (id: string) => {
+    const noteFailure = (e: unknown) => {
+      if (e instanceof ApiError && e.status === 401) signedOut = true;
+    };
+
+    // noAuthRedirect on both reads: a background poll must not take the user to /login. The page
+    // shows "Your session ended." and saves what is typed first (§5.6).
+    /** True when the API gave a definite answer for this id. */
+    const fetchOne = async (id: string): Promise<boolean> => {
       try {
-        cache.current.set(id, await api<DocumentItem>(`/documents/${encodeURIComponent(id)}`));
+        cache.current.set(
+          id,
+          await api<DocumentItem>(`/documents/${encodeURIComponent(id)}`, { noAuthRedirect: true }),
+        );
         goneIds.current.delete(id);
+        return true;
       } catch (e) {
         if (e instanceof ApiError && GONE_STATUSES.has(e.status)) {
           cache.current.delete(id);
           goneIds.current.add(id);
+          return true;
         }
+        noteFailure(e);
+        return false;
       }
     };
 
-    const tick = async (force: boolean) => {
+    const tick = async (requested: boolean) => {
       timer = undefined;
       if (cancelled || document.hidden) return; // paused; visibility resumes it
+      const force = requested || forceOwed.current;
       const targets = force ? watched : watched.filter((id) => !settled(id));
       if (!targets.length) return;
       inFlight = true;
       lastTick = Date.now();
+      signedOut = false;
+      let fresh = true;
       try {
         const found = new Set<string>();
         let batchOk = true;
@@ -108,6 +129,7 @@ export function useDocStatus(
           try {
             const page = await api<Page<DocumentItem>>(
               `/documents?collection_id=${encodeURIComponent(collectionId)}&limit=200`,
+              { noAuthRedirect: true },
             );
             for (const doc of page.items) {
               if (!watchedSet.has(doc.id)) continue;
@@ -115,24 +137,26 @@ export function useDocStatus(
               goneIds.current.delete(doc.id);
               found.add(doc.id);
             }
-          } catch {
+          } catch (e) {
+            noteFailure(e);
             batchOk = false;
           }
         }
         // Ids outside the batch (another collection, or older than the newest 200) go one by one.
         // After a failed batch, wait for the next tick instead of fanning out.
-        if (batchOk) await Promise.all(targets.filter((id) => !found.has(id)).map(fetchOne));
+        fresh = batchOk && (await Promise.all(targets.filter((id) => !found.has(id)).map(fetchOne))).every(Boolean);
       } finally {
         inFlight = false;
       }
       if (cancelled) return;
+      forceOwed.current = force && !fresh;
       publish();
       if (forceAfter) {
         forceAfter = false;
         schedule(0, true);
         return;
       }
-      if (watched.every(settled)) return;
+      if (signedOut || (!forceOwed.current && watched.every(settled))) return;
       schedule(POLL_BACKOFF_MS[Math.min(step, POLL_BACKOFF_MS.length - 1)]);
       step += 1;
     };
@@ -145,7 +169,7 @@ export function useDocStatus(
         forceAfter ||= force;
         return;
       }
-      if (!force && watched.every(settled)) return;
+      if (!force && !forceOwed.current && watched.every(settled)) return;
       // visibilitychange and focus usually fire together; one request is enough.
       if (!force && Date.now() - lastTick < 500) {
         schedule(POLL_BACKOFF_MS[0]);
@@ -168,7 +192,9 @@ export function useDocStatus(
     window.addEventListener("focus", onFocus);
     window.addEventListener(REFRESH_EVENT, onRefresh);
 
-    if (watched.every(settled)) {
+    if (forceOwed.current) {
+      schedule(0);
+    } else if (watched.every(settled)) {
       // Nothing to fetch, but rows added for already-known ids still need their data.
       timer = setTimeout(publish, 0);
     } else if (watched.some((id) => !cache.current.has(id))) {

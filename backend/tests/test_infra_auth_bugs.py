@@ -4,20 +4,41 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from sqlalchemy import select
+from starlette.requests import Request
 
 from rackflow.cli import ensure_tenant
 from rackflow.core import ratelimit
-from rackflow.db.models import NodeResource, Rack, Role, StateSource, User, Workload
+from rackflow.core.config import Settings, get_settings
+from rackflow.db.models import (
+    AuditEvent,
+    JobAttempt,
+    JobStatus,
+    JobType,
+    NodeResource,
+    ProcessingJob,
+    Rack,
+    Role,
+    StateSource,
+    Tenant,
+    User,
+    WorkerHeartbeat,
+    Workload,
+)
 from rackflow.db.session import session_scope
 from tests.conftest import TEST_PASSWORD, Actor, Factory
 
 pytestmark = pytest.mark.integration
 INFRA = "/api/v1/infrastructure"
 WRONG_PASSWORD = "wrong-horse-zebra-paperclip"
+PROXY = "172.30.0.10"
 
 
 def _audit(client: TestClient, reader: Actor, query: str) -> list[dict[str, Any]]:
@@ -294,6 +315,275 @@ def test_login_failure_filters_by_outcome_success_stays_separate(
     assert {e["outcome"] for e in _audit(client, auditor, "action=auth.login")} == {
         "success", "failure"}
     assert all(e["outcome"] == "success" for e in _audit(client, auditor, "outcome=success"))
+
+
+def _rejected_rows(user_id: uuid.UUID) -> list[tuple[uuid.UUID | None, dict[str, Any]]]:
+    with session_scope() as s:
+        rows = s.scalars(select(AuditEvent).where(
+            AuditEvent.resource_id == str(user_id), AuditEvent.action == "auth.login",
+            AuditEvent.outcome != "success").order_by(AuditEvent.created_at)).all()
+        return [(r.tenant_id, r.safe_metadata) for r in rows]
+
+
+def test_known_account_with_no_active_tenant_keeps_its_reason_and_stays_out_of_other_logs(
+    client: TestClient, factory: Factory,
+) -> None:
+    other = factory.actor(Role.AUDITOR)
+    eng = factory.actor(Role.ENGINEER, tenant="globex")
+    with session_scope() as s:
+        tenant = s.get(Tenant, eng.tenant_id)
+        assert tenant is not None
+        tenant.status = "suspended"
+
+    assert _login(client, eng.email, WRONG_PASSWORD) == 401
+    assert _login(client, eng.email, WRONG_PASSWORD, slug="acme") == 401
+    assert _login(client, eng.email, TEST_PASSWORD) == 401
+    assert _rejected_rows(eng.user_id) == [
+        (None, {"reason": "wrong_password", "email": eng.email}),
+        (None, {"reason": "wrong_password", "email": eng.email}),
+        (None, {"reason": "not_a_member_of_tenant", "email": eng.email}),
+    ]
+    assert _audit(client, other, "action=auth.login&outcome=failure") == []
+    assert _audit(client, other, "action=auth.login&outcome=denied") == []
+
+
+# ------------------------------------------------------------- anonymous audit-log flooding
+
+
+def _new_email() -> str:
+    return f"{uuid.uuid4().hex}@elsewhere.example.com"
+
+
+def test_new_addresses_do_not_escape_the_per_client_sign_in_limit(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ratelimit.login_client_limiter, "limit", 3)
+    verified: list[str] = []
+
+    def verify(password: str, _hash: str | None) -> bool:
+        verified.append(password)
+        return False
+
+    monkeypatch.setattr("rackflow.api.routers.auth.verify_password", verify)
+    assert [_login(client, _new_email(), WRONG_PASSWORD) for _ in range(5)] == [
+        401, 401, 401, 429, 429]
+    assert len(verified) == 3  # refused before the costly password check
+
+
+def test_unknown_account_rows_are_capped_per_client_without_secrets(
+    client: TestClient, factory: Factory,
+) -> None:
+    auditor = factory.actor(Role.AUDITOR)
+    cap = ratelimit.anonymous_audit_client_limiter.limit
+    emails = [_new_email() for _ in range(cap + 4)]
+    for email in emails:
+        assert _login(client, email, WRONG_PASSWORD, slug="acme") == 401  # the same answer
+    events = _audit(client, auditor, "outcome=failure")
+    assert len(events) == cap
+    stored = json.dumps(events)
+    assert WRONG_PASSWORD not in stored and not any(e in stored for e in emails)
+    assert all(e["metadata"] == {"reason": "unknown_account"} for e in events)
+
+
+def test_unknown_account_rows_are_capped_per_tenant_across_clients(
+    client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auditor = factory.actor(Role.AUDITOR)
+    other = factory.actor(Role.AUDITOR, tenant="globex")
+    monkeypatch.setattr(ratelimit.anonymous_audit_tenant_limiter, "limit", 3)
+    monkeypatch.setattr(get_settings(), "trusted_proxy_ips", PROXY)
+    proxied = TestClient(client.app, client=(PROXY, 50000))
+    for i in range(6):
+        resp = proxied.post("/api/v1/auth/login", headers={"X-Forwarded-For": f"203.0.113.{i}"},
+                            json={"email": _new_email(), "password": "x", "tenant_slug": "acme"})
+        assert resp.status_code == 401
+    assert len(_audit(client, auditor, "outcome=failure")) == 3
+    # One tenant's flood leaves another's allowance alone.
+    assert _login(client, _new_email(), WRONG_PASSWORD, slug="globex") == 401
+    assert len(_audit(client, other, "outcome=failure")) == 1
+
+
+def test_rows_for_an_unknown_tenant_are_capped_too(client: TestClient) -> None:
+    def rows() -> int:
+        with session_scope() as s:
+            return len(s.scalars(select(AuditEvent).where(
+                AuditEvent.tenant_id.is_(None), AuditEvent.action == "auth.login")).all())
+
+    before = rows()
+    for _ in range(ratelimit.anonymous_audit_client_limiter.limit + 3):
+        assert _login(client, _new_email(), WRONG_PASSWORD, slug="no-such-tenant") == 401
+    assert rows() - before == ratelimit.anonymous_audit_client_limiter.limit
+
+
+def test_rejected_rows_for_one_account_are_capped_across_clients(
+    client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    monkeypatch.setattr(ratelimit.rejected_login_audit_limiter, "limit", 2)
+    monkeypatch.setattr(get_settings(), "trusted_proxy_ips", PROXY)
+    proxied = TestClient(client.app, client=(PROXY, 50000))
+    for i in range(4):
+        assert proxied.post("/api/v1/auth/login", headers={"X-Forwarded-For": f"203.0.113.{i}"},
+                            json={"email": eng.email, "password": "x"}).status_code == 401
+    assert len(_rejected_rows(eng.user_id)) == 2
+
+
+def test_limiter_forgets_idle_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [100.0]
+    monkeypatch.setattr(ratelimit.time, "monotonic", lambda: now[0])
+    limiter = ratelimit.SlidingWindowLimiter(limit=1, window_seconds=60)
+    for i in range(50):
+        limiter.hit(f"key-{i}")
+    assert len(limiter._hits) == 50
+    now[0] += 61
+    limiter.hit("later")
+    assert list(limiter._hits) == ["later"]
+    # A key still in its window is kept, and still limited.
+    now[0] += 1
+    assert limiter.allow("later") is False
+
+
+# --------------------------------------------------------------- client address behind a proxy
+
+
+def _request(peer: str, *forwarded: str) -> Request:
+    headers = [(b"x-forwarded-for", value.encode()) for value in forwarded]
+    return Request({"type": "http", "client": (peer, 1), "headers": headers})
+
+
+def test_forwarded_header_is_ignored_unless_the_peer_is_a_trusted_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRUSTED_PROXY_IPS", raising=False)
+    assert Settings(_env_file=None).trusted_proxy_ips == ""  # off by default
+    monkeypatch.setattr(get_settings(), "trusted_proxy_ips", "")
+    assert ratelimit.client_ip(_request(PROXY, "203.0.113.9")) == PROXY
+    monkeypatch.setattr(get_settings(), "trusted_proxy_ips", PROXY)
+    assert ratelimit.client_ip(_request("198.51.100.7", "203.0.113.9")) == "198.51.100.7"
+    assert ratelimit.client_ip(_request("testclient", "203.0.113.9")) == "testclient"
+
+
+@pytest.mark.parametrize(("forwarded", "expected"), [
+    (["203.0.113.9"], "203.0.113.9"),
+    # Everything left of what the proxy appended is the client's own claim.
+    (["6.6.6.6, 203.0.113.9"], "203.0.113.9"),
+    (["6.6.6.6", "203.0.113.9"], "203.0.113.9"),
+    (["6.6.6.6, 203.0.113.9, 172.30.0.11"], "203.0.113.9"),  # past a second trusted hop
+    (["::ffff:203.0.113.9"], "203.0.113.9"),
+    # Nothing usable: the shared bucket, never an address the client made up.
+    ([], PROXY),
+    ([""], PROXY),
+    (["not-an-ip"], PROXY),
+    (["6.6.6.6, not-an-ip"], PROXY),
+    (["172.30.0.11"], PROXY),
+])
+def test_trusted_proxy_client_is_the_rightmost_untrusted_hop(
+    monkeypatch: pytest.MonkeyPatch, forwarded: list[str], expected: str,
+) -> None:
+    monkeypatch.setattr(get_settings(), "trusted_proxy_ips", f"{PROXY}, 172.30.0.11/32")
+    assert ratelimit.client_ip(_request(PROXY, *forwarded)) == expected
+
+
+def test_clients_behind_a_trusted_proxy_cannot_lock_each_other_out(
+    client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    eng = factory.actor(Role.ENGINEER)
+    proxied = TestClient(client.app, client=(PROXY, 50000))
+    monkeypatch.setattr(get_settings(), "trusted_proxy_ips", "")
+
+    def attempt(ip: str, password: str) -> int:
+        return proxied.post("/api/v1/auth/login", headers={"X-Forwarded-For": ip}, json={
+            "email": eng.email, "password": password, "mode": "token"}).status_code
+
+    # Off: the header means nothing, so a forged address does not get a fresh allowance.
+    statuses = [attempt(f"203.0.113.{i}", WRONG_PASSWORD)
+                for i in range(ratelimit.login_limiter.limit + 1)]
+    assert statuses[-1] == 429 and statuses[-2] == 401
+    ratelimit.reset_all()
+
+    # On: the attacker's bad passwords use up the attacker's allowance, not the victim's.
+    monkeypatch.setattr(get_settings(), "trusted_proxy_ips", PROXY)
+    statuses = [attempt("203.0.113.1", WRONG_PASSWORD)
+                for _ in range(ratelimit.login_limiter.limit + 1)]
+    assert statuses[-1] == 429
+    assert attempt("203.0.113.2", TEST_PASSWORD) == 200
+
+
+@pytest.mark.parametrize("value", ["*", "web", "0.0.0.0/0", "::/0", "10.0.0.1, nonsense"])
+def test_unusable_trusted_proxy_setting_fails_at_startup(value: str) -> None:
+    with pytest.raises(ValidationError, match="TRUSTED_PROXY_IPS"):
+        Settings(trusted_proxy_ips=value, _env_file=None)
+
+
+def test_compose_passes_settings_through_and_trusts_nobody_by_default() -> None:
+    text = (Path(__file__).parents[2] / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "DEMO_MODE: ${DEMO_MODE:-false}" in text
+    assert "TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}" in text
+    assert "FORWARDED_ALLOW_IPS" not in text
+    assert f"ipv4_address: {PROXY}" in text  # the address its notes tell the operator to trust
+
+
+# ---------------------------------------------------------------------------- startup checks
+
+
+@pytest.mark.parametrize("name", ["", "   "])
+def test_openai_compatible_needs_a_model_name(name: str) -> None:
+    with pytest.raises(ValidationError, match="MODEL_NAME"):
+        Settings(model_provider="openai_compatible", model_base_url="http://m/v1", model_name=name,
+                 _env_file=None)
+    assert Settings(model_provider="openai_compatible", model_base_url="http://m/v1",
+                    model_name="m", _env_file=None).model_name == "m"
+
+
+# ------------------------------------------------------------------- workers across tenants
+
+
+def _job(tenant_id: uuid.UUID, status: JobStatus) -> ProcessingJob:
+    now = datetime.now(UTC)
+    return ProcessingJob(tenant_id=tenant_id, job_type=JobType.INGEST_DOCUMENT, status=status,
+                         idempotency_key=uuid.uuid4().hex, payload={}, queued_at=now,
+                         available_at=now)
+
+
+def _attempts(tenant_id: uuid.UUID, worker_id: str, *statuses: str) -> None:
+    now = datetime.now(UTC)
+    with session_scope() as s:
+        for status in statuses:
+            job = _job(tenant_id, JobStatus.SUCCEEDED)
+            s.add(job)
+            s.flush()
+            s.add(JobAttempt(tenant_id=tenant_id, job_id=job.id, attempt_number=1,
+                             worker_id=worker_id, status=status, started_at=now, finished_at=now))
+
+
+def test_workers_report_only_the_callers_tenant(client: TestClient, factory: Factory) -> None:
+    acme = factory.actor(Role.OPERATOR)
+    globex = factory.actor(Role.OPERATOR, tenant="globex")
+    _attempts(acme.tenant_id, "w-shared", "succeeded", "succeeded", "failed", "running")
+    _attempts(globex.tenant_id, "w-shared", "succeeded")
+    now = datetime.now(UTC)
+    with session_scope() as s:
+        job = _job(acme.tenant_id, JobStatus.RUNNING)
+        s.add(job)
+        s.flush()
+        s.add(WorkerHeartbeat(worker_id="w-shared", hostname="h", pid=1, status="busy",
+                              current_job_id=job.id, jobs_succeeded=99, jobs_failed=99,
+                              started_at=now, last_heartbeat_at=now, version="t", capabilities={}))
+        job_id = str(job.id)
+
+    def worker(actor: Actor) -> dict[str, Any]:
+        items = client.get("/api/v1/operations/workers", headers=actor.headers).json()["items"]
+        return next(w for w in items if w["worker_id"] == "w-shared")
+
+    mine = worker(acme)
+    assert (mine["jobs_succeeded"], mine["jobs_failed"]) == (2, 1)
+    assert mine["status"] == "busy" and mine["current_job_id"] == job_id
+
+    # Another tenant's job does not show, not even as the worker being busy.
+    theirs = worker(globex)
+    assert (theirs["jobs_succeeded"], theirs["jobs_failed"]) == (1, 0)
+    assert theirs["status"] == "idle" and theirs["current_job_id"] is None
+    assert theirs["health"] == "healthy"
 
 
 # ------------------------------------------------------------------------- rate limit and CORS
