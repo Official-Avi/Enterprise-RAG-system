@@ -6,10 +6,10 @@ import time
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import exists, select, text
 
 from rackflow import __version__
-from rackflow.db.models import Document, DocumentStatus
+from rackflow.db.models import Chunk, Document, DocumentStatus
 from rackflow.db.session import get_sessionmaker
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -17,52 +17,49 @@ log = logging.getLogger(__name__)
 
 EMBED_PROBE_TIMEOUT_SECONDS = 5.0
 EMBED_PROBE_SUCCESS_TTL_SECONDS = 60.0
+# Bounds the readiness query so a locked or overloaded database fails the probe quickly.
+DB_PROBE_STATEMENT_TIMEOUT_MS = 2000
 
 
 @router.get("/live")
-def live() -> dict[str, str]:
+async def live() -> dict[str, str]:
+    # Liveness touches no dependency and runs on the event loop, not the threadpool: a slow
+    # database, Qdrant or embedding load (or readiness probes waiting on them) can never make
+    # the orchestrator restart a healthy process.
     return {"status": "ok", "version": __version__}
 
 
-def _check_database() -> bool:
+# Is there at least one chunk of a live, indexed document? Those chunks must have vectors.
+# EXISTS stops at the first row (chunks.document_id is indexed), and returns a single boolean:
+# no tenant, document or chunk data leaves this query.
+_LIVE_INDEXED_CHUNKS = select(exists().where(
+    Chunk.document_id == Document.id,
+    Document.status == DocumentStatus.INDEXED,
+    Document.deleted_at.is_(None),
+))
+
+
+def _live_indexed_chunks_exist() -> bool | None:
+    """One bounded query. None when the database cannot answer."""
     try:
-        with get_sessionmaker()() as db:
-            db.execute(text("SELECT 1"))
-        return True
+        with get_sessionmaker()() as db, db.begin():
+            db.execute(text(f"SET LOCAL statement_timeout = {DB_PROBE_STATEMENT_TIMEOUT_MS}"))
+            return bool(db.scalar(_LIVE_INDEXED_CHUNKS))
     except Exception:  # noqa: BLE001 — readiness reports, never raises
         log.warning("readiness_database_unavailable")
-        return False
+        return None
 
 
-def _check_vector_store() -> bool:
+def _vector_point_count() -> tuple[bool, int | None]:
+    """(reachable, points): one count request with a short timeout. points is None when the
+    configured collection does not exist."""
     try:
         from rackflow.providers.vectorstore import get_vector_store
 
-        return bool(get_vector_store().health())
-    except Exception:  # noqa: BLE001
+        return True, get_vector_store().point_count()
+    except Exception:  # noqa: BLE001 — includes timeouts and connection errors
         log.warning("readiness_vector_store_unavailable")
-        return False
-
-
-def _check_vector_collection() -> bool:
-    """The configured collection exists, or nothing is indexed yet. The worker creates the
-    collection on the first index, so a fresh deployment is ready; a missing collection while
-    PostgreSQL lists indexed documents means the vectors were lost (rebuild with
-    `rackflow-admin reindex`)."""
-    try:
-        from rackflow.providers.vectorstore import get_vector_store
-
-        if get_vector_store().collection_exists():
-            return True
-        with get_sessionmaker()() as db:
-            indexed = db.scalar(select(Document.id).where(
-                Document.status == DocumentStatus.INDEXED).limit(1))
-        if indexed is not None:
-            log.warning("readiness_vector_collection_missing")
-        return indexed is None
-    except Exception:  # noqa: BLE001
-        log.warning("readiness_vector_collection_unavailable")
-        return False
+        return False, None
 
 
 class EmbeddingProbe:
@@ -118,12 +115,28 @@ embedding_probe = EmbeddingProbe()
 
 @router.get("/ready")
 def ready() -> JSONResponse:
-    database = _check_database()
-    vector_store = _check_vector_store()
+    """Booleans only: the response never carries counts, names or tenant data.
+
+    vector_collection: the configured collection exists, or nothing is indexed yet (the worker
+    creates it on the first index, so a fresh deployment is ready).
+    vector_collection_consistent: when PostgreSQL holds chunks of live indexed documents, the
+    collection exists and is not empty. A collection lost and recreated empty (ensure_collection
+    does that on the next upload or reindex) would otherwise look healthy while search returns
+    nothing. Recover with `rackflow-admin reindex`."""
+    indexed = _live_indexed_chunks_exist()
+    vector_store, points = _vector_point_count()
+    database = indexed is not None
+    both = database and vector_store
+    collection = both and (points is not None or not indexed)
+    consistent = both and (not indexed or bool(points))
+    if both and not consistent:
+        log.warning("readiness_vector_collection_inconsistent",
+                    extra={"collection_missing": points is None})
     checks = {
         "database": database,
         "vector_store": vector_store,
-        "vector_collection": database and vector_store and _check_vector_collection(),
+        "vector_collection": collection,
+        "vector_collection_consistent": consistent,
         "embeddings": embedding_probe.check(),
     }
     ok = all(checks.values())

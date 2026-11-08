@@ -168,7 +168,7 @@ Record decisions here before making changes that affect architecture or scope.
 - Tests/evidence: `backend/tests/test_ops_bugs.py` (patched `_sleep`, including a simulated model allowing one question per minute: all 13 scored, 0 errors).
 
 ### ADR-025 — Client addresses and `TRUSTED_PROXY_IPS`
-- Status: Accepted 2026-11-06. Unit tested; **the Compose network part has not been executed** (no Docker on the development host).
+- Status: Accepted 2026-11-06. Unit tested; **the Compose network part has not been executed** (no Docker on the development host). Amended 2026-11-08 by ADR-028: in production Caddy is the hop that sets `X-Forwarded-For`, and the overlay trusts `172.30.0.10,172.30.0.11`.
 - Context: Browsers reach the API through the web container's `/api` rewrite, so in Compose every sign-in shares one client address, and rate limits become global. A throwaway Next 16.4.3 app against an echo server showed that the rewrite adds no `X-Forwarded-For` of its own and passes a client-supplied one through unchanged. That test used `next dev`; `next start` was not run.
 - Decision:
   - Rate limiting uses `ratelimit.client_ip`: the connecting peer, unless `TRUSTED_PROXY_IPS` lists that peer. Then `X-Forwarded-For` is read from the right, and the first address that is not a trusted proxy is the client. Malformed values fall back to the peer.
@@ -195,6 +195,200 @@ Record decisions here before making changes that affect architecture or scope.
   3. Refuse an email that already has an account elsewhere, with a neutral response.
   4. Make the default sign-in tenant explicit and stable, whichever of the above is chosen.
 - Consequences until decided: an open risk in `PROGRESS.md` and `SECURITY.md`.
+- Update 2026-11-08 (Stage 6): still awaiting the owner, and still unchanged in code. It is now item 0 of
+  `Docs/PRODUCTION_CHECKLIST.md`. The Stage 6 change to `routers/admin.py` touched only `change_role`
+  and `remove_member` (ADR-029), not `create_member`.
+
+## Stage 6 — production hardening (branch `production-hardening-2026-11`, 2026-11-07 to 2026-11-08)
+
+None of the Docker, Caddy or GitHub Actions parts below have been executed: the development machine has
+no Docker, and nothing was pushed. Each ADR says what was checked.
+
+### ADR-027 — Production refuses unsafe configuration at startup
+- Status: Accepted 2026-11-08. Unit tested (`backend/tests/test_production_config.py`, 56 tests).
+- Context: Production had three startup checks (`COOKIE_SECURE`, the `hash` embedder, `DEMO_MODE`).
+  Default credentials, plain-HTTP origins, debug logging and a remote vector store without a key were
+  all accepted.
+- Decision (`core/config.py`, `_check_production`, only when `APP_ENV=production`):
+  - Refuse a `DATABASE_URL` that does not parse, has no password, uses `rackflow`, uses the user name as
+    password, or has a password under 16 characters (`MIN_DATABASE_PASSWORD_LENGTH`).
+  - Refuse an empty `WEB_ORIGIN`, any non-https origin in it, and a non-https `API_BASE_URL`.
+  - Refuse a `VECTOR_STORE_URL` that is not http(s), and a remote one without https and a non-blank
+    `VECTOR_STORE_API_KEY`. Refuse a remote `openai_compatible` `MODEL_BASE_URL` without https and a key,
+    and `anthropic` with a blank key. "Remote" is decided by name with `is_internal_host()`: loopback and
+    private IPs, `localhost`, single-label names such as `qdrant`, and `.localhost`, `.internal`, `.local`,
+    `.lan`, `.home.arpa`, `.svc`, `.cluster.local` are internal. No DNS lookup.
+  - Refuse `LOG_LEVEL` DEBUG or NOTSET, and `MODEL_TIMEOUT_SECONDS` not below the new
+    `WEB_PROXY_TIMEOUT_SECONDS` (ADR-032).
+  - `hide_input_in_errors=True`: no validation error repeats a configured value. Every message names the
+    variable only.
+- Alternatives: warnings instead of refusals (rejected: they are easy to miss in a container log).
+- Consequences:
+  - Development and test settings are unchanged. Two older tests that built production settings with
+    http origins were updated to reuse `production()` from the new test file.
+  - A public name that resolves to a private address is treated as remote, the safe direction. CGNAT
+    (100.64.0.0/10) counts as remote.
+  - `API_BASE_URL` is validated but nothing in the backend reads it yet.
+  - The anthropic client retries once, so the real worst case is about twice `MODEL_TIMEOUT_SECONDS`
+    plus a 10 s concurrency wait; the check is strictly "below", not a full budget.
+- Tests/evidence: `test_production_config.py` (including leak checks for three fake secrets on the
+  kwargs and env paths), `test_security_gates.py`, `test_demo_login.py`.
+
+### ADR-028 — TLS with Caddy in a Compose production overlay; client-address chain
+- Status: Accepted 2026-11-08. Amends ADR-025. **Not executed** (no Docker); checked by a script that
+  parses, merges and interpolates both Compose files and validates the merged API environment against
+  the real `Settings`.
+- Context: ADR-025 deferred "a hop that stamps the socket address". Production needs TLS, no published
+  data ports, restart policies and least privilege, while a bare `docker compose up` must stay the
+  development stack that CI's `compose-smoke` uses.
+- Decision:
+  - `docker-compose.yml` gains a `caddy` service (image `caddy:2.10.2`) in profile `prod`, fixed address
+    `172.30.0.11` outside the network's `ip_range`. Production is
+    `docker compose -f docker-compose.yml -f deploy/compose.prod.yml --profile prod up -d --build`.
+  - `deploy/compose.prod.yml` (Compose 2.24.4+, `!reset`): only Caddy publishes ports; the backend gets
+    `APP_ENV=production`, `COOKIE_SECURE=true`, `DEMO_MODE=false`, `WEB_ORIGIN`/`API_BASE_URL` =
+    `https://${DOMAIN}`, `DATABASE_URL` from a required `POSTGRES_PASSWORD`, a required
+    `VECTOR_STORE_API_KEY` and `TRUSTED_PROXY_IPS=172.30.0.10,172.30.0.11`. Qdrant requires
+    `QDRANT__SERVICE__API_KEY`. `restart: unless-stopped` on everything but `migrate`. api, worker,
+    migrate and web run `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, with tmpfs for `/tmp` (and
+    web's `.next/cache`).
+  - `deploy/caddy/Caddyfile`: automatic HTTPS for `{$DOMAIN}` (`tls {$TLS_ISSUER}`: an ACME e-mail, or
+    `internal` for test hosts), HSTS `max-age=31536000` (ADR-033), no `Server` header, 26 MiB body limit,
+    `response_header_timeout` 180 s, and **no `trusted_proxies`**, so Caddy replaces any client-sent
+    `X-Forwarded-For` with the real client address.
+  - Chain: client → Caddy (sets the header) → web (Next rewrite passes it on unchanged) → API (peer is web,
+    trusted, so it reads the header). `172.30.0.11` is listed defensively in case the web proxy ever
+    appends its peer. Nothing else may be trusted: not the gateway, not the subnet.
+  - The worker and migrate disable the image healthcheck in Compose; Caddy starts once web is healthy.
+- Alternatives: requiring `--profile dev` for development (rejected: changes CI and every existing
+  command); nginx (more configuration for ACME); trusting the subnet (allows forgery from any container).
+- Consequences:
+  - Ports 3000 and 8000 must never be published while `TRUSTED_PROXY_IPS` is set.
+  - With Docker's userland proxy in the path, every client appears as `172.30.0.1` and limits are shared
+    again. Operators must check Caddy's log (`PRODUCTION_CHECKLIST.md` step 6).
+  - `DOMAIN` must be one host name. A load balancer in front of Caddy needs `trusted_proxies` in the
+    Caddyfile set to exactly its addresses.
+  - Backups from the host need a third Compose file publishing PostgreSQL and Qdrant on loopback.
+- Tests/evidence: static script (scratch, not in the repo); the Compose regression test the TLS owner
+  proposed is not yet added (TODO.md). `test_infra_auth_bugs.py` still checks that the base file trusts
+  nobody by default.
+
+### ADR-029 — Account bootstrap, password policy, and no demo accounts in production
+- Status: Accepted 2026-11-08. Unit tested (`test_production_credentials.py`, 33 tests;
+  `test_admin_personas.py`, 10 tests).
+- Context: The only ways to create a first account were `seed-demo` (shared demo users) and
+  `create-user`. Production needs a first admin with no demo users and no weak passwords.
+- Decision:
+  - New `rackflow-admin bootstrap-admin --tenant --tenant-name --email [--name] [--password-env]`
+    (default `RACKFLOW_ADMIN_PASSWORD`; unset → a generated password printed once). It locks the tenant
+    row, refuses (exit 2) if the tenant already has an org_admin, and audits `member.bootstrap_admin`.
+    An existing account is made admin with its password unchanged.
+  - Password policy in `auth/passwords.py` (`password_problems`, `check_password_policy`): 12 to 512
+    characters, not a common or project password, no fragments such as `password`/`qwerty`/`123456`/
+    `rackflow`, at least 5 distinct characters, not containing the email name. Applied by
+    `bootstrap-admin`, `create-user` and `seed-demo`. Messages never contain the password.
+  - `seed-demo` and `seed-eval` exit 2 with `APP_ENV=production` unless `--allow-in-production`.
+  - `auth/demo.py` `demo_enabled()`: demo sign-in is off in production even if `DEMO_MODE` were forced on.
+  - With `DEMO_MODE` on, `change_role` and `remove_member` refuse the shared demo accounts with 409
+    `DEMO_ACCOUNT_PROTECTED`. `_admin_count` now locks the tenant's admin rows (`FOR UPDATE`), so two
+    admins cannot demote each other at once and leave no admin.
+- Alternatives: an HTTP setup wizard (rejected: an unauthenticated first-run endpoint is a takeover risk).
+- Consequences:
+  - Passwords chosen through the admin API (`create_member`) are not checked against the policy yet
+    (ADR-026 area, unchanged).
+  - `GET /auth/demo` still reads `DEMO_MODE` directly (`routers/auth.py` not switched to
+    `demo_enabled()`); production refuses `DEMO_MODE=true` anyway.
+  - `seed-infra` has no production guard.
+  - A CI or e2e `RACKFLOW_SEED_PASSWORD` must now pass the policy; CI generates one that does.
+
+### ADR-030 — Backups and restore with host-run scripts
+- Status: Accepted 2026-11-08. Restore drill passed on the local Windows stack on 2026-11-07; unit tested
+  (`test_backup_scripts.py`). **Not run against Docker volumes or a Qdrant with an API key.**
+- Decision:
+  - `scripts/ops/backup.py` writes `rackflow-backup-<UTC ts>/` with `pg_dump -Fc`, a Qdrant snapshot
+    (verified against Qdrant's sha256, then deleted on the server), a tar.gz of object storage, and a
+    manifest of sizes, sha256, versions, Alembic revision and counts. Table counts come from the same
+    PostgreSQL snapshot as the dump. Built as `.partial` and renamed on success. Owner-only on POSIX
+    (umask 077, 0700/0600). `--keep N` deletes only older directories this tool wrote.
+  - `scripts/ops/restore.py` restores only the components given a target, verifies every checksum before
+    touching anything, refuses non-empty targets unless `--force` (all refusals reported together),
+    extracts with Python's `data` filter, `--chown UID:GID` for the containers' UID 10001, and prints a
+    backup-vs-restored count table. Exit 0 all match, 3 mismatch, 1 failure, 2 bad arguments.
+  - Passwords travel only in `PGPASSWORD`, never on the command line or in the manifest.
+  - Retention is the operator's `--keep N`; the documented example is nightly with `--keep 14`. A restore
+    drill is required before go-live and monthly.
+- Alternatives: PostgreSQL PITR and Qdrant replication (better RPO, needs managed services); a backup
+  sidecar container (deferred: needs Docker to test).
+- Consequences: the three stores are captured seconds apart, not atomically; for an exact set, stop the
+  workers. No encryption or off-host copy in the tool. Qdrant snapshots can be large (660 MB for 9
+  points locally).
+
+### ADR-031 — Readiness detects lost vectors; liveness has no dependencies
+- Status: Accepted 2026-11-08. Tested against real PostgreSQL and Qdrant (`test_readiness.py`, 15 tests;
+  `test_foundation.py`).
+- Decision:
+  - `/health/ready` runs one bounded database query (EXISTS over chunks of live indexed documents, 2 s
+    statement timeout) and one Qdrant `count` on a probe client with a 3 s timeout. Checks:
+    `database`, `vector_store`, `vector_collection` (exists, or nothing indexed yet),
+    **`vector_collection_consistent`** (if live indexed chunks exist, the collection exists and holds at
+    least one point), `embeddings`. 503 unless all are true. Booleans only.
+  - `/health/live` is `async` with no dependencies, so slow readiness threads cannot fail it.
+- Alternatives: compare point count with chunk count (rejected for now: legitimately differs during
+  reindex and delete, so readiness would flap).
+- Consequences: a collection lost, recreated and refilled by new uploads goes green again while older
+  documents lack vectors. The `vector_collection_created` warning remains the signal. A first boot is
+  ready. Monitoring keyed on the exact check set must add the new key.
+- Supersedes the TODO "readiness should compare point count with indexed chunks" in part.
+
+### ADR-032 — One timeout variable for the web proxy chain
+- Status: Accepted 2026-11-08. Config tested; Compose derivation checked statically only.
+- Context: `next.config.ts` fixed `proxyTimeout` at 120 s while `MODEL_TIMEOUT_SECONDS` allowed 600, so
+  long answers were cut at the web proxy.
+- Decision: `next.config.ts` reads `API_PROXY_TIMEOUT_MS` (default 120000, positive whole ms, build time;
+  refused if not above `MODEL_TIMEOUT_SECONDS`×1000 when that is set). The API has
+  `WEB_PROXY_TIMEOUT_SECONDS` (default 120). In Compose, `API_PROXY_TIMEOUT_MS` is derived as
+  `${WEB_PROXY_TIMEOUT_SECONDS}000`, so one variable drives both. Caddy waits 180 s by default
+  (`CADDY_UPSTREAM_TIMEOUT`).
+- Consequences: `WEB_PROXY_TIMEOUT_SECONDS` must be whole seconds; a change needs `--build` because the
+  standalone server bakes it in. `CADDY_UPSTREAM_TIMEOUT` must be raised by hand above about 170 s.
+  Outside Docker, `API_PROXY_TIMEOUT_MS` must be kept equal by hand.
+
+### ADR-033 — Web security headers: static CSP with `'unsafe-inline'`; one HSTS policy
+- Status: Accepted 2026-11-08. Checked in a browser against dev, `next start` and the standalone server
+  (0 CSP violations on landing, login, demo sign-in, `/ask`, `/library`).
+- Decision: `next.config.ts` sends `default-src 'self'; script-src 'self' 'unsafe-inline'` (plus
+  `'unsafe-eval'` in development only)`; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;
+  font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';
+  frame-ancestors 'none'`, `Cross-Origin-Opener-Policy: same-origin`, and in production
+  `Strict-Transport-Security: max-age=31536000`. Caddy sends the identical HSTS value. No
+  `includeSubDomains` or `preload`.
+- Alternatives: a nonce-based CSP via `proxy.ts` (deferred, owner decision: every route would become
+  dynamic, including the static landing page).
+- Consequences: inline script injection is not blocked by CSP; other origins, plugins, `<base>` hijack,
+  off-site form posts and framing are. HSTS changes must be made in both files together. No permanent
+  e2e test for the headers yet.
+
+### ADR-034 — CI as the release gate; pinned supply chain; hardened images
+- Status: Accepted 2026-11-08. **No new job has run on GitHub.** Checked with actionlint, a local
+  gitleaks run over history, local `npm audit` and `pip-audit`, and a local run of the e2e job's backend
+  steps.
+- Decision:
+  - `.github/workflows/ci.yml`: `permissions: contents: read`, concurrency cancelling superseded runs,
+    `workflow_dispatch`, timeouts, `persist-credentials: false`, and every action pinned to a commit SHA.
+  - New jobs: `e2e` (Postgres and Qdrant services, a per-run demo password that passes the policy, seed,
+    one indexed starter document, production `next build`/`next start`, `npm run test:e2e:ci` including
+    the axe gates, report uploaded on failure); `secrets` (gitleaks 8.30.1 over full history, one narrow
+    allowlist in `.gitleaks.toml`); `audit-python` (pip-audit 2.10.1 on the hashed runtime export: **any**
+    known vulnerability fails); `audit-web` (`npm audit --omit=dev --audit-level=high`). `compose-smoke`
+    now builds both images first.
+  - `.github/dependabot.yml`: weekly uv, npm, Docker, Compose and Actions updates.
+  - Images: backend two-stage on `python:3.12.16-slim-trixie` with uv 0.12.22, web three-stage on
+    `node:24.22.2-alpine3.24`; both run as UID/GID 10001 with read-only code, have a HEALTHCHECK (the
+    backend's probes only when PID 1 is uvicorn), and stricter `.dockerignore` files (no `.env`, `.data`,
+    tests, e2e sign-in state).
+- Consequences: `audit-python` is red until pypdf is bumped. Digests are noted in comments, not pinned.
+  Playwright traces in a failure artifact may hold that run's throwaway demo password. pip-audit has no
+  severity filter.
 
 ## Change template
 ### ADR-XXX — Title

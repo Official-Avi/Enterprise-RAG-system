@@ -1,3 +1,27 @@
+# Build context is ./apps/web. Secrets, local state and test material never enter the context.
+.env
+.env.*
+*.pem
+.data
+
+# Dependencies and build output are produced inside the image
 node_modules
 .next
+out
+build
 *.tsbuildinfo
+next-env.d.ts
+
+# Tests: Playwright specs, saved sign-in sessions (e2e/.auth), reports and screenshots
+e2e
+test-results
+playwright-report
+playwright.config.ts
+coverage
+
+# Tooling and local files
+Dockerfile
+.dockerignore
+.vercel
+*.log
+.DS_Store

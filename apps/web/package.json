@@ -9,6 +9,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
+    "test:e2e:ci": "playwright test",
     "test:a11y": "playwright test e2e/a11y-gates.spec.ts"
   },
   "dependencies": {

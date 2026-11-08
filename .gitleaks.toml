@@ -1,0 +1,16 @@
+# gitleaks configuration (CI secret scan: .github/workflows/ci.yml, job "secrets").
+# Uses gitleaks' default rules; each allowlist below names one known false positive.
+# Never allowlist a real credential here: rotate it and remove it from history instead.
+
+title = "RackFlow gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Prose, not a credential: the delivery report lists 'secret manager, S3-compatible storage'"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^Docs/DELIVERY_REPORT\.md$''']
+regexTarget = "line"
+regexes = ['''secret manager, S3-compatible storage''']

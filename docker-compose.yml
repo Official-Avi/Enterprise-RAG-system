@@ -1,14 +1,26 @@
-# RackFlow AI — local/staging stack for Linux hosts with Docker.
-# Usage:  cp .env.example .env  (set POSTGRES_PASSWORD etc.)  &&  docker compose up --build
-# Data services bind to 127.0.0.1 only. Put TLS and a real load balancer in front for staging/prod.
+# RackFlow AI — Compose stack for Linux hosts with Docker.
+#
+# Development / local (no profile):
+#   cp .env.example .env  (set POSTGRES_PASSWORD etc.)  &&  docker compose up --build
+#   Postgres, Qdrant, API and web publish on 127.0.0.1 only. Plain HTTP, no TLS.
+#
+# Production (TLS via Caddy): add the deploy/compose.prod.yml overlay and the "prod" profile:
+#   docker compose -f docker-compose.yml -f deploy/compose.prod.yml --profile prod up -d --build
+#   Only Caddy publishes ports (80/443); the overlay sets APP_ENV=production, COOKIE_SECURE=true and
+#   TRUSTED_PROXY_IPS, and stops Postgres, Qdrant, API and web publishing. It also requires the
+#   Qdrant API key, adds restart policies and drops privileges (read-only root, no capabilities).
+#   See deploy/README.md.
+#   The "prod" profile without the overlay is not a supported setup: Caddy has no DOMAIN and exits.
+#
 # Containers get only the settings listed in x-backend-env; anything else in .env does not reach them.
 #
 # Client addresses: the browser reaches the API through the web container's /api proxy, so the API
-# sees the web container as the client of every request, and sign-in rate limits are shared. With a
-# load balancer in front of web, make it set X-Forwarded-For, then set TRUSTED_PROXY_IPS=172.30.0.10
-# (web's fixed address below). The Next proxy adds no address of its own and passes on whatever
-# X-Forwarded-For it receives, so turn this on only while port 3000 can be reached through that load
-# balancer alone. Published on 0.0.0.0 with this set, clients could forge their address.
+# sees the web container (172.30.0.10) as the peer of every request. Without a proxy in front (dev),
+# TRUSTED_PROXY_IPS stays empty and sign-in rate limits are shared by all clients. In production
+# Caddy (172.30.0.11) replaces any client-sent X-Forwarded-For with the real client address, the Next
+# proxy passes that header on unchanged, and the overlay trusts web (and Caddy) so the API reads it.
+# Never set TRUSTED_PROXY_IPS while port 3000 is reachable other than through such a proxy: the Next
+# proxy adds no address of its own, so clients could forge theirs.
 
 name: rackflow
 
@@ -16,12 +28,20 @@ x-backend-env: &backend-env
   APP_ENV: ${APP_ENV:-development}
   DATABASE_URL: postgresql+psycopg://rackflow:${POSTGRES_PASSWORD:-rackflow}@postgres:5432/rackflow
   VECTOR_STORE_URL: http://qdrant:6333
+  # Empty here means no key (dev Qdrant runs without one). The prod overlay requires it and gives
+  # Qdrant the matching QDRANT__SERVICE__API_KEY.
+  VECTOR_STORE_API_KEY: ${VECTOR_STORE_API_KEY:-}
   VECTOR_COLLECTION: ${VECTOR_COLLECTION:-rackflow_chunks}
   WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
   MODEL_PROVIDER: ${MODEL_PROVIDER:-extractive}
   MODEL_NAME: ${MODEL_NAME:-}
   MODEL_BASE_URL: ${MODEL_BASE_URL:-}
   MODEL_API_KEY: ${MODEL_API_KEY:-}
+  MODEL_TIMEOUT_SECONDS: ${MODEL_TIMEOUT_SECONDS:-60}
+  # Whole seconds. The web service's API_PROXY_TIMEOUT_MS is derived from this same variable (see
+  # services.web), so the two cannot drift; the API checks MODEL_TIMEOUT_SECONDS against it in
+  # production.
+  WEB_PROXY_TIMEOUT_SECONDS: ${WEB_PROXY_TIMEOUT_SECONDS:-120}
   EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fastembed}
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
   COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -59,6 +79,9 @@ services:
     build: ./backend
     environment: *backend-env
     command: ["alembic", "upgrade", "head"]
+    # The image's HEALTHCHECK probes the API port; this one-shot job serves no HTTP.
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,7 +100,7 @@ services:
       qdrant:
         condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live', timeout=4)"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -86,6 +109,10 @@ services:
     build: ./backend
     environment: *backend-env
     command: ["rackflow-worker"]
+    # The worker serves no HTTP, so the image's API probe does not apply. Worker liveness is its
+    # database heartbeat (Operations page), not a container healthcheck.
+    healthcheck:
+      disable: true
     volumes:
       - objects:/data/objects
       - models:/data/models
@@ -101,6 +128,14 @@ services:
       context: ./apps/web
       args:
         API_PROXY_TARGET: http://api:8000
+        # next.config.ts is compiled into the standalone build, so the /api proxy timeout is a build
+        # argument (also set at run time below). It is WEB_PROXY_TIMEOUT_SECONDS followed by "000",
+        # i.e. the backend's value x 1000, so one variable drives both sides; API_PROXY_TIMEOUT_MS in
+        # .env is not read by Compose. A non-whole number of seconds (e.g. 120.5) makes the web
+        # build fail on purpose (next.config.ts accepts whole milliseconds only).
+        API_PROXY_TIMEOUT_MS: ${WEB_PROXY_TIMEOUT_SECONDS:-120}000
+    environment:
+      API_PROXY_TIMEOUT_MS: ${WEB_PROXY_TIMEOUT_SECONDS:-120}000
     networks:
       default:
         ipv4_address: 172.30.0.10  # fixed so TRUSTED_PROXY_IPS can name it
@@ -110,12 +145,37 @@ services:
       api:
         condition: service_healthy
 
+  # TLS termination for production. Started only with --profile prod, and configured only by the
+  # deploy/compose.prod.yml overlay (DOMAIN, TLS_ISSUER). Routes everything to web:3000.
+  caddy:
+    image: caddy:2.10.2
+    profiles: ["prod"]
+    restart: unless-stopped
+    environment:
+      # Must stay above API_PROXY_TIMEOUT_MS, so the web proxy's own timeout answers first.
+      UPSTREAM_TIMEOUT: ${CADDY_UPSTREAM_TIMEOUT:-180s}
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # certificates and ACME account: must persist across restarts
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"         # HTTP/3
+    networks:
+      default:
+        ipv4_address: 172.30.0.11  # fixed; trusted by the API in production (deploy/README.md)
+    depends_on:
+      web:
+        condition: service_healthy  # the web image has a HEALTHCHECK
+
 networks:
   default:
     ipam:
       config:
-        # Other containers are given addresses from ip_range, so none can take web's. If this subnet
-        # overlaps a network on the host, change it here and web's address together.
+        # Other containers are given addresses from ip_range, so none can take web's (.10) or
+        # Caddy's (.11). If this subnet overlaps a network on the host, change it here, both fixed
+        # addresses, and TRUSTED_PROXY_IPS in deploy/compose.prod.yml together.
         - subnet: 172.30.0.0/24
           ip_range: 172.30.0.128/25
 
@@ -124,3 +184,5 @@ volumes:
   qdrantdata:
   objects:
   models:
+  caddy_data:
+  caddy_config:

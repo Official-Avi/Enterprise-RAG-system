@@ -5,10 +5,13 @@ and index them through a durable job pipeline, ask questions and receive answers
 source citations, and operate the queues, workers, model endpoints and logical infrastructure
 behind it. Product and architecture documents live in [`Docs/`](Docs/).
 
-> **Status (2026-11-06):** v0.1.0 is the tagged pilot on `main`. Branch `ui-redesign-2026-10` holds an
-> unreleased redesign and a round of bug fixes that is not merged yet. **This is not production ready.**
-> See [`Docs/PROGRESS.md`](Docs/PROGRESS.md) for what is verified, open risks and what has not been
-> checked, and [`Docs/TESTING.md`](Docs/TESTING.md) for actual test results.
+> **Status (2026-11-08):** v0.1.0 is the tagged pilot. The UI redesign is merged into `main`
+> (`5648c83`, not tagged). Branch `production-hardening-2026-11` adds a production setup (Caddy TLS,
+> hardened containers, backups, CI gates) that is **written and unit-tested but has never been run**:
+> the development machine has no Docker. **This is not production ready.** See
+> [`Docs/PROGRESS.md`](Docs/PROGRESS.md) for what is verified and the open risks,
+> [`Docs/TESTING.md`](Docs/TESTING.md) for actual test results, and
+> [`Docs/PRODUCTION_CHECKLIST.md`](Docs/PRODUCTION_CHECKLIST.md) before any real deployment.
 
 ## Architecture at a glance
 
@@ -54,7 +57,7 @@ powershell -ExecutionPolicy Bypass -File scripts\dev\start-services.ps1
 cd backend
 uv sync
 .venv\Scripts\python.exe -m alembic upgrade head
-$env:RACKFLOW_SEED_PASSWORD = "<choose-a-demo-password>"   # optional; otherwise one is generated and printed once
+$env:RACKFLOW_SEED_PASSWORD = "<choose-a-demo-password>"   # optional; 12+ chars, not common, no "password"/"rackflow"; otherwise one is generated and printed once
 .venv\Scripts\python.exe -m rackflow.cli seed-demo          # tenants acme + globex, one user per role
 cd ..
 
@@ -99,8 +102,9 @@ $env:PORT=3000; $env:HOSTNAME="127.0.0.1"; node .next\standalone\server.js
 
 Running `next build` beside a running dev server may collide. Build from a copy if you need both.
 
-Health: `GET http://127.0.0.1:8000/api/v1/health/live` and `/api/v1/health/ready` (database,
-vector store, vector collection and embeddings). API docs (non-production only): `http://127.0.0.1:8000/api/v1/docs`.
+Health: `GET http://127.0.0.1:8000/api/v1/health/live` (no dependencies) and `/api/v1/health/ready`
+(database, vector store, vector collection, vector collection consistent with indexed documents, and
+embeddings; 503 unless all pass). API docs (non-production only): `http://127.0.0.1:8000/api/v1/docs`.
 
 ### Smoke test (live stack)
 
@@ -139,17 +143,27 @@ npm run lint; npx tsc --noEmit; npm run build
 # Browser tests. Windows defaults to Microsoft Edge. Variables: apps/web/README.md
 npm run test:e2e
 npm run test:a11y
+npm run test:e2e:ci   # CI mode: retries, HTML report, Playwright Chromium unless E2E_BROWSER_CHANNEL is set
 ```
 
 Browser tests run against an already-running stack with `DEMO_MODE=true`. They use the shared demo
 accounts, leave some data behind, and the engineer journey asks the configured model one live question.
+The demo password comes from `E2E_DEMO_PASSWORD`, else `.data/demo-password.txt`. `E2E_OUTPUT_DIR`,
+`E2E_REPORT_DIR` and `E2E_SCREENSHOT_DIR` move the output out of the repository.
+
+CI (`.github/workflows/ci.yml`) runs `backend`, `web`, `e2e` (full stack with Playwright and the axe
+gates), `secrets` (gitleaks), `audit-python`, `audit-web` and `compose-smoke`. The new jobs have not run
+on GitHub yet ([`Docs/DEPLOYMENT.md`](Docs/DEPLOYMENT.md) §8.12).
 
 ## Docker Compose (Linux hosts)
 
-`docker-compose.yml` defines PostgreSQL, Qdrant, a one-shot migration, API, worker (scalable with
-`--scale worker=N`) and web. Docker is not installed on the Windows development host. The `compose-smoke`
-CI job last passed on v0.1.0. **The Compose changes on this branch have not been executed:** the fixed
-web address, `DEMO_MODE` and `TRUSTED_PROXY_IPS` pass-through, and the CI retry changes.
+Docker is not installed on the Windows development host, so **nothing in this section has been run
+since v0.1.0**, when the `compose-smoke` CI job last passed.
+
+### Development stack
+
+`docker-compose.yml` on its own defines PostgreSQL, Qdrant, a one-shot migration, API, worker (scalable
+with `--scale worker=N`) and web, plain HTTP, all on 127.0.0.1.
 
 ```bash
 cp .env.example .env   # set POSTGRES_PASSWORD and other values
@@ -158,9 +172,32 @@ docker compose exec api rackflow-admin seed-demo   # a fresh stack has no accoun
 ```
 
 Containers receive only the settings listed under `x-backend-env`; anything else in `.env` does not
-reach them. Behind a load balancer, rate limits need `TRUSTED_PROXY_IPS`, and the load balancer must
-set `X-Forwarded-For` (see the header of `docker-compose.yml` and
-[`Docs/DEPLOYMENT.md`](Docs/DEPLOYMENT.md)).
+reach them.
+
+### Production with TLS (not verified here)
+
+Follow [`Docs/PRODUCTION_CHECKLIST.md`](Docs/PRODUCTION_CHECKLIST.md). In short:
+
+```bash
+python scripts/ops/generate_env.py --output .env --domain rag.example.com --tls-issuer ops@example.com
+# fill in the model settings it lists, then:
+docker compose -f docker-compose.yml -f deploy/compose.prod.yml --profile prod up -d --build
+docker compose -f docker-compose.yml -f deploy/compose.prod.yml --profile prod exec api \
+  rackflow-admin bootstrap-admin --tenant acme --tenant-name "Acme" --email admin@example.com
+```
+
+Caddy terminates TLS and is the only service that publishes ports; the overlay forces
+`APP_ENV=production` and trusts exactly the web and Caddy addresses for client IPs. With
+`APP_ENV=production` the API refuses to start on default or weak credentials, plain-HTTP origins, debug
+logging and similar settings ([`Docs/DEPLOYMENT.md`](Docs/DEPLOYMENT.md) §8.2). Details:
+[`deploy/README.md`](deploy/README.md).
+
+### Backups
+
+`scripts/ops/backup.py --output <dir> --keep N` backs up PostgreSQL, the Qdrant collection and the
+uploaded files with a checksummed manifest; `scripts/ops/restore.py` restores into named targets and
+compares counts. Run the restore drill before go-live and monthly: [`scripts/ops/README.md`](scripts/ops/README.md).
+The drill passed on the local Windows stack on 2026-11-07; it has not been run against Docker volumes.
 
 ## Choosing the answer model
 
@@ -171,7 +208,8 @@ set `X-Forwarded-For` (see the header of `docker-compose.yml` and
 | `openai_compatible`, hosted (for example Groq) | Any OpenAI-compatible service | `MODEL_BASE_URL`, `MODEL_NAME`, `MODEL_API_KEY` | The same, to that service |
 | `openai_compatible`, local (for example Ollama) | A model on your own server | `MODEL_BASE_URL`, `MODEL_NAME` | None if it runs on this host |
 
-Startup fails if a required setting is missing. Files and embeddings never leave the server in any mode.
+Startup fails if a required setting is missing. With `APP_ENV=production` a remote endpoint must also
+use `https://` and have a key. Files and embeddings never leave the server in any mode.
 
 Groq example for `.env`, with the key kept out of any tracked file:
 
@@ -198,5 +236,8 @@ PostgreSQL. Uploaded files are validated by content signature, size, archive exp
 checks; stored under generated keys. Retrieved text is delimited as untrusted data in prompts;
 citations are accepted only if they reference retrieved, authorized chunks, and a saved answer is
 hidden if the reader loses access to its source. Logs and job errors never contain document text.
+In production the API refuses unsafe configuration, demo accounts are off, the web app sends a
+Content-Security-Policy and HSTS, and CI scans for secrets and vulnerable dependencies (the production
+setup and the new CI jobs have not been run yet).
 See [`Docs/SECURITY.md`](Docs/SECURITY.md) and the open risks in
 [`Docs/PROGRESS.md`](Docs/PROGRESS.md). This is **not** a claim of production readiness.

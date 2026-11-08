@@ -1,0 +1,61 @@
+# RackFlow AI — TLS termination in front of the web container (Compose profile "prod").
+# Mounted read-only at /etc/caddy/Caddyfile by docker-compose.yml. Settings come from the
+# environment that deploy/compose.prod.yml gives the caddy service:
+#   DOMAIN            the single public host name, e.g. rag.example.com (required)
+#   TLS_ISSUER        an e-mail address -> automatic HTTPS from a public ACME CA (Let's Encrypt,
+#                     ZeroSSL), with that address as the ACME contact;
+#                     "internal"       -> certificates from Caddy's own local CA (test only:
+#                     browsers will not trust them unless that CA is installed)
+#   UPSTREAM_TIMEOUT  how long to wait for web's response headers (default 180s); keep it above
+#                     API_PROXY_TIMEOUT_MS so the web proxy's own timeout answers first
+#
+# Client addresses: this file deliberately sets no `trusted_proxies`. Caddy therefore ignores any
+# X-Forwarded-For a client sends and sends web exactly one address, the client's. Web passes the
+# header on unchanged and the API trusts web (TRUSTED_PROXY_IPS), so rate limits key on the real
+# client. Adding `trusted_proxies` here would let anyone in that range state any address.
+
+{
+	servers {
+		timeouts {
+			# Slow-header (slowloris) protection.
+			read_header 30s
+			# A 26 MiB upload over a slow link (about 1 Mbit/s) needs several minutes.
+			read_body 10m
+			idle 5m
+		}
+	}
+}
+
+{$DOMAIN} {
+	tls {$TLS_ISSUER}
+
+	header {
+		# Browsers keep using HTTPS for a year. Exactly the value the web app sends in production
+		# (apps/web/next.config.ts): because this block also deletes a header, Caddy applies it to
+		# the proxied response and replaces the app's header, so both layers must agree. Set here too
+		# so Caddy's own responses (413, 502) carry it. No includeSubDomains or preload: they would
+		# bind sibling hosts of whatever domain an operator deploys on.
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	# 25 MiB per-file upload limit (UPLOAD_MAX_BYTES) plus multipart overhead. Equal to the web
+	# proxy's proxyClientMaxBodySize ("26mb" = 26 MiB), so an oversized body gets a 413 here
+	# instead of arriving cut short at the API.
+	request_body {
+		max_size 26MiB
+	}
+
+	reverse_proxy web:3000 {
+		transport http {
+			dial_timeout 5s
+			response_header_timeout {$UPSTREAM_TIMEOUT:180s}
+		}
+	}
+
+	# Access log to stdout (docker compose logs caddy). Caddy redacts Cookie and Authorization.
+	log {
+		output stdout
+		format json
+	}
+}

@@ -1,10 +1,74 @@
 # RackFlow AI — Release Notes
 
-## Unreleased — branch `ui-redesign-2026-10` (as of 2026-11-06)
+## Unreleased — branch `production-hardening-2026-11` (Stage 6, as of 2026-11-08)
 
-Not merged and not tagged. This is still a development and pilot build, **not a production release**.
-Final gate results go in `Docs/TESTING.md`. Until they are filled in, treat the items below as
-implemented and checked by their owners, not as released.
+Not committed, not merged, not tagged. **Not a production release:** the production setup below has not
+been run, because the development machine has no Docker and nothing has been pushed to CI. Follow
+`Docs/PRODUCTION_CHECKLIST.md` on a staging host before any real use.
+
+### New
+- **Production deployment with TLS:** a Caddy service (`--profile prod`) and the overlay
+  `deploy/compose.prod.yml`. Only ports 80 and 443 are published; restart policies; read-only roots,
+  no capabilities and `no-new-privileges`; Qdrant requires an API key. Runbook: `deploy/README.md`
+  (ADR-028).
+- **`scripts/ops/generate_env.py`** writes a production `.env` with fresh secrets, never prints them,
+  never overwrites without `--force`. Reference: `deploy/env.production.example`.
+- **`rackflow-admin bootstrap-admin`** creates a tenant's first org_admin (ADR-029).
+- **Backups:** `scripts/ops/backup.py` and `restore.py` with checksummed manifests, retention
+  (`--keep N`), refusal of non-empty targets, `--chown` for containers, and a restore drill. Runbook:
+  `scripts/ops/README.md` (ADR-030).
+- **Readiness** reports `vector_collection_consistent` and returns 503 when indexed documents have lost
+  their vectors (ADR-031).
+- **Web security headers:** Content-Security-Policy, Cross-Origin-Opener-Policy, and HSTS in production
+  (ADR-033).
+- **CI gates:** Playwright with the axe gates, gitleaks, pip-audit, npm audit, image builds; actions
+  pinned to SHAs; Dependabot (ADR-034).
+- **E2E:** `npm run test:e2e:ci`, `E2E_DEMO_PASSWORD`, and `E2E_OUTPUT_DIR`/`E2E_REPORT_DIR`/
+  `E2E_SCREENSHOT_DIR`.
+
+### Changed: production now refuses to start on unsafe settings (ADR-027)
+With `APP_ENV=production`: a missing, default (`rackflow`), user-name or under-16-character database
+password; non-https `WEB_ORIGIN` or `API_BASE_URL`; a remote Qdrant or model endpoint without https and
+a key; `LOG_LEVEL` DEBUG/NOTSET; `MODEL_TIMEOUT_SECONDS` not below `WEB_PROXY_TIMEOUT_SECONDS`. Errors
+name the variable and never echo its value. **Check a production `.env` against `DEPLOYMENT.md` §8.2
+before upgrading.** Development settings are unchanged.
+
+### Changed: accounts
+- Accounts created by the CLI must meet a password policy (12+ characters, not common, no email name).
+  `seed-demo` with a weak `RACKFLOW_SEED_PASSWORD` now exits 2 without writing anything.
+- `seed-demo` and `seed-eval` refuse `APP_ENV=production` without `--allow-in-production`.
+- Demo sign-in is off in production even if `DEMO_MODE` were forced on.
+- While `DEMO_MODE` is on, the shared demo accounts cannot have their role changed or be removed (409
+  `DEMO_ACCOUNT_PROTECTED`). Two admins can no longer demote each other at the same moment and leave a
+  workspace with no admin.
+
+### Changed: containers and configuration
+- Images: two-stage backend on `python:3.12.16-slim-trixie`, three-stage web on
+  `node:24.22.2-alpine3.24`, both UID/GID 10001 (the same UID as before, so existing volumes stay
+  usable), HEALTHCHECKs, stricter `.dockerignore`. Builds need BuildKit.
+- New settings: `WEB_PROXY_TIMEOUT_SECONDS` (API, default 120) and `API_PROXY_TIMEOUT_MS` (web build,
+  default 120000). Compose derives the second from the first (ADR-032). Compose now also passes
+  `VECTOR_STORE_API_KEY` and `MODEL_TIMEOUT_SECONDS`.
+- The API healthcheck in Compose probes `/api/v1/health/live`; worker and migrate have none.
+- `/health/live` no longer depends on anything.
+
+### Known limitations
+- Nothing needing Docker, Caddy or GitHub Actions has been executed (`Docs/TESTING.md` "Stage 6").
+- The `audit-python` gate fails until pypdf is bumped from 6.21.2 to 6.21.4.
+- The CSP allows inline scripts. Backups are not encrypted or copied off the host. Readiness does not
+  catch partial vector loss. Passwords set through the admin API skip the new policy.
+- Cross-tenant membership add (ADR-026) is unchanged and awaits the owner.
+
+### Upgrade
+No migration changed. Restart the API and worker after updating. A production deployment must
+regenerate or check its `.env` (new refusals), and needs `VECTOR_STORE_API_KEY` and
+`QDRANT__SERVICE__API_KEY` under the overlay; note that adding a key to an existing Qdrant volume makes
+every keyless client fail.
+
+## Redesign — branch `ui-redesign-2026-10` (as of 2026-11-06; merged to `main` in `5648c83`, not tagged)
+
+Merged locally into `main`, not tagged. This is still a development and pilot build, **not a production
+release**. Final gate results are in `Docs/TESTING.md`.
 
 ### New
 - **Landing page** with upload card, demo accounts, How it works, Features and Questions.
@@ -72,7 +136,7 @@ implemented and checked by their owners, not as released.
 ### Known limitations added or still open
 - Evaluation with Groq scored all 13 questions, but one answerable question (`r1`) is still wrongly refused:
   false abstention 0.09 against 0.00 with no LLM (`TESTING.md`, final gate).
-- The Compose changes have not been executed. No CI result is recorded for this branch.
+- The Compose changes had not been executed at the time. No CI result is recorded for this branch.
 - Stop does not cancel on the server. Markdown tables and lists show as plain text.
 - With a hosted model on, questions and retrieved passages leave the machine.
 - The limitations under v0.1.0 below still apply, except that an LLM can now be configured and has been

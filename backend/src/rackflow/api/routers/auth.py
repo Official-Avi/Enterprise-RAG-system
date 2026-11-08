@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from rackflow.audit import record_audit
-from rackflow.auth.demo import DEMO_PERSONAS, find_persona
+from rackflow.auth.demo import DEMO_PERSONAS, demo_enabled, find_persona
 from rackflow.auth.deps import get_principal
 from rackflow.auth.passwords import verify_password
 from rackflow.auth.principal import Principal
@@ -228,7 +228,7 @@ def _demo_account(db: Session, key: str) -> tuple[User, MembershipOut] | None:
 @router.get("/demo", response_model=DemoInfoOut)
 def demo_info(db: Session = Depends(get_db)) -> DemoInfoOut:
     """Public: which one-click demo personas exist. Empty unless DEMO_MODE is on."""
-    if not get_settings().demo_mode:
+    if not demo_enabled(get_settings()):
         return DemoInfoOut(enabled=False, personas=[])
     personas = []
     for p in DEMO_PERSONAS:
@@ -247,7 +247,7 @@ def demo_login(
     body: DemoLoginRequest, request: Request, response: Response, db: Session = Depends(get_db)
 ) -> LoginOut:
     """Public: sign in as a demo persona without a password (DEMO_MODE only)."""
-    if not get_settings().demo_mode:
+    if not demo_enabled(get_settings()):
         raise NotFoundError()
     demo_login_limiter.hit(client_ip(request))
     account = _demo_account(db, body.persona)

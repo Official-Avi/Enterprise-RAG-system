@@ -4,11 +4,65 @@ The coding agent must implement in order. Do not mark a task complete until code
 
 Status vocabulary (3-day sprint): **VERIFIED** (tests/functional checks passed) · **IMPLEMENTED — NOT VERIFIED** (code exists; no passing check yet) · **PARTIALLY COMPLETE** · **IN PROGRESS** · **BLOCKED** · **NOT STARTED** · **DEFERRED** (owner/ADR decision). Checkbox legend kept for compatibility: `[x]` verified, `[~]` partial / not verified, `[ ]` not started, `[!]` blocked, `[-]` deferred.
 
-_Last updated: 2026-11-06, on branch `ui-redesign-2026-10`. Evidence: Docs/TESTING.md "Results log"._
+_Last updated: 2026-11-08, on branch `production-hardening-2026-11`. Evidence: Docs/TESTING.md "Stage 6" and "Results log"._
 
-**How to read the phases below:** each `[x]` was verified at the time it was marked, mostly at v0.1.0 on 2026-10-27, unless the line says otherwise. Code has changed since on this branch, and the final gate is pending, so a `[x]` is not a claim about the current working tree. New work and open items are in the next section. **Nothing here means production ready.**
+**How to read the phases below:** each `[x]` was verified at the time it was marked, mostly at v0.1.0 on 2026-10-27, unless the line says otherwise. Code has changed since, so a `[x]` is not a claim about the current working tree. New work and open items are in the next sections. **Nothing here means production ready.**
 
-## Current round — redesign and bug fixes (2026-11-05 to 2026-11-06)
+## Stage 6 — production hardening (2026-11-07 to 2026-11-08, branch `production-hardening-2026-11`)
+
+Nothing here is committed. Nothing that needs Docker or GitHub Actions has run.
+
+### Implemented and tested here
+- [x] VERIFIED (unit) — Production configuration refusals (ADR-027): `test_production_config.py`.
+- [x] VERIFIED (unit) — `bootstrap-admin`, CLI password policy, production guard on `seed-demo`/`seed-eval`, demo sign-in off in production (ADR-029): `test_production_credentials.py`.
+- [x] VERIFIED (unit) — Shared demo accounts protected from role change and removal; last-admin count under row lock: `test_admin_personas.py`.
+- [x] VERIFIED (real PostgreSQL and Qdrant) — Readiness `vector_collection_consistent`, bounded probes, dependency-free liveness (ADR-031): `test_readiness.py`, `test_foundation.py`.
+- [x] VERIFIED (local drill) — `scripts/ops/backup.py` and `restore.py` with retention and the restore drill (ADR-030), 2026-11-07 on the Windows stack; `test_backup_scripts.py`.
+- [x] VERIFIED (unit) — `scripts/ops/generate_env.py` output validates as production settings and never prints secrets: `test_generate_env.py`.
+- [x] VERIFIED (browser) — Web CSP, COOP, production-only HSTS; `API_PROXY_TIMEOUT_MS` read and validated by `next.config.ts` (ADR-032, ADR-033).
+- [x] VERIFIED (subset run) — `npm run test:e2e:ci`, `E2E_DEMO_PASSWORD`, configurable output folders.
+- [x] VERIFIED — Backend full suite after the review fixes: 516 passed, 2 skipped (POSIX only), 0 failed (owner-reported).
+
+### Implemented, not executed (needs Docker or GitHub)
+- [~] Caddy TLS service, production overlay `deploy/compose.prod.yml` with restart policies, read-only roots, dropped capabilities and the Qdrant key (ADR-028). Static merge check only.
+- [~] Hardened backend and web images with HEALTHCHECKs. hadolint and a build-context check only.
+- [~] CI jobs `e2e`, `secrets`, `audit-python`, `audit-web`, image builds in `compose-smoke`; Dependabot (ADR-034). actionlint and local runs of their pieces only.
+- [~] Backups and the Compose disaster-recovery procedure against Docker volumes, and against a Qdrant with an API key.
+
+### To do before merging this branch
+- [ ] Bump pypdf in `backend/uv.lock`: `cd backend && uv lock --upgrade-package 'pypdf==6.21.4'`, then `uv sync` and the backend suite. `audit-python` fails until then.
+- [ ] `.github/workflows/ci.yml` `compose-smoke`: replace the stale comment "The web service has no healthcheck, so `up --wait` does not wait for it." The web image now has one.
+- [ ] Add the Compose regression test the TLS owner proposed (`backend/tests/test_compose_config.py`, from the static check script), so the overlay rules cannot silently regress.
+- [ ] Add `apps/web/e2e/security-headers.spec.ts`: CSP directives, COOP, X-Frame-Options, no `securitypolicyviolation` on the main pages; HSTS only against a production build.
+- [ ] `routers/auth.py`: use `demo_enabled(get_settings())` in `demo_info` and `demo_login`, so `GET /auth/demo` reports disabled in production.
+- [ ] `apps/web/README.md`: rename `E2E_PASSWORD` to `E2E_DEMO_PASSWORD` (old name still works); document `test:e2e:ci`, `E2E_OUTPUT_DIR`, `E2E_REPORT_DIR`, `E2E_SCREENSHOT_DIR`, and `API_PROXY_TIMEOUT_MS` next to `API_PROXY_TARGET`.
+- [ ] `Docs/DELIVERY_REPORT.md`: change "Backup/restore, disaster recovery runbook | NOT STARTED" to point at `scripts/ops/README.md` (drill passed 2026-11-07).
+- [ ] `.env.example`, `deploy/env.production.example`, `generate_env.py` comments: say that Compose derives `API_PROXY_TIMEOUT_MS` from `WEB_PROXY_TIMEOUT_SECONDS` and ignores the `.env` value.
+- [ ] First real CI run on a pull request; fix what it finds. Then restart the shared API and worker so the local stack runs the Stage 6 code.
+- [ ] Commit, then ask the owner before any push (the repository is public).
+
+### Owner decisions and actions (see `PRODUCTION_CHECKLIST.md` step 0)
+- [!] Cross-tenant membership add (ADR-026).
+- [!] Rotate the Groq key exposed in chat, and the local database password.
+- [!] Full malware scan; rotate every credential used on the old install.
+- [!] Accept, per deployment, that answers send matched passages to the configured remote model.
+- [!] GitHub settings: required checks, `GITLEAKS_LICENSE` for an organisation repository, Dependabot alerts.
+- [!] Nonce-based CSP (would make every page dynamic) or keep `'unsafe-inline'` (ADR-033).
+- [!] Apply image digest pins (noted in Dockerfile comments) together with Dependabot, or keep tags.
+
+### Deferred by owners in Stage 6
+- [ ] Admin API (`create_member`) does not apply the new password policy (ADR-026 area).
+- [ ] `seed-infra` has no production guard.
+- [ ] Anthropic retries once: a total deadline or `max_retries=0` in `providers/chat.py` would make the timeout check a real budget.
+- [ ] Readiness does not detect partial vector loss; a non-gating consistency metric or admin report is suggested instead.
+- [ ] Backup encryption and off-host copy; a `--force` mode that drops and recreates the database.
+- [ ] Healthcheck for Caddy; restart policies and resource limits in the development file.
+- [ ] Map `DEMO_ACCOUNT_PROTECTED` (409) to a friendly message on the admin users page.
+
+## Redesign and bug fixes (2026-11-05 to 2026-11-06) — merged to `main` in `5648c83`
+
+Kept as recorded. Items under "To do before merging to `main`" were for that merge; whether each one
+(service restart, demo data reset) was done is not recorded here.
 
 ### Done and checked
 - [x] VERIFIED — Build fixed; backend set up on the reset laptop (2026-11-05: 114 backend tests, ruff and mypy clean; ENV-1 no longer reproduces).
@@ -39,7 +93,7 @@ _Last updated: 2026-11-06, on branch `ui-redesign-2026-10`. Evidence: Docs/TESTI
 - [ ] Permanent tests for the hero cancel states, and the Ask and console fixes now checked only by scripts.
 - [ ] The landing cases nobody exercised: emptied box, read-only box during the countdown, Switch to Engineer with an edited question, session expiry during Try again, a real 98% cancel.
 - [ ] Re-send holding for a file still being read.
-- [ ] CI jobs for Playwright and axe, and the assertion that `/` builds as Static.
+- [~] CI job for Playwright and axe added in Stage 6 (not yet run); the assertion that `/` builds as Static is still missing.
 
 ### Evaluation
 - [x] VERIFIED — Complete 13-question run with Groq, retry active, 0 errors, about a minute (`TESTING.md`, final gate).
@@ -54,7 +108,7 @@ _Last updated: 2026-11-06, on branch `ui-redesign-2026-10`. Evidence: Docs/TESTI
 
 ### Smaller fixes
 - [ ] `providers/chat.py`: pass `Retry-After` on `ModelError`, so the evaluation runner can wait less.
-- [ ] `routers/health.py`: readiness should compare point count with indexed chunks, or `rag/indexing.py` should not recreate a lost collection silently.
+- [~] `routers/health.py`: readiness now fails on a missing or empty collection while indexed chunks exist (Stage 6, ADR-031). Partial loss is still not detected.
 - [ ] Stop should cancel on the server, or the answer should be discardable (`chat.py`, `answer.py`).
 - [ ] `lib/api.ts` `uploadFiles` has no timeout, so the hero's "Stopping…" can wait for ever if the server never answers.
 - [ ] Stale dialog error on `infrastructure/page.tsx` (NewRack, NewWorkload) and `[id]/page.tsx` (NewNode): reported, not confirmed.
@@ -71,7 +125,7 @@ _Last updated: 2026-11-06, on branch `ui-redesign-2026-10`. Evidence: Docs/TESTI
 - [ ] Deferred on purpose, low risk: a socket-address hop for Compose; IPv6 /64 limits; local `X-Forwarded-For` through uvicorn's default trust.
 
 ### Next round, on its own branch (owner's plan)
-- [ ] Production work: real LLM answers, backups, TLS, secrets, rejecting default credentials, CI gates.
+- [~] Production work: backups, TLS, secrets, rejecting default credentials and CI gates are Stage 6 (above). Real LLM answers in production remain an owner decision (data egress, ADR-023).
 
 ## Phase 0 — Repository and decisions
 - [x] VERIFIED — Inspect workspace and preserve existing user work (only `Docs/` existed).
@@ -175,15 +229,15 @@ _Last updated: 2026-11-06, on branch `ui-redesign-2026-10`. Evidence: Docs/TESTI
 - [~] PARTIALLY COMPLETE — Rate limits (in-process, per API replica) for sign-in/demo/upload/chat; tenant storage quota VERIFIED; retention policy NOT STARTED.
 - [~] PARTIALLY COMPLETE — Prompt-injection (delimiting + detector found via evaluation), file-parser, path-traversal, CSRF reviewed and tested; SSRF not applicable (no URL fetching); CORS restricted to WEB_ORIGIN.
 - [x] VERIFIED — All vector search paths apply authorization filters (single retrieval path + PostgreSQL re-check).
-- [~] PARTIALLY COMPLETE — Authentication release gate runs with the test suite (public operations now also include `GET`/`POST /auth/demo`); npm audit and pip-audit last run manually on 2026-10-27 and are not CI gates; no secret scanner in CI.
-- [ ] NOT STARTED — Backup/restore and disaster recovery runbook.
+- [~] PARTIALLY COMPLETE — Authentication release gate runs with the test suite (public operations now also include `GET`/`POST /auth/demo`). Stage 6 added CI jobs for npm audit, pip-audit and gitleaks; **not yet run on GitHub**, and pip-audit fails until pypdf is bumped.
+- [~] IMPLEMENTED — Backup/restore scripts, disaster-recovery runbook and restore drill (`scripts/ops/README.md`); drill passed on the local stack 2026-11-07; not run against Docker volumes.
 
 ## Phase 10 — Release and deployment
-- [~] PARTIALLY COMPLETE — Deployment guide and production checklist (DEPLOYMENT.md §8); no staging environment exercised.
-- [ ] NOT STARTED — Production secrets and storage configuration.
+- [~] PARTIALLY COMPLETE — Deployment guide (DEPLOYMENT.md §8) and go-live checklist (PRODUCTION_CHECKLIST.md); Compose production overlay with Caddy TLS written, not executed; no staging environment exercised.
+- [~] IMPLEMENTED — NOT VERIFIED — Production secrets: `generate_env.py` and `deploy/env.production.example`; startup refuses default and weak credentials. No managed secret store; storage is a local volume.
 - [x] VERIFIED — Migrations: upgrade verified locally, in CI and on a clean install; full downgrade/upgrade round trip is an automated test; rollback documented.
 - [~] PARTIALLY COMPLETE — Full functional suites pass (backend, browser E2E, CI incl. Docker Compose); load tests NOT STARTED.
-- [~] PARTIALLY COMPLETE — Labels, visible focus, keyboard-dismissable dialogs, skip links, non-colour status badges. Axe and keyboard gates exist as Playwright specs (`a11y-gates.spec.ts`) and passed at the Stage 4 gate, but do not run in CI. No screen-reader or real-device testing is recorded.
+- [~] PARTIALLY COMPLETE — Labels, visible focus, keyboard-dismissable dialogs, skip links, non-colour status badges. Axe and keyboard gates exist as Playwright specs (`a11y-gates.spec.ts`) and passed at the Stage 4 gate; the Stage 6 `e2e` CI job runs them, but has not run yet. No screen-reader or real-device testing is recorded.
 - [x] VERIFIED — Release notes and known limitations (Docs/RELEASE_NOTES.md), cross-checked against TESTING.md.
 - [x] VERIFIED (v0.1.0 only) — Clean installation from a fresh GitHub clone using only README commands (separate database/ports; shared PostgreSQL/Qdrant servers) — live smoke and web proxy login passed on 2026-10-27. Not repeated for the current README.
 

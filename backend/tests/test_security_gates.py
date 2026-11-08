@@ -110,17 +110,18 @@ def test_production_configuration_is_enforced(monkeypatch: pytest.MonkeyPatch) -
     from pydantic import ValidationError
 
     from rackflow.core.config import Settings
+    from tests.test_production_config import production
 
-    with pytest.raises(ValidationError):
-        Settings(app_env="production", cookie_secure=False)
-    with pytest.raises(ValidationError):
-        Settings(app_env="production", cookie_secure=True, embedding_provider="hash")
+    with pytest.raises(ValidationError, match="COOKIE_SECURE"):
+        Settings(**production(cookie_secure=False))
+    with pytest.raises(ValidationError, match="EMBEDDING_PROVIDER"):
+        Settings(**production(embedding_provider="hash"))
     with pytest.raises(ValidationError):
         Settings(model_provider="anthropic", model_api_key=None)
 
     from rackflow.api import app as app_module
 
-    prod = Settings(app_env="production", cookie_secure=True, embedding_provider="fastembed")
+    prod = Settings(**production())
     monkeypatch.setattr(app_module, "get_settings", lambda: prod)
     with TestClient(app_module.create_app()) as c:
         assert c.get("/api/v1/docs").status_code == 404  # no public API docs in production

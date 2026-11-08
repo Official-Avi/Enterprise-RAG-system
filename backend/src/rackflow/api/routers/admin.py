@@ -17,10 +17,13 @@ from sqlalchemy.orm import Session
 
 from rackflow.api.pagination import decode_cursor, encode_cursor
 from rackflow.audit import record_audit
+from rackflow.auth.demo import DEMO_PERSONAS
 from rackflow.auth.deps import require
 from rackflow.auth.passwords import MIN_PASSWORD_LENGTH, hash_password
 from rackflow.auth.principal import Principal
 from rackflow.auth.rbac import Permission
+from rackflow.cli import DEMO_USERS
+from rackflow.core.config import get_settings
 from rackflow.core.errors import ConflictError, NotFoundError
 from rackflow.db.models import (
     AuditEvent,
@@ -110,9 +113,34 @@ def _membership(db: Session, principal: Principal, user_id: uuid.UUID) -> Tenant
 
 
 def _admin_count(db: Session, tenant_id: uuid.UUID) -> int:
-    return db.scalar(select(func.count()).select_from(TenantMembership).where(
+    """Count the tenant's org admins, locking their memberships until the transaction ends.
+
+    The lock serialises concurrent demotions/removals: two admins demoting each other at the same
+    time would otherwise both see two admins and leave the workspace with none.
+    """
+    ids = db.scalars(select(TenantMembership.id).where(
         TenantMembership.tenant_id == tenant_id,
-        TenantMembership.role == Role.ORG_ADMIN)) or 0
+        TenantMembership.role == Role.ORG_ADMIN).with_for_update()).all()
+    return len(ids)
+
+
+# Shared demo accounts: the landing-page personas plus every account `seed-demo` creates.
+_DEMO_EMAILS = frozenset(
+    [p.email.lower() for p in DEMO_PERSONAS] + [email.lower() for _, _, email, _, _ in DEMO_USERS]
+)
+
+
+def _guard_demo_account(db: Session, user_id: uuid.UUID) -> None:
+    """With DEMO_MODE on, shared demo accounts must stay usable for every visitor.
+
+    The admin console only hides the controls; this is the real protection.
+    """
+    if not get_settings().demo_mode:
+        return
+    email = db.scalar(select(User.email).where(User.id == user_id))
+    if email is not None and email.lower() in _DEMO_EMAILS:
+        raise ConflictError(code="DEMO_ACCOUNT_PROTECTED",
+                            message="Shared demo accounts cannot be changed or removed.")
 
 
 @router.get("/users", response_model=MemberList)
@@ -161,6 +189,7 @@ def change_role(
     db: Session = Depends(get_db),
 ) -> MemberOut:
     membership = _membership(db, principal, user_id)
+    _guard_demo_account(db, user_id)
     previous = membership.role
     if (previous == Role.ORG_ADMIN and body.role != Role.ORG_ADMIN
             and _admin_count(db, principal.tenant_id) <= 1):
@@ -180,6 +209,7 @@ def remove_member(
     db: Session = Depends(get_db),
 ) -> Response:
     membership = _membership(db, principal, user_id)
+    _guard_demo_account(db, user_id)
     if membership.role == Role.ORG_ADMIN and _admin_count(db, principal.tenant_id) <= 1:
         raise ConflictError(code="LAST_ADMIN",
                             message="The workspace must keep at least one org admin.")
