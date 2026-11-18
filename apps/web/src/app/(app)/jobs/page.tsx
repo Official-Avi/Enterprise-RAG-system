@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { RequirePermission } from "@/components/Shell";
+import { Icon } from "@/components/icons";
 import {
   Badge,
   Button,
@@ -26,6 +27,14 @@ import type { Job, JobDetail, Page } from "@/lib/types";
 
 const STATUSES = ["queued", "running", "retry_wait", "succeeded", "failed", "cancelled"];
 const TYPES = ["ingest_document", "delete_document", "evaluation_run"];
+
+/** Field label: sentence case in the body face, above its control. */
+const FIELD_LABEL = "mb-1 block text-sm font-medium text-text";
+/** Tertiary action drawn as text: the accent, underlined on hover, 44px on touch. */
+const TEXT_BUTTON =
+  "inline-flex min-h-11 items-center rounded-sm text-accent underline-offset-2 hover:underline focus-visible:underline sm:min-h-8";
+/** A ruled detail row inside the job dialog. */
+const ROW = "flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2 text-xs";
 
 /** queued_at never changes, so a retry shows in available_at. A job in retry_wait shows that time
  *  as its next attempt instead. */
@@ -59,50 +68,68 @@ function JobDrawer({ jobId, onClose, onChanged }: { jobId: string; onClose: () =
       {job.error && <ErrorState error={job.error} onRetry={job.reload} />}
       {j && (
         <div className="space-y-4 text-sm">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <StatusBadge status={j.status} />
             <Badge>{j.job_type}</Badge>
             {j.cancel_requested && j.status === "running" && <Badge tone="warn">Cancellation requested</Badge>}
-            <span className="text-xs text-muted">attempt {j.attempt_count}/{j.max_attempts} · priority {j.priority}</span>
+            <span className="flex flex-wrap gap-x-3 text-xs text-muted tabular-nums">
+              <span>Attempt {j.attempt_count} of {j.max_attempts}</span>
+              <span>Priority {j.priority}</span>
+            </span>
           </div>
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-1">
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2 border-y border-border py-3 tabular-nums sm:grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,1fr)]">
             <dt className="text-muted">Document</dt>
-            <dd>{j.document_id ? <Link className="underline" href={`/documents/${j.document_id}`}>{j.document_filename ?? shortId(j.document_id)}</Link> : "—"}</dd>
+            <dd className="[overflow-wrap:anywhere]">{j.document_id ? <Link className="text-accent underline-offset-2 hover:underline focus-visible:underline" href={`/documents/${j.document_id}`}>{j.document_filename ?? shortId(j.document_id)}</Link> : "None"}</dd>
             <dt className="text-muted">Queued</dt><dd>{formatTime(j.queued_at)}</dd>
             {requeued && (<><dt className="text-muted">Re-queued</dt><dd>{formatTime(requeued)}</dd></>)}
             <dt className="text-muted">Started</dt><dd>{formatTime(j.started_at)}</dd>
             <dt className="text-muted">Finished</dt><dd>{formatTime(j.finished_at)}</dd>
             {j.status === "retry_wait" && (<><dt className="text-muted">Next attempt</dt><dd>{formatTime(j.available_at)}</dd></>)}
-            <dt className="text-muted">Correlation ID</dt><dd className="font-mono text-xs">{j.correlation_id ?? "—"}</dd>
+            <dt className="text-muted">Correlation ID</dt><dd className="font-mono text-xs [overflow-wrap:anywhere]">{j.correlation_id ?? "None"}</dd>
           </dl>
           {j.safe_error_message && (
-            <div role="alert" className="rounded-md bg-bad-soft px-3 py-2"><span className="font-medium text-bad">{j.error_code}: </span>{j.safe_error_message}</div>
+            <div role="alert" className="flex items-start gap-2 rounded-md bg-bad-soft px-3 py-2">
+              <Icon name="cross" aria-hidden="true" className="mt-0.5 shrink-0 text-bad" />
+              <span className="min-w-0 [overflow-wrap:anywhere]"><span className="font-medium text-bad">{j.error_code}: </span>{j.safe_error_message}</span>
+            </div>
           )}
           <div>
-            <h3 className="mb-1 font-medium">Attempts</h3>
-            <ul className="space-y-1">
+            <h3 className="mb-1 text-base">Attempts</h3>
+            <ul className="divide-y divide-border border-y border-border empty:hidden">
               {j.attempts.map((a) => (
-                <li key={a.attempt_number} className="flex justify-between rounded border border-border px-2 py-1 text-xs">
-                  <span>#{a.attempt_number} · {a.worker_id} · {formatTime(a.started_at)}{a.stage ? ` · stage ${a.stage}` : ""}</span>
-                  <span>{a.status}{a.error_code ? ` · ${a.error_code}` : ""}</span>
+                <li key={a.attempt_number} className={ROW}>
+                  <span className="flex flex-wrap gap-x-3 gap-y-1">
+                    <span className="tabular-nums">#{a.attempt_number}</span>
+                    <span className="font-mono">{a.worker_id}</span>
+                    <span className="text-muted tabular-nums">{formatTime(a.started_at)}</span>
+                    {a.stage && <span className="text-muted">Stage {a.stage}</span>}
+                  </span>
+                  <span className="flex flex-wrap gap-x-2">
+                    <span>{a.status}</span>
+                    {a.error_code && <span className="font-mono text-bad">{a.error_code}</span>}
+                  </span>
                 </li>
               ))}
             </ul>
           </div>
           <div>
-            <h3 className="mb-1 font-medium">Stage timeline</h3>
-            <ol className="space-y-1">
+            <h3 className="mb-1 text-base">Stage timeline</h3>
+            <ol className="divide-y divide-border border-y border-border empty:hidden">
               {j.stages.map((s, i) => (
-                <li key={i} className="flex items-center justify-between rounded border border-border px-2 py-1 text-xs">
-                  <span>#{s.attempt_number} {s.stage}{s.error_code ? ` · ${s.error_code}` : ""}</span>
-                  <span className="flex items-center gap-2">{formatMs(s.duration_ms)} <StatusBadge status={s.status} /></span>
+                <li key={i} className={ROW}>
+                  <span className="flex flex-wrap gap-x-2 gap-y-1">
+                    <span className="text-muted tabular-nums">#{s.attempt_number}</span>
+                    <span className="font-medium">{s.stage}</span>
+                    {s.error_code && <span className="font-mono text-bad">{s.error_code}</span>}
+                  </span>
+                  <span className="flex items-center gap-2"><span className="text-muted tabular-nums">{formatMs(s.duration_ms)}</span> <StatusBadge status={s.status} /></span>
                 </li>
               ))}
             </ol>
           </div>
           {error && <p role="alert" className="text-bad">{error}</p>}
           {canManage && (
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               {["failed", "cancelled"].includes(j.status) && <Button variant="primary" onClick={() => act("retry")}>Retry job</Button>}
               {["queued", "retry_wait", "running"].includes(j.status) && !j.cancel_requested && (
                 <Button variant="danger" onClick={() => setConfirmingCancel(true)}>Cancel job</Button>
@@ -115,7 +142,7 @@ function JobDrawer({ jobId, onClose, onChanged }: { jobId: string; onClose: () =
     {/* A sibling, not a child: Esc closes this one and leaves the job open. */}
     <Dialog open={confirmingCancel} title="Cancel this job?" onClose={() => setConfirmingCancel(false)}>
       <p className="text-sm">Running jobs stop at the next stage boundary.</p>
-      <div className="mt-4 flex justify-end gap-2">
+      <div className="mt-6 flex flex-wrap justify-end gap-2">
         <Button data-autofocus onClick={() => setConfirmingCancel(false)}>Keep job</Button>
         <Button variant="danger" onClick={() => void act("cancel")}>Cancel job</Button>
       </div>
@@ -148,16 +175,16 @@ function JobsInner() {
   return (
     <RequirePermission permission="job:read">
       <PageHeader title="Job queue" description="Durable processing jobs with retries, attempts and stage history." actions={<UpdatedAt at={jobs.updatedAt} />} />
-      <div className="mb-3 flex flex-wrap gap-3">
-        <div>
-          <label htmlFor="j-status" className="mb-1 block text-xs font-medium text-muted">Status</label>
+      <div className="mb-4 flex flex-wrap gap-3">
+        <div className="min-w-0 max-sm:w-full">
+          <label htmlFor="j-status" className={FIELD_LABEL}>Status</label>
           <select id="j-status" className={inputClass} value={status} onChange={(e) => setParam("status", e.target.value)}>
             <option value="">All</option>
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
-        <div>
-          <label htmlFor="j-type" className="mb-1 block text-xs font-medium text-muted">Type</label>
+        <div className="min-w-0 max-sm:w-full">
+          <label htmlFor="j-type" className={FIELD_LABEL}>Type</label>
           <select id="j-type" className={inputClass} value={type} onChange={(e) => setParam("job_type", e.target.value)}>
             <option value="">All</option>
             {TYPES.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -171,30 +198,34 @@ function JobsInner() {
         <>
           <TableWrap>
             <thead>
-              <tr><Th>Job</Th><Th>Type</Th><Th>Status</Th><Th>Document</Th><Th>Attempts</Th><Th>Queued</Th><Th>Finished</Th></tr>
+              <tr><Th>Job</Th><Th>Type</Th><Th>Status</Th><Th>Document</Th><Th className="text-right">Attempts</Th><Th>Queued</Th><Th>Finished</Th></tr>
             </thead>
             <tbody>
               {jobs.data.items.map((j) => (
-                <tr key={j.id} className="hover:bg-panel-2">
-                  <Td><button className="inline-flex min-h-6 items-center font-mono text-xs underline" onClick={() => setOpen(j.id)}>{shortId(j.id)}</button></Td>
-                  <Td className="text-xs">{j.job_type}</Td>
+                <tr key={j.id} className="transition-colors duration-[var(--dur-micro)] hover:bg-panel-2">
+                  <Td>
+                    <button type="button" className={`${TEXT_BUTTON} -my-3.5 align-top font-mono text-xs sm:-my-2`} onClick={() => setOpen(j.id)}>
+                      {shortId(j.id)}
+                    </button>
+                  </Td>
+                  <Td className="font-mono text-xs text-text-2">{j.job_type}</Td>
                   <Td>
                     <StatusBadge status={j.status} />
-                    {j.stage && j.status === "running" && <div className="text-xs text-muted">{j.stage}</div>}
-                    {j.error_code && <div className="text-xs text-bad">{j.error_code}</div>}
+                    {j.stage && j.status === "running" && <div className="mt-1 text-xs text-muted">{j.stage}</div>}
+                    {j.error_code && <div className={`mt-1 font-mono text-xs ${j.status === "cancelled" ? "text-muted" : "text-bad"}`}>{j.error_code}</div>}
                   </Td>
-                  <Td className="max-w-56 truncate">{j.document_filename ?? "—"}</Td>
-                  <Td className="tabular-nums">{j.attempt_count}/{j.max_attempts}</Td>
-                  <Td className="text-muted">
+                  <Td className="max-w-56 truncate">{j.document_filename ?? <span className="text-muted">None</span>}</Td>
+                  <Td className="text-right tabular-nums">{j.attempt_count}/{j.max_attempts}</Td>
+                  <Td className="whitespace-nowrap text-muted tabular-nums">
                     {formatTime(j.queued_at)}
                     {requeuedAt(j) && <div className="text-xs">Re-queued {formatTime(requeuedAt(j))}</div>}
                   </Td>
-                  <Td className="text-muted">{formatTime(j.finished_at)}</Td>
+                  <Td className="whitespace-nowrap text-muted tabular-nums">{formatTime(j.finished_at)}</Td>
                 </tr>
               ))}
             </tbody>
           </TableWrap>
-          <div className="mt-3 flex justify-end gap-2">
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
             {cursor && <Button onClick={() => setCursor(null)}>First page</Button>}
             {jobs.data.next_cursor && <Button onClick={() => setCursor(jobs.data!.next_cursor)}>Next page</Button>}
           </div>

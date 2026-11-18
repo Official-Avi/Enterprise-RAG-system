@@ -9,7 +9,7 @@ import { pendingStore } from "@/lib/pendingStore";
 import type { DemoInfo, DemoPersona, Me } from "@/lib/types";
 import { demoLogin, fetchDemoInfo } from "@/lib/workspace";
 import { Icon } from "./icons";
-import { cx } from "./ui";
+import { cx, Spinner } from "./ui";
 
 /** §4.4 polite switch message, per persona: what the new role can and can't do. */
 const SWITCH_COPY: Record<DemoPersona["key"], string> = {
@@ -58,10 +58,16 @@ interface StripError {
   retry?: () => void;
 }
 
+// Text buttons on graphite: demo-fg, underline on hover, a demo-border fill while pressed or
+// open. The ring is drawn in demo-fg here, since cobalt on graphite only just clears 3:1.
+// The key stays 28px so the strip stays 32px; on a coarse pointer an invisible ::after grows the
+// hit area to 44px tall.
 const stripButton = cx(
-  "inline-flex h-7 min-w-11 items-center justify-center gap-1 rounded-md px-2 font-medium whitespace-nowrap",
-  "transition-colors duration-150 hover:bg-demo-border focus-visible:outline-offset-[-2px]",
-  "aria-disabled:cursor-not-allowed aria-disabled:opacity-60",
+  "relative pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-2 pointer-coarse:after:content-['']",
+  "inline-flex h-7 min-w-11 items-center justify-center gap-1 rounded-sm px-2 font-medium whitespace-nowrap",
+  "underline-offset-4 decoration-1 transition-colors duration-(--dur-micro) ease-out hover:underline",
+  "active:bg-demo-border focus-visible:outline-offset-[-2px] focus-visible:outline-demo-fg!",
+  "aria-disabled:cursor-not-allowed aria-disabled:no-underline aria-disabled:opacity-55 aria-busy:cursor-progress",
 );
 
 /** 32px demo indicator on every signed-in page (§4.3) with Switch persona menu and Exit (§4.4).
@@ -286,24 +292,23 @@ export function DemoStrip({
     }
   };
 
-  const fullCopy = `You're ${me.display_name} (${persona.title}) · Others using this demo see the same files and chats`;
+  const fullCopy = `You're ${me.display_name} (${persona.title}). Others using this demo see the same files and chats.`;
 
   return (
     <div
       role="region"
       aria-label="Demo account"
       className={cx(
-        "sticky top-0 z-40 flex min-h-8 items-center gap-1 border-b border-demo-border bg-demo-bg px-4",
-        "text-[13px] leading-5 text-demo-fg",
+        "sticky top-0 z-[var(--z-sticky)] flex min-h-8 items-center gap-1 border-b border-demo-border bg-demo-bg px-4",
+        "text-xs leading-5 text-demo-fg",
       )}
     >
       <SwitchToast />
-      <div className="flex min-w-0 flex-1 items-baseline gap-1.5 py-1">
-        <strong className="shrink-0 font-semibold">
+      <div className="flex min-w-0 flex-1 items-baseline gap-3 py-1">
+        <strong className="shrink-0 font-display font-semibold">
           <span className="hidden md:inline">Demo account</span>
           <span className="md:hidden">Demo</span>
         </strong>
-        <span aria-hidden="true">·</span>
         {error ? (
           <span role="alert" className="min-w-0">
             <AlertGlyph />
@@ -312,14 +317,17 @@ export function DemoStrip({
               <button
                 type="button"
                 onClick={error.retry}
-                className="ml-2 rounded font-semibold underline underline-offset-2 hover:no-underline"
+                className={cx(
+                  "ml-2 rounded-sm font-medium underline underline-offset-4 decoration-1 hover:no-underline",
+                  "focus-visible:outline-demo-fg!",
+                )}
               >
                 Try again
               </button>
             )}
           </span>
         ) : (
-          <span className="min-w-0 truncate" title={fullCopy}>
+          <span className="min-w-0 truncate opacity-90" title={fullCopy}>
             <span className="hidden md:inline">{fullCopy}</span>
             <span className="md:hidden">{persona.title}</span>
           </span>
@@ -337,11 +345,11 @@ export function DemoStrip({
           aria-controls={open ? menuId : undefined}
           onClick={() => (open ? closeMenu(false) : openMenu("first"))}
           onKeyDown={onButtonKeyDown}
-          className={cx(stripButton, "aria-expanded:bg-demo-border")}
+          className={cx(stripButton, "group aria-expanded:bg-demo-border")}
         >
           <span className="hidden md:inline">Switch persona</span>
           <span className="md:hidden">Switch</span>
-          <span aria-hidden="true">▾</span>
+          <Icon name="chevronDown" width={14} height={14} className="shrink-0 transition-transform duration-(--dur-micro) group-aria-expanded:rotate-180" />
         </button>
 
         {open && (
@@ -351,9 +359,9 @@ export function DemoStrip({
             aria-labelledby={buttonId}
             onKeyDown={onMenuKeyDown}
             className={cx(
-              "absolute top-full right-4 z-50 mt-1 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border",
+              "absolute top-full right-4 z-[var(--z-dropdown)] mt-1 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-border-2",
               "bg-panel p-1 text-text shadow-elev-3",
-              "transition-[opacity,translate] duration-200 ease-(--ease-snappy)",
+              "transition-[opacity,translate] duration-(--dur-short) ease-out",
               "starting:opacity-0 motion-safe:starting:translate-y-1",
             )}
           >
@@ -375,25 +383,26 @@ export function DemoStrip({
                   data-title={p.title}
                   onClick={() => choose(p)}
                   className={cx(
-                    "flex min-h-14 w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left",
-                    "transition-colors duration-150 hover:bg-panel-2 focus:bg-panel-2 focus-visible:outline-offset-[-2px]",
-                    locked && !busy && "opacity-50",
+                    "flex min-h-14 w-full items-start gap-3 rounded-md px-3 py-2.5 text-left",
+                    "transition-colors duration-(--dur-micro) hover:bg-panel-2 focus:bg-panel-2 active:bg-panel-3",
+                    "focus-visible:outline-offset-[-2px] aria-checked:bg-accent-soft/60",
+                    locked && !busy && "opacity-55",
                     locked && "cursor-not-allowed",
                     busy && "cursor-wait",
                   )}
                 >
                   <span
                     aria-hidden="true"
-                    className="grid size-8 shrink-0 place-items-center rounded-full bg-accent-soft text-[13px] font-semibold text-accent"
+                    className="grid size-8 shrink-0 place-items-center rounded-full border border-border-2 bg-panel-2 font-display text-xs font-semibold text-text-2"
                   >
                     {p.title.charAt(0)}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium">{p.title}</span>
-                    <span className="block text-[13px] leading-5 text-muted">{p.summary}</span>
+                    <span className="block font-display text-sm font-medium">{p.title}</span>
+                    <span className="block text-xs leading-5 text-text-2">{p.summary}</span>
                   </span>
                   <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-accent">
-                    {busy ? <Spinner /> : current ? <Icon name="check" /> : null}
+                    {busy ? <Spinner /> : current ? <Icon name="check" strokeWidth={2.2} /> : null}
                   </span>
                 </button>
               );
@@ -436,15 +445,19 @@ function SwitchToast() {
 
   if (!text) return null;
   return (
-    <div className="pointer-events-none fixed inset-x-4 z-50 flex justify-center" style={{ bottom }}>
+    <div
+      className="pointer-events-none fixed inset-x-4 z-[var(--z-toast)] flex justify-center sm:justify-end"
+      style={{ bottom }}
+    >
       <p
         className={cx(
-          "max-w-md rounded-xl border border-border bg-panel px-4 py-2.5 text-sm text-text shadow-elev-3",
-          "transition-[opacity,translate] duration-200 ease-(--ease-snappy)",
+          "flex max-w-md items-start gap-2.5 rounded-card border border-border bg-panel px-4 py-3 text-sm text-text shadow-elev-3",
+          "transition-[opacity,translate] duration-(--dur-short) ease-out",
           "starting:opacity-0 motion-safe:starting:translate-y-1",
         )}
       >
-        {text}
+        <Icon name="check" strokeWidth={2.2} className="mt-0.5 shrink-0 text-ok" />
+        <span>{text}</span>
       </p>
     </div>
   );
@@ -452,22 +465,6 @@ function SwitchToast() {
 
 function menuItems(refs: (HTMLButtonElement | null)[]): HTMLButtonElement[] {
   return refs.filter((el): el is HTMLButtonElement => el !== null && el.isConnected);
-}
-
-function Spinner() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width={16}
-      height={16}
-      fill="none"
-      aria-hidden="true"
-      className="animate-spin motion-reduce:animate-none"
-    >
-      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity={0.25} strokeWidth={2.5} />
-      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" />
-    </svg>
-  );
 }
 
 function AlertGlyph() {

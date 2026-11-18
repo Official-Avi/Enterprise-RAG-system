@@ -24,19 +24,28 @@ export default function WorkersPage() {
       {workers.data && workers.data.items.length > 0 && (
         <TableWrap>
           <thead>
-            <tr><Th>Worker</Th><Th>Health</Th><Th>State</Th><Th>Current job</Th><Th>Succeeded</Th><Th>Failed</Th><Th>Started</Th><Th>Last heartbeat</Th></tr>
+            <tr>
+              <Th>Worker</Th>
+              <Th>Health</Th>
+              <Th>State</Th>
+              <Th>Current job</Th>
+              <Th className="text-right">Succeeded</Th>
+              <Th className="text-right">Failed</Th>
+              <Th>Started</Th>
+              <Th>Last heartbeat</Th>
+            </tr>
           </thead>
           <tbody>
             {workers.data.items.map((w) => (
-              <tr key={w.worker_id}>
-                <Td><span className="font-mono text-xs">{w.worker_id}</span><div className="text-xs text-muted">v{w.version}</div></Td>
+              <tr key={w.worker_id} className="transition-colors duration-[var(--dur-micro)] hover:bg-panel-2">
+                <Td><span className="font-mono text-xs">{w.worker_id}</span><div className="text-xs text-muted tabular-nums">v{w.version}</div></Td>
                 <Td><StatusBadge status={w.health} /></Td>
                 <Td>{w.status}</Td>
                 <Td className="font-mono text-xs">{shortId(w.current_job_id)}</Td>
-                <Td className="tabular-nums">{w.jobs_succeeded}</Td>
-                <Td className="tabular-nums">{w.jobs_failed}</Td>
-                <Td className="text-muted">{formatTime(w.started_at)}</Td>
-                <Td className="text-muted">{formatTime(w.last_heartbeat_at)}</Td>
+                <Td className="text-right tabular-nums">{w.jobs_succeeded}</Td>
+                <Td className={w.jobs_failed > 0 ? "text-right font-medium text-bad tabular-nums" : "text-right tabular-nums"}>{w.jobs_failed}</Td>
+                <Td className="font-mono text-xs whitespace-nowrap text-muted">{formatTime(w.started_at)}</Td>
+                <Td className="font-mono text-xs whitespace-nowrap text-muted">{formatTime(w.last_heartbeat_at)}</Td>
               </tr>
             ))}
           </tbody>

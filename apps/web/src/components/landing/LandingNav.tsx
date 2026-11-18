@@ -14,9 +14,13 @@ const LINKS = [
   { href: "#faq", label: "Questions" },
 ];
 
-const pill =
-  "inline-flex h-10 shrink-0 items-center rounded-full bg-accent px-3.5 text-sm font-semibold text-accent-contrast " +
-  "transition-colors duration-150 hover:bg-accent/90 sm:px-4";
+/** The bar's one primary key (design.md: keycaps, one cobalt key per view), 44px on touch. */
+const primaryKey = "key key-primary shrink-0 max-sm:min-h-11 max-sm:px-3";
+
+/** Nav links: body face, secondary ink, ink on hover and keyboard focus, 44px tall. */
+const navLink =
+  "inline-flex min-h-11 shrink-0 items-center rounded-input px-3 text-sm font-medium text-text-2 " +
+  "transition-colors duration-(--dur-micro) hover:text-text focus-visible:text-text active:text-accent";
 
 function subscribeScroll(onChange: () => void) {
   window.addEventListener("scroll", onChange, { passive: true });
@@ -77,51 +81,48 @@ export function LandingNav() {
   return (
     <header
       className={cx(
-        "sticky top-0 z-30 h-14 border-b bg-landing-bg/90 backdrop-blur transition-colors duration-150 [@media(max-height:500px)]:h-11",
-        scrolled ? "border-border" : "border-transparent",
+        "sticky top-0 z-(--z-sticky-nav) h-16 border-b backdrop-blur transition-[background-color,border-color] duration-(--dur-short) [@media(max-height:500px)]:h-12",
+        scrolled ? "border-border bg-landing-bg/90" : "border-transparent bg-landing-bg",
       )}
     >
       <nav
         aria-label="Site"
-        className="mx-auto grid h-full max-w-[1152px] grid-cols-[1fr_auto] items-center gap-3 px-4 md:grid-cols-[1fr_auto_1fr]"
+        className="mx-auto flex h-full w-full max-w-(--container) items-center justify-between gap-3 px-(--gutter)"
       >
-        <Link href="/" className="flex min-w-0 items-center gap-2 justify-self-start text-base font-semibold">
+        <Link
+          href="/"
+          className="-mx-1 flex min-h-11 min-w-0 items-center gap-2 rounded-input px-1 font-display text-lg font-semibold text-text transition-colors duration-(--dur-micro) hover:text-text-2 focus-visible:text-text active:text-accent"
+        >
           <span className="inline-flex shrink-0 rounded-full dark:ring-1 dark:ring-border-strong">
             <Logo size={32} />
           </span>
           <span className="truncate max-[359px]:sr-only">RackFlow AI</span>
         </Link>
 
-        <ul className="hidden items-center gap-1 md:flex">
-          {LINKS.map((l) => (
-            <li key={l.href}>
-              <a
-                href={l.href}
-                className="inline-flex h-10 items-center rounded-lg px-3 text-sm font-medium text-muted transition-colors duration-150 hover:text-text"
-              >
-                {l.label}
-              </a>
-            </li>
-          ))}
-        </ul>
-
-        <div className="flex items-center gap-1 justify-self-end sm:gap-2">
+        <div className="flex items-center gap-1 sm:gap-2">
+          <ul className="hidden items-center md:flex">
+            {LINKS.map((l) => (
+              <li key={l.href}>
+                <a href={l.href} className={navLink}>
+                  {l.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+          <span aria-hidden="true" className="mx-2 hidden h-5 w-px bg-border-2 md:block" />
           {!ready ? (
             <span aria-hidden="true" className="h-10" />
           ) : me ? (
-            <Link href={homePath(me.permissions)} className={pill}>
+            <Link href={homePath(me.permissions)} className={primaryKey}>
               Open workspace
             </Link>
           ) : (
             <>
-              <Link
-                href="/login"
-                className="inline-flex h-10 shrink-0 items-center rounded-lg px-2.5 text-sm font-medium transition-colors duration-150 hover:bg-panel-2 sm:px-3"
-              >
+              <Link href="/login" className={navLink}>
                 Sign in
               </Link>
               {hasDemoAccounts(demo) && (
-                <a href="#demo" className={pill}>
+                <a href="#demo" className={primaryKey}>
                   Try a demo
                 </a>
               )}

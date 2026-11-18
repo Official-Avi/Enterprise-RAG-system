@@ -81,7 +81,7 @@ const AGGREGATE: [phases: UploadPhase[], word: string][] = [
   [["deleting"], "removing"],
 ];
 
-/** "3 of 8 ready · 4 reading · 1 not accepted" */
+/** "3 of 8 ready, 4 reading, 1 not accepted" */
 function aggregateLine(items: TrackedUpload[]): string {
   const count = (phases: UploadPhase[]) => items.filter((i) => phases.includes(i.phase)).length;
   const parts = [`${count(["indexed", "duplicate"])} of ${items.length} ready`];
@@ -89,7 +89,7 @@ function aggregateLine(items: TrackedUpload[]): string {
     const n = count(phases);
     if (n) parts.push(`${n} ${word}`);
   }
-  return parts.join(" · ");
+  return parts.join(", ");
 }
 
 /** The composer (§5.3): chips row from useUploads(), auto-grow textarea, IME-safe Enter,
@@ -129,7 +129,7 @@ export function Composer({
       <button
         type="button"
         onClick={() => openPersonaMenu("Engineer")}
-        className="font-medium text-accent underline underline-offset-2 hover:no-underline"
+        className="font-medium text-accent underline underline-offset-2 hover:no-underline active:text-accent-hover"
       >
         Switch to Engineer
       </button>
@@ -239,21 +239,23 @@ export function Composer({
   };
 
   const scope = scopeSlot ? (
-    <div className={cx("min-w-0 empty:hidden", narrow && "mb-2")}>{scopeSlot}</div>
+    <div className={cx("flex min-w-0 empty:hidden", narrow && "mb-2")}>{scopeSlot}</div>
   ) : null;
 
   const composer = (
     <form
       onSubmit={onSubmit}
       className={cx(
-        "rounded-3xl border border-border-strong bg-panel px-3 pt-3 pb-2 shadow-elev-1",
-        // Full-strength accent, not §5.3's 40%: that dropped to about 1.9:1 and fails §9 #14's 3:1.
-        "transition-[box-shadow,border-color] duration-150 focus-within:border-accent focus-within:shadow-elev-3",
+        "rounded-card border border-border-strong bg-panel px-3 pt-3 pb-2 shadow-elev-1",
+        // The question box draws no ring of its own (below), so the whole box carries the global one:
+        // 2px focus at offset 2, never transitioned (§9 #14, design.md).
+        "has-[#composer-input:focus]:outline-2 has-[#composer-input:focus]:outline-offset-2",
+        "has-[#composer-input:focus]:outline-focus",
       )}
     >
       {uploads.rejectedNote && (
         <Note
-          glyph={uploads.canUpload ? "⊘" : <Icon name="lock" width={14} height={14} />}
+          glyph={<Icon name={uploads.canUpload ? "cross" : "lock"} width={14} height={14} />}
           tone={uploads.canUpload ? "text-bad" : "text-muted"}
           onDismiss={() => {
             uploads.clearRejectedNote();
@@ -290,14 +292,14 @@ export function Composer({
                   type="button"
                   aria-expanded={expanded}
                   onClick={() => setExpanded((v) => !v)}
-                  className="h-13 rounded-xl border border-border px-3 text-[13px] font-medium text-text tabular-nums transition-colors hover:bg-panel-2"
+                  className="key min-h-13 px-3 text-xs tabular-nums"
                 >
                   {expanded ? "Show fewer" : `+${chips.length - COLLAPSED_SHOWN} more`}
                 </button>
               </li>
             )}
           </ul>
-          {many && <p className="mt-1.5 px-1 text-xs text-muted tabular-nums">{aggregateLine(chips)}</p>}
+          {many && <p className="mt-2 px-1 text-xs text-muted tabular-nums">{aggregateLine(chips)}</p>}
         </div>
       )}
 
@@ -319,47 +321,57 @@ export function Composer({
         aria-describedby={finePointer ? HINT_ID : undefined}
         className={cx(
           "field-sizing-content block max-h-[200px] w-full resize-none overflow-y-auto bg-transparent px-1.5 py-1",
-          "text-[16px] leading-[26px] text-text placeholder:text-muted",
-          // The container's focus-within border and shadow are the focus indicator.
+          "text-base leading-[26px] text-text placeholder:text-muted",
+          // The form's outline (has-[#composer-input:focus]) is the focus indicator.
           "not-forced-colors:focus-visible:outline-none!",
         )}
       />
 
-      <div className="mt-1 flex min-h-10 flex-wrap items-center gap-2">
-        {uploads.canUpload &&
-          (firstMessage ? (
-            <button
-              type="button"
-              onClick={() => uploads.pickFiles()}
-              className="inline-flex h-9 items-center gap-1.5 rounded-full! border border-border-strong px-3 text-sm font-medium text-text transition-colors hover:bg-panel-2 pointer-coarse:h-11"
-            >
-              <Icon name="paperclip" />
-              Add files
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => uploads.pickFiles()}
-              aria-label="Attach files"
-              className="grid size-9 place-items-center rounded-full! text-muted transition-colors hover:bg-panel-2 hover:text-text pointer-coarse:size-11"
-            >
-              <Icon name="paperclip" width={18} height={18} />
-            </button>
-          ))}
-        {!narrow && scope}
+      {/* One line: the scope key keeps its room and the hint truncates first (it is also a title). */}
+      <div className="mt-2 flex min-h-10 items-center gap-2">
+        {/* Attach and scope sit in one sunken tray of keys (design.md: the composer's scope tray). */}
+        {(uploads.canUpload || (!narrow && scope)) && (
+          // Rigid, but never wider than the row minus Send (40px key plus the gap).
+          <div className="tray min-w-0 max-w-[calc(100%-3rem)] shrink-0 items-center">
+            {uploads.canUpload &&
+              (firstMessage ? (
+                <button
+                  type="button"
+                  onClick={() => uploads.pickFiles()}
+                  className="key min-h-8 shrink-0 gap-1.5 px-3 pointer-coarse:min-h-11"
+                >
+                  <Icon name="paperclip" />
+                  Add files
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => uploads.pickFiles()}
+                  aria-label="Attach files"
+                  title="Attach files"
+                  className="key size-8 min-h-8 shrink-0 p-0 text-text-2 pointer-coarse:size-11"
+                >
+                  <Icon name="paperclip" />
+                </button>
+              ))}
+            {!narrow && scope}
+          </div>
+        )}
         <div className="ml-auto flex min-w-0 items-center gap-3">
-          <p id={HINT_ID} className="hidden truncate text-xs text-muted md:pointer-fine:block">
-            Enter to send · Shift+Enter for a new line
+          <p
+            id={HINT_ID}
+            title="Enter to send, Shift+Enter for a new line"
+            className="hidden min-w-0 truncate text-xs text-muted md:pointer-fine:block"
+          >
+            Enter to send, Shift+Enter for a new line
           </p>
           <button
             type="submit"
             aria-label="Send"
             aria-disabled={blocked}
             onMouseDown={(e) => e.preventDefault()}
-            className={cx(
-              "grid size-9 shrink-0 place-items-center rounded-full! bg-accent text-accent-contrast transition-opacity pointer-coarse:size-11",
-              "hover:opacity-90 aria-disabled:cursor-not-allowed aria-disabled:opacity-40",
-            )}
+            // The view's one primary key; .key handles hover, press and the aria-disabled look.
+            className="key key-primary size-10 min-h-10 shrink-0 p-0 pointer-coarse:size-11"
           >
             {busy ? <Spinner /> : <Icon name="send" width={18} height={18} strokeWidth={2.2} />}
           </button>
@@ -375,17 +387,17 @@ export function Composer({
         "w-full",
         !centered && [
           // §5.3 pb-4 when docked; §10 keeps phones clear of the home indicator.
-          "sticky bottom-0 z-10 bg-panel pb-[max(8px,env(safe-area-inset-bottom))]",
+          "sticky bottom-0 z-10 bg-bg pb-[max(8px,env(safe-area-inset-bottom))]",
           "md:pb-[max(16px,env(safe-area-inset-bottom))]",
           "before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-6",
-          "before:bg-linear-to-t before:from-panel before:to-transparent",
+          "before:bg-linear-to-t before:from-bg before:to-transparent",
         ].join(" "),
       )}
     >
       <div className="mx-auto w-full max-w-[768px] px-6 max-md:px-4">
-        {centered && heading && <div className="mb-8 text-center">{heading}</div>}
+        {centered && heading && <div className="mb-8">{heading}</div>}
         {composer}
-        {caveat && <p className="mt-2 text-center text-xs text-muted">{caveat}</p>}
+        {caveat && <p className="mt-2 px-1 text-xs text-muted text-pretty">{caveat}</p>}
       </div>
     </div>
   );
@@ -403,16 +415,20 @@ function Note({
   children: ReactNode;
 }) {
   return (
-    <div className="mb-2 flex items-start gap-2 rounded-xl bg-panel-2 py-1 pr-1 pl-3 text-xs text-text">
-      <span aria-hidden="true" className={cx("flex h-6 shrink-0 items-center", tone)}>
+    // A panel-2 well without its own border: it sits inside the composer box (no card in a card).
+    <div className="mb-2 flex items-start gap-2 rounded-md bg-panel-2 py-1 pr-1 pl-3 text-sm text-text">
+      <span aria-hidden="true" className={cx("flex h-7 shrink-0 items-center", tone)}>
         {glyph}
       </span>
-      <p className="min-w-0 flex-1 py-1 leading-4">{children}</p>
+      <p className="min-w-0 flex-1 py-1 leading-5">{children}</p>
       <button
         type="button"
         onClick={onDismiss}
         aria-label="Dismiss note"
-        className="grid size-6 shrink-0 place-items-center rounded-full! text-muted transition-colors hover:bg-panel hover:text-text pointer-coarse:size-11"
+        className={cx(
+          "grid size-7 shrink-0 place-items-center rounded-sm text-muted transition-colors duration-(--dur-micro)",
+          "hover:bg-panel-3 hover:text-text focus-visible:text-text active:bg-border pointer-coarse:size-11",
+        )}
       >
         <Icon name="close" width={14} height={14} />
       </button>

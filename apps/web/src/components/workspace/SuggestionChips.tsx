@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, type RefObject } from "react";
+import { cx } from "@/components/ui";
 import { middleTruncate } from "@/lib/status";
 import { suggestQuestions } from "@/lib/suggestions";
 import type { DocumentItem } from "@/lib/types";
@@ -65,7 +66,8 @@ function useFitAboveComposer(
   }, [wrapRef, listRef, active]);
 }
 
-/** Suggested questions (§5.11): a click sends immediately. */
+/** Suggested questions (§5.11): a click sends immediately. Ruled rows, two columns from sm, not
+ *  floating cards (design.md, Ask workspace). */
 export function SuggestionChips({
   docs,
   mode,
@@ -95,14 +97,19 @@ export function SuggestionChips({
       <ul
         ref={listRef}
         aria-label="Suggested questions"
-        className="grid w-full grid-cols-1 gap-2 overscroll-contain transition-[opacity,translate] duration-200 ease-(--ease-snappy) starting:opacity-0 sm:grid-cols-2 motion-safe:starting:translate-y-1"
+        className="grid w-full grid-cols-1 gap-x-6 overscroll-contain sm:grid-cols-2"
       >
         {suggestions.map((s) => (
-          <li key={s.question} className="flex">
+          <li key={s.question} className="flex border-b border-border first:border-t sm:nth-2:border-t">
             <button
               type="button"
               onClick={(e) => pick(s.question, e.timeStamp)}
-              className="flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 rounded-xl border border-border bg-panel px-3 py-2 text-left transition-[background-color,border-color,scale] duration-150 hover:border-border-strong hover:bg-panel-2 motion-safe:active:scale-[.98]"
+              className={cx(
+                "group flex min-h-12 w-full min-w-0 flex-col justify-center gap-0.5 px-2 py-2.5 text-left",
+                "transition-colors duration-(--dur-micro) hover:bg-panel-2 active:bg-panel-3",
+                // Inset ring: the rows touch, and an outset ring would overlap the next one.
+                "focus-visible:bg-panel-2 focus-visible:outline-offset-[-2px]",
+              )}
             >
               <span className="text-sm leading-5 text-text wrap-break-word">{s.question}</span>
               {s.filename && (

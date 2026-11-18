@@ -441,7 +441,7 @@ export function LibraryView() {
   } else if (allRows.length === 0 && shown.q) {
     body = (
       <EmptyBlock
-        icon={<SearchIcon className="size-6" />}
+        icon={<SearchIcon className="size-5" />}
         title={`No documents match “${shown.q}”`}
         action={
           <button type="button" onClick={clearSearch} className={secondaryButtonClass}>
@@ -453,7 +453,7 @@ export function LibraryView() {
   } else if (allRows.length === 0 && shown.collectionId !== "all") {
     body = (
       <EmptyBlock
-        icon={<Icon name="documents" width={24} height={24} />}
+        icon={<Icon name="documents" width={20} height={20} />}
         title={`Nothing in ${shownCollectionName} yet`}
         action={
           <button type="button" onClick={() => setCollectionId("all")} className={secondaryButtonClass}>
@@ -467,7 +467,7 @@ export function LibraryView() {
       <UploadDropzone onPick={() => uploads.pickFiles()} />
     ) : (
       <EmptyBlock
-        icon={<Icon name="documents" width={24} height={24} />}
+        icon={<Icon name="documents" width={20} height={20} />}
         title="No documents yet"
         description="Engineers and Admins can add them."
       />
@@ -480,7 +480,7 @@ export function LibraryView() {
     );
     body = (
       <EmptyBlock
-        icon={<Icon name={c.icon} width={24} height={24} />}
+        icon={<Icon name={c.icon} width={20} height={20} />}
         title={c.title}
         description={c.description}
         action={
@@ -498,17 +498,17 @@ export function LibraryView() {
         className={cx(
           // relative: every sr-only (position:absolute) inside stays in <main>'s scroll box, rather
           // than stretching the document and letting the whole shell scroll away.
-          "relative mx-auto w-full max-w-[1080px] px-4 pt-6 md:px-6 md:pt-8",
+          "relative mx-auto w-full max-w-[var(--container)] px-4 pt-6 md:px-6 md:pt-10",
           // Room under the last row for the mobile Upload button.
-          canUpload ? "pb-[calc(96px_+_env(safe-area-inset-bottom))] sm:pb-10" : "pb-10",
+          canUpload ? "pb-[calc(96px_+_env(safe-area-inset-bottom))] sm:pb-16" : "pb-16",
         )}
       >
-        <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <div className="min-w-0">
-            <h1 ref={headingRef} tabIndex={-1} className="text-xl/7 font-semibold tracking-tight">
+            <h1 ref={headingRef} tabIndex={-1} className="text-xl">
               My documents
             </h1>
-            <p className="mt-0.5 text-sm text-muted">Everything you can ask about</p>
+            <p className="mt-1 text-sm text-muted">Everything you can ask about</p>
           </div>
           {canUpload && (
             <div className="hidden sm:block">
@@ -554,7 +554,11 @@ export function LibraryView() {
                 <button
                   type="button"
                   onClick={showEverything}
-                  className="inline-flex min-h-6 shrink-0 items-center self-center px-1 text-sm font-medium underline underline-offset-2 hover:text-accent pointer-coarse:min-h-11"
+                  className={cx(
+                    "inline-flex min-h-6 shrink-0 cursor-pointer items-center self-center rounded-sm px-1 text-sm font-medium",
+                    "underline underline-offset-2 transition-colors duration-[var(--dur-micro)] hover:text-accent",
+                    "pointer-coarse:min-h-11",
+                  )}
                 >
                   Show all files
                 </button>
@@ -587,7 +591,7 @@ export function LibraryView() {
         {body}
 
         {docs.truncated && !loadFailed && (
-          <p className="mt-3 text-xs text-muted">Showing the newest 200 files. Search by name to find older ones.</p>
+          <p className="mt-3 text-sm text-muted">Showing the newest 200 files. Search by name to find older ones.</p>
         )}
       </div>
 
@@ -608,11 +612,10 @@ export function LibraryView() {
         <button
           type="button"
           onClick={() => uploads.pickFiles()}
+          // The phone form of Add files: the view's one primary key, large, pinned bottom-right.
           className={cx(
-            "fixed right-[calc(16px_+_env(safe-area-inset-right))] bottom-[calc(16px_+_env(safe-area-inset-bottom))] z-30",
-            "inline-flex h-14 min-w-14 items-center justify-center gap-2 rounded-full bg-accent px-5",
-            "text-base font-semibold text-accent-contrast shadow-elev-3",
-            "transition-[opacity,scale] duration-150 hover:opacity-90 active:scale-[.98] active:duration-100 sm:hidden",
+            "key key-primary key-lg fixed z-[var(--z-sticky)] sm:hidden",
+            "right-[calc(16px_+_env(safe-area-inset-right))] bottom-[calc(16px_+_env(safe-area-inset-bottom))]",
           )}
         >
           <Icon name="upload" width={20} height={20} />

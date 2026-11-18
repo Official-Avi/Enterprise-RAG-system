@@ -5,8 +5,10 @@ import { cx } from "@/components/ui";
 import { SearchIcon } from "./parts";
 import { FILTERS, type StatusFilter } from "./rows";
 
+// design.md, Inputs: panel face, the 3:1 border, 40px (44 on touch), hover deepens the edge.
 const CONTROL =
-  "h-9 w-full rounded-lg border border-border-strong bg-panel text-base text-text transition-colors duration-150 " +
+  "h-10 w-full rounded-input border border-border-strong bg-panel text-sm text-text " +
+  "transition-colors duration-[var(--dur-micro)] hover:border-text-2 focus-visible:outline-offset-[-1px] " +
   "pointer-coarse:h-11";
 
 /** §6 toolbar: name search (16px text so iOS doesn't zoom), status chips with counts and the
@@ -41,8 +43,8 @@ export function LibraryToolbar({
   const chips = FILTERS.filter((f) => f.key !== "attention" || f.key === filter || counts.attention > 0);
 
   return (
-    <div className="mt-5 flex flex-col gap-3">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+    <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center lg:flex-1">
         <div className="relative min-w-0 flex-1 sm:max-w-[360px]">
           <SearchIcon className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted" />
           <input
@@ -60,7 +62,7 @@ export function LibraryToolbar({
           />
         </div>
         {collections.length > 0 && (
-          <div className="sm:w-60">
+          <div className="sm:w-56">
             <label htmlFor={selectId} className="sr-only">
               Collection
             </label>
@@ -68,7 +70,7 @@ export function LibraryToolbar({
               id={selectId}
               value={collectionId}
               onChange={(e) => onCollection(e.target.value)}
-              className={cx(CONTROL, "px-3")}
+              className={cx(CONTROL, "cursor-pointer px-3")}
             >
               <option value="all">All collections</option>
               {collections.map((c) => (
@@ -81,7 +83,7 @@ export function LibraryToolbar({
         )}
       </div>
 
-      <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-2">
+      <div role="group" aria-label="Filter by status" className="tray max-w-full flex-wrap self-start lg:self-auto">
         {chips.map((f) => {
           const active = f.key === filter;
           return (
@@ -91,15 +93,15 @@ export function LibraryToolbar({
               aria-pressed={active}
               onClick={() => onFilter(f.key)}
               className={cx(
-                "inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-sm font-medium",
-                "transition-colors duration-150 pointer-coarse:h-11",
-                active
-                  ? "border-accent bg-accent-soft text-accent"
-                  : "border-border-strong bg-panel text-text hover:bg-panel-2",
+                "key min-h-8 gap-2 px-3 text-sm pointer-coarse:min-h-11",
+                // Selected takes ScopeChip's recipe (accent-soft fill, accent ink and edge) on top of
+                // the pressed key, so the choice carries a hue as well as depth in both modes.
+                "aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-accent",
+                !active && "text-text-2",
               )}
             >
               {f.label}
-              <span className={cx("tabular-nums", active ? "text-accent" : "text-muted")}>
+              <span className={cx("text-xs tabular-nums", active ? "text-current" : "text-muted")}>
                 {counts[f.key]}
                 {atLeast.has(f.key) ? "+" : ""}
               </span>

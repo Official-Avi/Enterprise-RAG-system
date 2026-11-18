@@ -127,7 +127,7 @@ test.describe("Ask as the Engineer", () => {
     await send.click({ force: true });
     await expect(turns(page)).toHaveCount(0);
     await expect(questionBox(page)).toHaveAttribute("aria-describedby", "composer-hint");
-    await expect(page.locator("#composer-hint")).toHaveText("Enter to send · Shift+Enter for a new line");
+    await expect(page.locator("#composer-hint")).toHaveText("Enter to send, Shift+Enter for a new line");
     await questionBox(page).fill("Anything");
     await expect(send).toHaveAttribute("aria-disabled", "false");
   });

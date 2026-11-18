@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { useRef, useState, type FormEvent } from "react";
 import { flushSync } from "react-dom";
+import { Icon } from "@/components/icons";
 import {
   Badge,
   Button,
+  cx,
   Dialog,
   Empty,
   ErrorState,
@@ -26,6 +28,21 @@ import { MY_DOCUMENTS } from "@/lib/workspace";
 /** The workspace finds "My documents", and evaluation seeding finds its corpus, by exact name.
  *  Renaming one would quietly make the next upload or seed create a new, empty collection. */
 const nameIsFixed = (c: Collection) => c.name === MY_DOCUMENTS || /^Evaluation (corpus|restricted) \(v\d+\)$/.test(c.name);
+
+/** Field label: sentence case in the body face, above its control. */
+const FIELD_LABEL = "mb-1 block text-sm font-medium text-text";
+/** A radio choice: the whole row is the target, 44px on touch. */
+const CHOICE =
+  "flex min-h-11 cursor-pointer items-start gap-3 rounded-md px-2 py-2 text-sm transition-colors " +
+  "duration-[var(--dur-micro)] hover:bg-panel-2 has-checked:bg-accent-soft sm:min-h-0";
+const RADIO = "mt-0.5 size-4 shrink-0 accent-accent";
+/** Access levels in sentence case; an unknown level shows as the API sends it. */
+const ACCESS_LABEL: Record<string, string> = { read: "Read", write: "Write", manage: "Manage" };
+/** Table name link: on touch, padding gives it a 44px target without changing the row height. */
+const NAME_LINK = cx(
+  "font-medium text-text break-words hover:text-accent hover:underline focus-visible:underline active:text-accent-hover",
+  "pointer-coarse:-my-3 pointer-coarse:inline-block pointer-coarse:py-3",
+);
 
 function CreateCollection({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false);
@@ -68,28 +85,34 @@ function CreateCollection({ onCreated }: { onCreated: () => void }) {
       <Dialog open={open} title="New collection" onClose={() => setOpen(false)}>
         <form onSubmit={submit} className="space-y-3">
           <div>
-            <label htmlFor="c-name" className="mb-1 block text-sm font-medium">Name</label>
+            <label htmlFor="c-name" className={FIELD_LABEL}>Name</label>
             <input id="c-name" name="name" required maxLength={200} className={inputClass} />
           </div>
           <div>
-            <label htmlFor="c-desc" className="mb-1 block text-sm font-medium">Description</label>
+            <label htmlFor="c-desc" className={FIELD_LABEL}>Description</label>
             <textarea id="c-desc" name="description" rows={2} maxLength={2000} className={inputClass} />
           </div>
           <fieldset>
-            <legend className="mb-1 text-sm font-medium">Visibility</legend>
-            <label className="flex items-start gap-2 text-sm">
-              <input type="radio" name="visibility" value="tenant" defaultChecked className="mt-1" />
-              <span>Workspace — all engineers and operators in this workspace can search it.</span>
+            <legend className="mb-1 text-sm font-medium text-text">Visibility</legend>
+            <label className={CHOICE}>
+              <input type="radio" name="visibility" value="tenant" defaultChecked className={RADIO} />
+              <span>
+                <span className="font-medium text-text">Workspace:</span>{" "}
+                <span className="text-text-2">all engineers and operators in this workspace can search it.</span>
+              </span>
             </label>
-            <label className="mt-1 flex items-start gap-2 text-sm">
-              <input type="radio" name="visibility" value="restricted" className="mt-1" />
-              <span>Restricted — only you, org admins and explicitly granted users.</span>
+            <label className={`mt-1 ${CHOICE}`}>
+              <input type="radio" name="visibility" value="restricted" className={RADIO} />
+              <span>
+                <span className="font-medium text-text">Restricted:</span>{" "}
+                <span className="text-text-2">only you, org admins and explicitly granted users.</span>
+              </span>
             </label>
           </fieldset>
           {error && <p role="alert" className="text-sm text-bad">{error}</p>}
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-wrap justify-end gap-2 pt-2">
             <Button type="button" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button type="submit" variant="primary" aria-disabled={busy || undefined}>Create</Button>
+            <Button type="submit" variant="primary" aria-busy={busy || undefined} aria-disabled={busy || undefined}>Create</Button>
           </div>
         </form>
       </Dialog>
@@ -134,7 +157,7 @@ function EditCollection({ collection, onClose, onSaved }: { collection: Collecti
     <Dialog open title="Edit collection" onClose={onClose}>
       <form onSubmit={submit} className="space-y-3">
         <div>
-          <label htmlFor="e-name" className="mb-1 block text-sm font-medium">Name</label>
+          <label htmlFor="e-name" className={FIELD_LABEL}>Name</label>
           <input
             id="e-name"
             name="name"
@@ -143,18 +166,18 @@ function EditCollection({ collection, onClose, onSaved }: { collection: Collecti
             defaultValue={collection.name}
             readOnly={fixed}
             aria-describedby={fixed ? "e-name-note" : undefined}
-            className={inputClass}
+            className={`${inputClass} read-only:bg-panel-2 read-only:text-text-2`}
           />
-          {fixed && <p id="e-name-note" className="mt-1 text-xs text-muted">RackFlow finds this collection by its name, so the name can&apos;t be changed.</p>}
+          {fixed && <p id="e-name-note" className="mt-1 flex items-start gap-1.5 text-xs text-muted"><Icon name="lock" width={14} height={14} aria-hidden="true" className="mt-px shrink-0" />RackFlow finds this collection by its name, so the name can&apos;t be changed.</p>}
         </div>
         <div>
-          <label htmlFor="e-desc" className="mb-1 block text-sm font-medium">Description</label>
+          <label htmlFor="e-desc" className={FIELD_LABEL}>Description</label>
           <textarea id="e-desc" name="description" rows={2} maxLength={2000} defaultValue={collection.description} className={inputClass} />
         </div>
         {error && <p role="alert" className="text-sm text-bad">{error}</p>}
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2 pt-2">
           <Button type="button" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" aria-disabled={busy || undefined}>{busy ? "Saving…" : "Save"}</Button>
+          <Button type="submit" variant="primary" aria-busy={busy || undefined} aria-disabled={busy || undefined}>{busy ? "Saving…" : "Save"}</Button>
         </div>
       </form>
     </Dialog>
@@ -191,17 +214,14 @@ function DeleteCollection({ collection, onClose, onDeleted }: { collection: Coll
         </p>
       )}
       {error && <p role="alert" className="mt-3 text-sm text-bad">{error}</p>}
-      <div className="mt-4 flex flex-wrap justify-end gap-2">
+      <div className="mt-6 flex flex-wrap justify-end gap-2">
         <Button data-autofocus onClick={onClose}>Cancel</Button>
         {count ? (
-          <Link
-            href={`/documents?collection=${collection.id}`}
-            className="inline-flex items-center rounded-md border border-transparent bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90"
-          >
+          <Link href={`/documents?collection=${collection.id}`} className="key key-primary max-sm:min-h-11 sm:min-h-9 sm:px-3">
             Open its documents
           </Link>
         ) : (
-          <Button variant="danger" aria-disabled={busy || undefined} onClick={() => void remove()}>
+          <Button variant="danger" aria-busy={busy || undefined} aria-disabled={busy || undefined} onClick={() => void remove()}>
             {busy ? "Deleting…" : "Delete"}
           </Button>
         )}
@@ -250,7 +270,7 @@ function ManageAccess({ collection, onClose }: { collection: Collection; onClose
   return (
     <>
       <Dialog open wide title={`Access to ${collection.name}`} onClose={onClose}>
-        <p className="mb-3 text-sm text-muted">
+        <p className="mb-4 max-w-[72ch] text-sm text-text-2">
           {collection.visibility === "restricted"
             ? "Restricted: only org admins, the creator and the people below can search this collection."
             : "Workspace collection: all engineers and operators can read it. Grants below add write or manage rights."}
@@ -259,10 +279,10 @@ function ManageAccess({ collection, onClose }: { collection: Collection; onClose
         {grants.loading && <Loading />}
         {grants.error && <ErrorState error={grants.error} onRetry={grants.reload} />}
         {grants.data && grants.data.length === 0 && <p className="text-sm text-muted">No explicit grants.</p>}
-        <ul className="divide-y divide-border">
+        <ul className="divide-y divide-border border-y border-border empty:hidden">
           {grants.data?.map((g) => (
             <li key={g.user_id} className="flex flex-wrap items-center justify-between gap-3 py-2 text-sm">
-              <span className="min-w-0 [overflow-wrap:anywhere]"><span className="font-medium">{g.display_name}</span> <span className="text-xs text-muted">{g.email}</span></span>
+              <span className="flex min-w-0 flex-col [overflow-wrap:anywhere]"><span className="font-medium">{g.display_name}</span> <span className="font-mono text-xs text-muted">{g.email}</span></span>
               <span className="flex items-center gap-2">
                 <select aria-label={`Access level for ${g.email}`} className={`${inputClass} w-28!`} value={g.permission} onChange={(e) => setGrant(g.user_id, e.target.value)}>
                   <option value="read">read</option><option value="write">write</option><option value="manage">manage</option>
@@ -284,14 +304,14 @@ function ManageAccess({ collection, onClose }: { collection: Collection; onClose
         {canListMembers ? (
           <form className="mt-4 flex flex-wrap items-end gap-2 border-t border-border pt-4" onSubmit={(e) => { e.preventDefault(); if (userId) void setGrant(userId, level); setUserId(""); }}>
             <div className="min-w-56 flex-1">
-              <label htmlFor="g-user" className="mb-1 block text-xs font-medium text-muted">Member</label>
+              <label htmlFor="g-user" className={FIELD_LABEL}>Member</label>
               <select id="g-user" className={inputClass} value={userId} onChange={(e) => setUserId(e.target.value)}>
                 <option value="">Choose a member…</option>
                 {candidates.map((m) => <option key={m.user_id} value={m.user_id}>{m.display_name} ({m.email})</option>)}
               </select>
             </div>
             <div>
-              <label htmlFor="g-level" className="mb-1 block text-xs font-medium text-muted">Access</label>
+              <label htmlFor="g-level" className={FIELD_LABEL}>Access</label>
               <select id="g-level" className={inputClass} value={level} onChange={(e) => setLevel(e.target.value as Grant["permission"])}>
                 <option value="read">read</option><option value="write">write</option><option value="manage">manage</option>
               </select>
@@ -310,9 +330,9 @@ function ManageAccess({ collection, onClose }: { collection: Collection; onClose
           {revoking?.email} loses access to &quot;{collection.name}&quot;. Their existing chat citations from it will be hidden.
         </p>
         {revokeError && <p role="alert" className="mt-3 text-sm text-bad">{revokeError}</p>}
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-6 flex flex-wrap justify-end gap-2">
           <Button data-autofocus onClick={() => setRevoking(null)}>Cancel</Button>
-          <Button variant="danger" aria-disabled={revokeBusy || undefined} onClick={() => void revoke()}>
+          <Button variant="danger" aria-busy={revokeBusy || undefined} aria-disabled={revokeBusy || undefined} onClick={() => void revoke()}>
             {revokeBusy ? "Revoking…" : "Revoke"}
           </Button>
         </div>
@@ -347,23 +367,35 @@ export default function CollectionsPage() {
         {list.data && list.data.length > 0 && (
           <TableWrap>
             <thead>
-              <tr><Th>Name</Th><Th>Visibility</Th><Th>Your access</Th><Th>Documents</Th><Th>Updated</Th><Th className="relative"><span className="sr-only">Actions</span></Th></tr>
+              <tr><Th>Name</Th><Th>Visibility</Th><Th>Your access</Th><Th className="text-right">Documents</Th><Th>Updated</Th><Th className="relative"><span className="sr-only">Actions</span></Th></tr>
             </thead>
             <tbody>
               {list.data.map((c) => {
                 const manageable = c.access_level === "manage";
                 return (
-                  <tr key={c.id} className="hover:bg-panel-2">
+                  <tr key={c.id} className="transition-colors duration-[var(--dur-micro)] hover:bg-panel-2">
                     <Td>
-                      <Link href={`/documents?collection=${c.id}`} className="font-medium hover:underline">{c.name}</Link>
-                      {c.description && <div className="text-xs text-muted">{c.description}</div>}
+                      <Link
+                        href={`/documents?collection=${c.id}`}
+                        className={NAME_LINK}
+                      >
+                        {c.name}
+                      </Link>
+                      {c.description && <div className="mt-0.5 max-w-[60ch] text-sm text-muted">{c.description}</div>}
                     </Td>
-                    <Td><Badge tone={c.visibility === "restricted" ? "warn" : "neutral"}>{c.visibility === "restricted" ? "Restricted" : "Workspace"}</Badge></Td>
-                    <Td>{c.access_level ? <Badge tone="accent">{c.access_level}</Badge> : <span className="text-xs text-muted">Metadata only</span>}</Td>
-                    <Td className="tabular-nums">{c.document_count}</Td>
-                    <Td className="text-muted">{formatTime(c.updated_at)}</Td>
+                    <Td>
+                      <Badge tone={c.visibility === "restricted" ? "warn" : "neutral"}>
+                        <span className="inline-flex items-center gap-1">
+                          {c.visibility === "restricted" && <Icon name="lock" width={12} height={12} aria-hidden="true" />}
+                          {c.visibility === "restricted" ? "Restricted" : "Workspace"}
+                        </span>
+                      </Badge>
+                    </Td>
+                    <Td>{c.access_level ? <Badge>{ACCESS_LABEL[c.access_level] ?? c.access_level}</Badge> : <span className="text-sm text-muted">Metadata only</span>}</Td>
+                    <Td className="text-right tabular-nums">{c.document_count}</Td>
+                    <Td className="whitespace-nowrap text-muted tabular-nums">{formatTime(c.updated_at)}</Td>
                     <Td className="whitespace-nowrap text-right">
-                      <span className="inline-flex gap-1.5">
+                      <span className="inline-flex gap-2">
                         {manageable && canManage && <Button aria-label={`Manage access to ${c.name}`} onClick={() => setManaging(c)}>Manage access</Button>}
                         {manageable && canManage && <Button aria-label={`Edit ${c.name}`} onClick={() => setEditing(c)}>Edit</Button>}
                         {manageable && canManage && <Button variant="danger" aria-label={`Delete ${c.name}`} onClick={() => setDeleting(c)}>Delete</Button>}

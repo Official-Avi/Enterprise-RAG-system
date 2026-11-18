@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import { Icon } from "@/components/icons";
 import { cx } from "@/components/ui";
 
 export type FileKind = "pdf" | "docx" | "txt" | "md";
@@ -15,25 +16,19 @@ export function fileKind(filename: string, fileType?: string | null): FileKind {
 
 export const KIND_LABEL: Record<FileKind, string> = { pdf: "PDF", docx: "DOCX", txt: "TXT", md: "MD" };
 
-// §5.5 tile colours: PDF red, DOCX blue, TXT/MD slate. Tokens keep it right in dark mode.
+// File-type glyphs (design.md, Icons): PDF in the error ink, everything else muted. No tinted tile.
 const KIND_TONE: Record<FileKind, string> = {
-  pdf: "bg-bad-soft text-bad",
-  docx: "bg-info-soft text-info",
-  txt: "bg-panel-2 text-muted",
-  md: "bg-panel-2 text-muted",
+  pdf: "text-bad",
+  docx: "text-muted",
+  txt: "text-muted",
+  md: "text-muted",
 };
 
-/** Decorative file-type tile; the filename next to it already carries the extension. */
+/** Decorative file-type glyph; the filename next to it already carries the extension. */
 export function TypeTile({ kind }: { kind: FileKind }) {
   return (
-    <span
-      aria-hidden="true"
-      className={cx(
-        "grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-semibold tracking-tight",
-        KIND_TONE[kind],
-      )}
-    >
-      {KIND_LABEL[kind]}
+    <span aria-hidden="true" className={cx("grid size-9 shrink-0 place-items-center", KIND_TONE[kind])}>
+      <Icon name="file" width={20} height={20} />
     </span>
   );
 }
@@ -108,7 +103,28 @@ export function SearchIcon({ className }: { className?: string }) {
   );
 }
 
-/** Centred empty or explained state. */
+/** Warning glyph for error and refresh notes (replaces the ⚠ emoji). */
+export function AlertIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={16}
+      height={16}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M12 4 2.8 19.5h18.4zM12 10v4.5M12 17.2v.1" />
+    </svg>
+  );
+}
+
+/** Empty or explained state: left-aligned in its region, a plain 20px glyph, the line that says
+ *  what belongs here, one sentence and one key (design.md, Empty states). */
 export function EmptyBlock({
   icon,
   title,
@@ -123,23 +139,25 @@ export function EmptyBlock({
   as?: "h1" | "h2";
 }) {
   return (
-    <div className="mx-auto flex max-w-md flex-col items-center px-4 py-12 text-center">
-      <span className="grid h-12 w-12 place-items-center rounded-full bg-panel-2 text-muted">{icon}</span>
+    // Under the page head it hangs from a hairline; as the page itself (h1) it stands alone.
+    <div className={cx("max-w-[60ch]", Heading === "h2" && "mt-6 border-t border-border pt-6")}>
+      <span className="block text-muted">{icon}</span>
       <Heading
         className={cx(
-          "mt-4 font-semibold text-balance [overflow-wrap:anywhere]",
-          Heading === "h1" ? "text-[28px]/9 tracking-tight" : "text-base",
+          "mt-3 text-pretty [overflow-wrap:anywhere]",
+          Heading === "h1" ? "text-xl" : "text-lg",
         )}
       >
         {title}
       </Heading>
-      {description && <p className="mt-1.5 text-sm text-muted">{description}</p>}
-      {action && <div className="mt-5">{action}</div>}
+      {description && <p className="mt-2 text-sm text-text-2">{description}</p>}
+      {action && <div className="mt-6">{action}</div>}
     </div>
   );
 }
 
-/** §5.9: nothing for the first 300ms, then a static skeleton (never flash an empty state). */
+/** §5.9: nothing for the first 300ms, then a skeleton in the shape of the list (never flash an
+ *  empty state). */
 export function DelayedSkeleton() {
   const [show, setShow] = useState(false);
   useEffect(() => {
@@ -148,23 +166,23 @@ export function DelayedSkeleton() {
   }, []);
   if (!show) return null;
   return (
-    <div role="status" className="mt-6 space-y-2">
+    <div role="status" className="mt-6 border-t border-border">
       <span className="sr-only">Loading your documents…</span>
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} aria-hidden="true" className="flex h-[72px] items-center gap-3 rounded-xl border border-border bg-panel px-4">
-          <span className="h-9 w-9 rounded-lg bg-panel-2" />
-          <span className="h-3 w-1/3 rounded bg-panel-2" />
+      {[44, 32, 52, 38].map((w, i) => (
+        <div key={i} aria-hidden="true" className="flex h-16 items-center gap-3 border-b border-border px-3">
+          <span className="size-5 shrink-0 animate-shimmer rounded-sm bg-panel-3" />
+          <span className="flex min-w-0 flex-1 flex-col gap-2">
+            <span className="h-3 animate-shimmer rounded-sm bg-panel-3" style={{ width: `${w}%` }} />
+            <span className="h-2.5 w-24 animate-shimmer rounded-sm bg-panel-3" />
+          </span>
+          <span className="hidden h-6 w-20 animate-shimmer rounded-sm bg-panel-3 md:block" />
         </div>
       ))}
     </div>
   );
 }
 
-export const primaryButtonClass =
-  "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-accent px-4 text-sm font-medium " +
-  "text-accent-contrast transition-[opacity,scale] duration-150 hover:opacity-90 active:scale-[.98] active:duration-100 " +
-  "pointer-coarse:h-11";
+/** Keycaps from globals.css (design.md, Buttons). The keys carry their own transitions. */
+export const primaryButtonClass = "key key-primary pointer-coarse:min-h-11";
 
-export const secondaryButtonClass =
-  "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-border-strong bg-panel px-4 " +
-  "text-sm font-medium text-text transition-colors duration-150 hover:bg-panel-2 pointer-coarse:h-11";
+export const secondaryButtonClass = "key pointer-coarse:min-h-11";

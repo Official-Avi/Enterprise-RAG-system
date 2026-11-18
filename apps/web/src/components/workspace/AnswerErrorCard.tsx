@@ -43,9 +43,8 @@ function retrySeconds(error: ApiError): number {
     : FALLBACK_RETRY_SECONDS;
 }
 
-const actionClass =
-  "inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border-strong bg-panel px-3 " +
-  "text-sm font-medium text-text transition-[background-color,scale] duration-150 active:duration-100 max-sm:min-h-11";
+// Keys draw their own hover, press and aria-disabled states (globals.css).
+const actionClass = "key pointer-coarse:min-h-11";
 
 function AlertGlyph({ tone }: { tone: "warn" | "bad" }) {
   return (
@@ -104,7 +103,7 @@ function RateLimitedRetry({ error, busy, onRetry }: { error: ApiError; busy: boo
       className={cx(
         actionClass,
         "tabular-nums",
-        blocked ? "cursor-not-allowed opacity-60" : "hover:bg-bg active:scale-[.98]",
+        blocked && "cursor-not-allowed",
       )}
     >
       <Icon name="refresh" />
@@ -169,14 +168,18 @@ function CopyRef({ id }: { id: string }) {
   }
 
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-muted">
-      <span className="break-all">Ref {id}</span>
+    <div className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+      {/* The label is words, so it is set in the body face; only the id itself is a machine value. */}
+      <span className="break-all">
+        Ref <span className="font-mono">{id}</span>
+      </span>
       <button
         type="button"
         onClick={(e) => void copy(e.currentTarget)}
         className={cx(
-          "inline-flex min-h-6 items-center gap-1 rounded-lg px-1.5 font-sans text-xs font-medium",
-          "text-muted transition-colors duration-150 hover:bg-panel hover:text-text max-sm:min-h-11",
+          "inline-flex min-h-6 items-center gap-1 rounded-md px-1.5 text-xs font-medium text-text-2",
+          "transition-colors duration-[var(--dur-micro)] ease-out hover:bg-panel hover:text-text active:bg-panel-2",
+          "pointer-coarse:min-h-11",
         )}
       >
         {copied ? <Icon name="check" width={14} height={14} /> : <CopyGlyph />}
@@ -203,19 +206,15 @@ export function AnswerErrorCard({
   const { title, body } = COPY[kind];
 
   return (
-    <div
-      role="alert"
-      className={cx(
-        "rounded-xl border p-4",
-        tone === "warn" ? "border-warn/30 bg-warn-soft" : "border-bad/30 bg-bad-soft",
-      )}
-    >
+    <div role="alert" className={cx("rounded-card p-4 sm:p-6", tone === "warn" ? "bg-warn-soft" : "bg-bad-soft")}>
       <div className="flex gap-3">
         <AlertGlyph tone={tone} />
         <div className="min-w-0 flex-1">
-          <p className="text-base font-semibold text-text">{title}</p>
-          {body && <p className="mt-1 text-sm text-text">{body}</p>}
-          <div className="mt-3 flex flex-wrap gap-2">
+          <p className={cx("font-display text-base leading-6 font-semibold", tone === "warn" ? "text-warn" : "text-bad")}>
+            {title}
+          </p>
+          {body && <p className="mt-1 max-w-[65ch] text-sm leading-6 text-text">{body}</p>}
+          <div className="mt-4 flex flex-wrap gap-2">
             {kind === "session" ? (
               <SignInAgain />
             ) : kind === "rate" ? (
@@ -227,7 +226,7 @@ export function AnswerErrorCard({
                 onClick={() => {
                   if (!busy) onRetry();
                 }}
-                className={cx(actionClass, busy ? "cursor-not-allowed opacity-60" : "hover:bg-bg active:scale-[.98]")}
+                className={actionClass}
               >
                 <Icon name="refresh" />
                 Try again
@@ -253,7 +252,7 @@ function SignInAgain() {
         const next = window.location.pathname + window.location.search;
         e.currentTarget.href = `/login?next=${encodeURIComponent(next)}`;
       }}
-      className={cx(actionClass, "hover:bg-bg")}
+      className={actionClass}
     >
       <Icon name="arrowRight" />
       Sign in again

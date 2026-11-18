@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type FormEvent } from "react";
+import { Icon } from "@/components/icons";
 import { DemoPersonaCards } from "@/components/landing/DemoPersonaCards";
 import { signedInPath, useVisitor, VisitorProvider } from "@/components/landing/Visitor";
 import { Logo } from "@/components/Logo";
@@ -11,9 +12,14 @@ import { api, ApiError } from "@/lib/api";
 import { usePending } from "@/lib/pendingStore";
 import type { Me } from "@/lib/types";
 
+// 44px on touch, 40px with a fine pointer. Hover darkens the edge; an error turns it red.
 const fieldClass =
-  "block h-11 w-full rounded-lg border border-border-strong bg-panel px-3 text-base text-text " +
-  "placeholder:text-muted transition-colors duration-150 aria-[invalid=true]:border-bad";
+  "block h-11 w-full rounded-input border border-border-strong bg-panel px-3 text-base text-text " +
+  "pointer-fine:h-10 pointer-fine:sm:text-sm placeholder:text-muted " +
+  "transition-colors duration-[var(--dur-micro)] hover:border-text-2 " +
+  "focus-visible:border-accent disabled:cursor-not-allowed disabled:bg-panel-2 disabled:opacity-55 aria-[invalid=true]:border-bad";
+
+const labelClass = "mb-2 block text-sm font-medium text-text";
 
 function loginError(e: unknown): string {
   if (!(e instanceof ApiError)) return "Sign-in failed.";
@@ -27,16 +33,11 @@ function DemoBlock() {
   // While loading, and when the server can't be reached, the cards show their skeletons or notice.
   if (ready && !unreachable && (!demo?.enabled || demo.personas.length === 0)) return null;
   return (
-    <section aria-labelledby="demo-heading" className="mb-6">
-      <h2 id="demo-heading" className="mb-3 text-sm font-semibold">
+    <section aria-labelledby="demo-heading" className="mb-10">
+      <h2 id="demo-heading" className="mb-3 text-base text-text">
         Use a demo account
       </h2>
       <DemoPersonaCards variant="compact" />
-      <div className="mt-6 flex items-center gap-3 text-xs font-medium text-muted">
-        <span aria-hidden="true" className="h-px flex-1 bg-border" />
-        <span>or sign in with email</span>
-        <span aria-hidden="true" className="h-px flex-1 bg-border" />
-      </div>
     </section>
   );
 }
@@ -48,8 +49,9 @@ function ResumeNote() {
   if (n === 0 && !pending.question) return null;
   const what = n > 1 ? "files stay" : n === 1 ? "file stays" : "question stays";
   return (
-    <p className="mb-6 rounded-lg bg-accent-soft px-3 py-2 text-sm text-text">
-      Your {what} in this tab until you sign in.
+    <p className="mb-6 flex items-start gap-2 rounded-md bg-accent-soft px-3 py-2 text-sm text-text">
+      <Icon name="lock" className="mt-0.5 shrink-0 text-accent" />
+      <span>Your {what} in this tab until you sign in.</span>
     </p>
   );
 }
@@ -104,9 +106,9 @@ function LoginForm() {
   const describedBy = error ? "login-error" : undefined;
 
   return (
-    <form onSubmit={submit} aria-label="Sign in with email" className="space-y-4">
+    <form onSubmit={submit} aria-label="Sign in with email" className="space-y-6">
       <div>
-        <label htmlFor="email" className="mb-1.5 block text-sm font-medium">
+        <label htmlFor="email" className={labelClass}>
           Work email
         </label>
         <input
@@ -124,7 +126,7 @@ function LoginForm() {
         />
       </div>
       <div>
-        <label htmlFor="password" className="mb-1.5 block text-sm font-medium">
+        <label htmlFor="password" className={labelClass}>
           Password
         </label>
         <div className="relative">
@@ -149,10 +151,12 @@ function LoginForm() {
             onClick={() => setShowPassword((s) => !s)}
             className={cx(
               // A clear border keeps the fill inside the field's border while the target stays 44px tall.
-              "absolute inset-y-0 right-0 inline-flex min-w-11 items-center justify-center rounded-r-lg border",
-              "border-transparent bg-clip-padding px-3 text-sm font-medium text-accent",
-              "transition-colors duration-150 hover:bg-panel-2",
-              "aria-pressed:bg-accent-soft aria-pressed:font-semibold",
+              // The ring is drawn inside the field so the field's own edge doesn't cut through it.
+              "absolute inset-y-0 right-0 inline-flex min-w-11 items-center justify-center rounded-r-input border",
+              "border-transparent bg-clip-padding px-3 text-sm font-medium text-accent underline-offset-2",
+              "transition-colors duration-[var(--dur-micro)] hover:bg-panel-2 hover:underline active:bg-panel-3",
+              "focus-visible:outline-offset-[-3px]",
+              "aria-pressed:bg-accent-soft aria-pressed:hover:bg-accent-soft",
             )}
           >
             Show
@@ -166,14 +170,23 @@ function LoginForm() {
           aria-expanded={workspaceOpen}
           aria-controls="workspace-field"
           onClick={() => setWorkspaceOpen((o) => !o)}
-          className="inline-flex min-h-11 items-center text-sm font-medium text-accent underline-offset-2 hover:underline sm:min-h-8"
+          className={cx(
+            "inline-flex min-h-11 items-center gap-2 text-sm font-medium text-accent underline-offset-2",
+            "hover:underline active:text-accent-hover sm:min-h-8",
+          )}
         >
+          <Icon
+            name="plus"
+            width={14}
+            height={14}
+            className={cx("shrink-0 transition-transform duration-[var(--dur-micro)]", workspaceOpen && "rotate-45")}
+          />
           Signing in to a specific workspace?
         </button>
-        <div id="workspace-field" hidden={!workspaceOpen} className="mt-2">
+        <div id="workspace-field" hidden={!workspaceOpen} className="mt-3">
           {workspaceOpen && (
             <>
-              <label htmlFor="workspace" className="mb-1.5 block text-sm font-medium">
+              <label htmlFor="workspace" className={labelClass}>
                 Workspace
               </label>
               <input
@@ -187,7 +200,7 @@ function LoginForm() {
                 aria-describedby="workspace-hint"
                 className={fieldClass}
               />
-              <p id="workspace-hint" className="mt-1.5 text-xs text-muted">
+              <p id="workspace-hint" className="mt-2 text-xs text-muted">
                 Leave it blank to use your default workspace.
               </p>
             </>
@@ -196,20 +209,21 @@ function LoginForm() {
       </div>
 
       {error && (
-        <p id="login-error" role="alert" className="rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">
-          {error.text}
+        <p id="login-error" role="alert" className="flex items-start gap-2 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">
+          <Icon name="cross" className="mt-0.5 shrink-0" />
+          <span>{error.text}</span>
         </p>
       )}
 
       <button
         type="submit"
         aria-disabled={busy || undefined}
-        className={cx(
-          "inline-flex h-11 w-full items-center justify-center rounded-lg bg-accent px-4 text-[15px] font-medium",
-          "text-accent-contrast transition-[opacity,scale] duration-150 hover:opacity-90 active:scale-[0.98]",
-          "aria-disabled:cursor-wait aria-disabled:opacity-70",
-        )}
+        aria-busy={busy || undefined}
+        className="key key-primary min-h-11 w-full pointer-fine:min-h-10 aria-busy:cursor-progress aria-busy:opacity-80"
       >
+        {busy && (
+          <span aria-hidden="true" className="size-4 motion-safe:animate-spin rounded-full border-2 border-current border-r-transparent" />
+        )}
         {busy ? "Signing in…" : "Sign in"}
       </button>
     </form>
@@ -218,33 +232,39 @@ function LoginForm() {
 
 function FormFallback() {
   return (
-    <div aria-hidden="true" className="space-y-4">
-      <div className="h-[70px] rounded-lg bg-panel-2" />
-      <div className="h-[70px] rounded-lg bg-panel-2" />
-      <div className="h-8" />
-      <div className="h-11 rounded-lg bg-panel-2" />
+    <div aria-hidden="true" className="space-y-6">
+      {[0, 1].map((i) => (
+        <div key={i}>
+          <div className="mb-2 h-5 w-24 motion-safe:animate-shimmer rounded-sm bg-panel-3" />
+          <div className="h-11 motion-safe:animate-shimmer rounded-input bg-panel-3 pointer-fine:h-10" />
+        </div>
+      ))}
+      <div className="h-6 w-56 motion-safe:animate-shimmer rounded-sm bg-panel-3" />
+      <div className="h-11 motion-safe:animate-shimmer rounded-input bg-panel-3 pointer-fine:h-10" />
     </div>
   );
 }
 
 export default function LoginPage() {
   return (
-    <main id="main" className="flex min-h-dvh items-center justify-center px-4 py-10 sm:py-16">
-      <div className="w-full max-w-[440px] rounded-2xl border border-border bg-panel p-6 sm:p-8">
-        <header className="mb-6 flex items-center gap-3">
-          <Logo size={40} />
-          <div className="min-w-0">
-            <h1 className="text-xl leading-7 font-semibold">RackFlow AI</h1>
-            <p className="text-sm text-muted">Ask questions about your documents</p>
-          </div>
+    <main id="main" className="flex min-h-dvh justify-center bg-bg px-4 py-10 sm:items-center sm:px-6 sm:py-16">
+      <div className="w-full max-w-[28rem]">
+        <header className="mb-10 border-b border-border pb-6">
+          <Logo size={36} />
+          <h1 className="mt-4 text-2xl text-text">RackFlow AI</h1>
+          <p className="mt-1 text-base text-text-2">Ask questions about your documents</p>
         </header>
         <ResumeNote />
         <VisitorProvider>
           <DemoBlock />
         </VisitorProvider>
-        <Suspense fallback={<FormFallback />}>
-          <LoginForm />
-        </Suspense>
+        <h2 className="mb-3 text-sm font-medium text-text">Sign in with email</h2>
+        {/* The one panel on the page. The demo rows sit on the ground, so no card holds another. */}
+        <div className="cut border border-border bg-panel p-6 shadow-elev-1">
+          <Suspense fallback={<FormFallback />}>
+            <LoginForm />
+          </Suspense>
+        </div>
       </div>
     </main>
   );

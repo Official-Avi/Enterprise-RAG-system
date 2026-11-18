@@ -1,4 +1,5 @@
 // Minimal stroke icon set (decorative; always paired with visible text or an aria-label).
+// 24-unit grid, 1.8 stroke, round caps: drawn at 16px inline or 20px standalone, in currentColor.
 import type { SVGProps } from "react";
 
 // `satisfies` (not a Record annotation) keeps the literal keys, so IconName is the union of
@@ -31,10 +32,23 @@ const paths = {
   menu: "M4 7h16M4 12h16M4 17h16",
   lock: "M6 11h12v10H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3",
   scan: "M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M8 12h8",
-  quote: "M7 10h4v6H5v-4a4 4 0 0 1 4-4M15 10h4v6h-6v-4a4 4 0 0 1 4-4",
+  quote: "M5 17h3l2-4V7H4v6h3zM14 17h3l2-4V7h-6v6h3z",
   shield: "M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6zM9 12l2 2 4-4",
   help: "M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17.5h.01M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18z",
   file: "M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h4",
+  chevronDown: "M6 9l6 6 6-6",
+  alert: "M12 3 2 20h20L12 3zM12 10v4M12 17h.01",
+  clock: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18zM12 7v5l3 2",
+  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
+  ban: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18zM5.6 5.6l12.8 12.8",
+  trash: "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
+  minus: "M5 12h14",
+  circle: "M12 19a7 7 0 1 1 0-14 7 7 0 0 1 0 14z",
+  pencil: "M4 20h4L19 9l-4-4L4 16zM13 7l4 4",
+  swap: "M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4",
+  stop: "M7 7h10v10H7z",
+  diamond: "M12 3l9 9-9 9-9-9z",
+  arrowUp: "M12 19V5M6 11l6-6 6 6",
   sparkle: "M12 4v4M12 16v4M4 12h4M16 12h4M7 7l2 2M15 15l2 2M17 7l-2 2M9 15l-2 2",
 } satisfies Record<string, string>;
 
