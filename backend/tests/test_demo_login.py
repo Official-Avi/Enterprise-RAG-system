@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -68,15 +66,12 @@ def test_demo_mode_is_refused_in_production() -> None:
     from pydantic import ValidationError
 
     from rackflow.core.config import Settings
+    from tests.test_production_config import production
 
-    # The test suite's hash embeddings are refused in production too, and would hide this check.
-    production: dict[str, Any] = {
-        "app_env": "production", "cookie_secure": True, "embedding_provider": "fastembed",
-        "_env_file": None,
-    }
-    assert Settings(**production, demo_mode=False).demo_mode is False
+    # A complete, otherwise safe production configuration, so only DEMO_MODE can be refused.
+    assert Settings(**production(demo_mode=False)).demo_mode is False
     with pytest.raises(ValidationError, match="DEMO_MODE"):
-        Settings(**production, demo_mode=True)
+        Settings(**production(demo_mode=True))
 
 
 def test_demo_persona_copy_fits_the_card() -> None:

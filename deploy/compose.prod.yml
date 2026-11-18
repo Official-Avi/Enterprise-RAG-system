@@ -1,0 +1,90 @@
+# RackFlow AI — production overlay for docker-compose.yml. Never use it on its own.
+#   docker compose -f docker-compose.yml -f deploy/compose.prod.yml --profile prod up -d --build
+# Needs Docker Compose 2.24.4 or newer (`!reset`). Relative paths resolve against the project
+# directory (the folder of docker-compose.yml). See deploy/README.md.
+#
+# What it changes:
+#   - Only Caddy (80/443) is published. Postgres, Qdrant, API and web publish nothing to the host.
+#   - Backend services run with APP_ENV=production, COOKIE_SECURE=true, DEMO_MODE=false, https
+#     WEB_ORIGIN/API_BASE_URL for DOMAIN, and TRUSTED_PROXY_IPS for the Caddy -> web -> API chain.
+#   - Qdrant requires an API key (QDRANT__SERVICE__API_KEY); the backend sends VECTOR_STORE_API_KEY.
+#   - Long-running services restart after a crash, daemon restart or reboot (not migrate).
+#   - api, worker, migrate and web run with a read-only root file system, no Linux capabilities and
+#     no-new-privileges. Writable paths: their volumes and the tmpfs mounts below.
+#   - DOMAIN, TLS_ISSUER, POSTGRES_PASSWORD, VECTOR_STORE_API_KEY and QDRANT__SERVICE__API_KEY are
+#     required; Compose refuses to start without them.
+
+x-prod-backend-env: &prod-backend-env
+  APP_ENV: production
+  COOKIE_SECURE: "true"
+  DEMO_MODE: "false"
+  WEB_ORIGIN: https://${DOMAIN:?set DOMAIN to the public host name}
+  API_BASE_URL: https://${DOMAIN:?set DOMAIN to the public host name}
+  DATABASE_URL: postgresql+psycopg://rackflow:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/rackflow
+  # Must equal QDRANT__SERVICE__API_KEY (scripts/ops/generate_env.py writes both), or every vector
+  # call gets 401 and /health/ready fails.
+  VECTOR_STORE_API_KEY: ${VECTOR_STORE_API_KEY:?set VECTOR_STORE_API_KEY (equal to QDRANT__SERVICE__API_KEY)}
+  # The API's peer is always web (172.30.0.10): the Next /api proxy forwards Caddy's X-Forwarded-For
+  # (the client address) unchanged. Caddy (172.30.0.11) is listed so that, should the web proxy ever
+  # append its own peer, the API still skips it. Both addresses are fixed and outside the network's
+  # ip_range, so no other container can take them. Nothing else may be listed: see deploy/README.md.
+  TRUSTED_PROXY_IPS: 172.30.0.10,172.30.0.11
+
+services:
+  postgres:
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports: !reset []
+
+  qdrant:
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:?set QDRANT__SERVICE__API_KEY (equal to VECTOR_STORE_API_KEY)}
+    ports: !reset []
+
+  # One-shot job: no restart policy (service_completed_successfully depends on it exiting).
+  migrate:
+    environment: *prod-backend-env
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+
+  api:
+    restart: unless-stopped
+    environment: *prod-backend-env
+    ports: !reset []
+    read_only: true
+    tmpfs:
+      # Multipart upload spooling, tempfiles and HOME. Counts against memory: keep it at least the
+      # 25 MiB upload limit x concurrent uploads.
+      - /tmp:size=512m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+
+  worker:
+    restart: unless-stopped
+    environment: *prod-backend-env
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+
+  web:
+    restart: unless-stopped
+    ports: !reset []
+    read_only: true
+    tmpfs:
+      # Image optimiser cache, owned by the image's app user (UID/GID 10001).
+      - /app/.next/cache:uid=10001,gid=10001,mode=0700,size=128m
+      - /tmp:size=16m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+
+  caddy:
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to the public host name}
+      TLS_ISSUER: ${TLS_ISSUER:?set TLS_ISSUER to an ACME contact e-mail, or to internal for self-signed test certificates}

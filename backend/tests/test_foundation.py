@@ -11,7 +11,14 @@ from fastapi.testclient import TestClient
 
 from rackflow.api.routers.health import EmbeddingProbe
 from rackflow.auth.rbac import ROLE_PERMISSIONS, Permission
-from rackflow.db.models import Collection, Document, DocumentStatus, Role
+from rackflow.db.models import (
+    Chunk,
+    Collection,
+    Document,
+    DocumentStatus,
+    DocumentVersion,
+    Role,
+)
 from rackflow.db.session import session_scope
 from tests.conftest import TEST_PASSWORD, Factory
 
@@ -42,7 +49,8 @@ def test_health_ready_checks_every_dependency(client: TestClient) -> None:
     r = client.get("/api/v1/health/ready")
     assert r.status_code == 200, r.text
     assert r.json() == {"status": "ready", "checks": {
-        "database": True, "vector_store": True, "vector_collection": True, "embeddings": True}}
+        "database": True, "vector_store": True, "vector_collection": True,
+        "vector_collection_consistent": True, "embeddings": True}}
 
 
 @pytest.mark.qdrant
@@ -67,8 +75,9 @@ def test_health_ready_fails_when_embeddings_cannot_load(
 @pytest.mark.usefixtures("probe")
 def test_health_ready_fails_when_indexed_vectors_are_gone(
         client: TestClient, factory: Factory, monkeypatch: pytest.MonkeyPatch) -> None:
-    """BUG-04: PostgreSQL lists indexed documents but the vector collection is missing (BUG-01).
-    A fresh deployment with nothing indexed yet is still ready."""
+    """BUG-04: PostgreSQL holds chunks of indexed documents but the vector collection is missing
+    (BUG-01). A fresh deployment with nothing indexed yet is still ready. Readiness keys on chunk
+    rows (Finding 32): the pipeline never marks a document indexed without chunks."""
     from rackflow.providers.vectorstore import get_vector_store
 
     monkeypatch.setattr(get_vector_store(), "collection",
@@ -80,13 +89,25 @@ def test_health_ready_fails_when_indexed_vectors_are_gone(
         col = Collection(tenant_id=eng.tenant_id, name="c", created_by=eng.user_id)
         s.add(col)
         s.flush()
-        s.add(Document(tenant_id=eng.tenant_id, collection_id=col.id, filename="a.md",
+        doc = Document(tenant_id=eng.tenant_id, collection_id=col.id, filename="a.md",
                        file_type="md", mime_type="text/markdown", size_bytes=1,
                        content_hash="0" * 64, storage_key="tenants/x/documents/y/original",
-                       status=DocumentStatus.INDEXED, warnings=[]))
+                       status=DocumentStatus.INDEXED, warnings=[], chunk_count=1)
+        s.add(doc)
+        s.flush()
+        ver = DocumentVersion(tenant_id=eng.tenant_id, document_id=doc.id, version=1,
+                              content_hash=doc.content_hash, pipeline_version="t",
+                              status="indexed")
+        s.add(ver)
+        s.flush()
+        doc.current_version_id = ver.id
+        s.add(Chunk(tenant_id=eng.tenant_id, collection_id=col.id, document_id=doc.id,
+                    document_version_id=ver.id, chunk_index=0, text="t", token_count=1,
+                    content_hash="0" * 64, metadata_json={}))
     r = client.get("/api/v1/health/ready")
     assert r.status_code == 503
     assert r.json()["checks"]["vector_collection"] is False
+    assert r.json()["checks"]["vector_collection_consistent"] is False
 
 
 def test_protected_endpoint_requires_auth(client: TestClient) -> None:

@@ -1,9 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-export const SHOTS = join(__dirname, "..", "test-results", "screenshots");
+/** Where specs save their named screenshots: E2E_SCREENSHOT_DIR (relative to the working
+ *  directory), else apps/web/test-results/screenshots. */
+export const SHOTS = process.env.E2E_SCREENSHOT_DIR
+  ? resolve(process.env.E2E_SCREENSHOT_DIR)
+  : join(__dirname, "..", "test-results", "screenshots");
 
 // ---------- personas (backend auth/demo.py, seeded by `rackflow-admin seed-demo`) ----------
 
@@ -68,11 +72,13 @@ export const authFile = (key: PersonaKey) => join(__dirname, ".auth", `${key}.js
 /** E2E_PASSWORD_FILE, else the file the local setup writes. Docs/ holds no usable password. */
 const DEFAULT_PASSWORD_FILE = join(__dirname, "..", "..", "..", ".data", "demo-password.txt");
 
-export const PASSWORD_HELP = "Set E2E_PASSWORD, or E2E_PASSWORD_FILE to a file that holds it";
+export const PASSWORD_HELP = "Set E2E_DEMO_PASSWORD, or E2E_PASSWORD_FILE to a file that holds it";
 
-/** The demo password when it is known on this machine, else null. Throws if E2E_PASSWORD_FILE
- *  names a file that isn't there: that is a mistake to fix, not a reason to skip a test. */
+/** The demo password when it is known on this machine, else null: E2E_DEMO_PASSWORD (CI secrets),
+ *  then E2E_PASSWORD (the older name), then the file. Throws if E2E_PASSWORD_FILE names a file
+ *  that isn't there: that is a mistake to fix, not a reason to skip a test. */
 export function knownDemoPassword(): string | null {
+  if (process.env.E2E_DEMO_PASSWORD) return process.env.E2E_DEMO_PASSWORD;
   if (process.env.E2E_PASSWORD) return process.env.E2E_PASSWORD;
   const configured = process.env.E2E_PASSWORD_FILE;
   if (configured && !existsSync(configured)) throw new Error(`E2E_PASSWORD_FILE does not exist: ${configured}`);

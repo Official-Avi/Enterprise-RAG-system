@@ -1,16 +1,30 @@
 name: CI
 
+# Production gates: lint/type/unit tests, a full-stack Playwright run (with the axe gates), a secret
+# scan, dependency audits, and Docker image builds with the Compose smoke test.
+#
+# Third-party actions are pinned to full commit SHAs (the version is in the comment). Dependabot
+# (.github/dependabot.yml) proposes updates, keeping the pin and the comment in step.
+
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
+# Least privilege: every job reads the repository and nothing else unless it says otherwise.
 permissions:
   contents: read
+
+# A newer push to the same branch or PR cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:18.6
@@ -33,8 +47,10 @@ jobs:
       VECTOR_STORE_URL: http://127.0.0.1:6333
       FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.data/models
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           version: "0.12.22"
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgl1
@@ -46,12 +62,15 @@ jobs:
 
   web:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: apps/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: npm
@@ -61,19 +80,261 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run build
 
+  # The whole stack on the runner (no Docker images): Postgres and Qdrant as services, the API and
+  # worker from the backend lock, and the production web build served by `next start`. Demo mode,
+  # the extractive answerer and hash embeddings keep it offline: no model calls, no model download.
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: rackflow
+          POSTGRES_PASSWORD: rackflow
+          POSTGRES_DB: rackflow_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rackflow" --health-interval 5s
+          --health-timeout 3s --health-retries 20
+      qdrant:
+        image: qdrant/qdrant:v1.20.0
+        ports: ["6333:6333"]
+    env:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://rackflow:rackflow@127.0.0.1:5432/rackflow_e2e
+      VECTOR_STORE_URL: http://127.0.0.1:6333
+      VECTOR_COLLECTION: rackflow_e2e
+      WEB_ORIGIN: http://127.0.0.1:3000
+      DEMO_MODE: "true"
+      MODEL_PROVIDER: extractive
+      EMBEDDING_PROVIDER: hash
+      COOKIE_SECURE: "false"
+      API_PROXY_TARGET: http://127.0.0.1:8000
+      E2E_BASE_URL: http://127.0.0.1:3000
+      E2E_BROWSER_CHANNEL: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.12.22"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgl1
+      - name: Install backend
+        working-directory: backend
+        run: uv sync --frozen --no-dev
+      - name: Migrate
+        working-directory: backend
+        run: uv run --no-sync alembic upgrade head
+      - name: Generate the demo password
+        working-directory: backend
+        # A fresh password per run, accepted by the seeding policy. It is masked in the log and
+        # handed to the e2e helper both as E2E_DEMO_PASSWORD and in the default .data file.
+        run: |
+          umask 077
+          pw="$(uv run --no-sync python - <<'PY'
+          import secrets
+          from rackflow.auth.passwords import password_problems
+          from rackflow.cli import DEMO_USERS
+          emails = tuple(u[2] for u in DEMO_USERS)
+          while True:
+              candidate = secrets.token_urlsafe(24)
+              if not password_problems(candidate, emails=emails):
+                  print(candidate)
+                  break
+          PY
+          )"
+          test -n "$pw"
+          echo "::add-mask::$pw"
+          mkdir -p "$GITHUB_WORKSPACE/.data"
+          printf '%s\n' "$pw" > "$GITHUB_WORKSPACE/.data/demo-password.txt"
+          {
+            echo "RACKFLOW_SEED_PASSWORD=$pw"
+            echo "E2E_DEMO_PASSWORD=$pw"
+          } >> "$GITHUB_ENV"
+      - name: Seed demo users and simulated racks
+        working-directory: backend
+        run: |
+          uv run --no-sync rackflow-admin seed-demo --password-env RACKFLOW_SEED_PASSWORD
+          uv run --no-sync rackflow-admin seed-infra --tenant acme
+      - name: Start API and worker
+        working-directory: backend
+        run: |
+          mkdir -p "$RUNNER_TEMP/stack-logs"
+          nohup uv run --no-sync uvicorn rackflow.api.app:create_app --factory \
+            --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/stack-logs/api.log" 2>&1 &
+          nohup uv run --no-sync rackflow-worker > "$RUNNER_TEMP/stack-logs/worker.log" 2>&1 &
+          curl -fsS --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:8000/health/live
+          curl -fsS --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:8000/api/v1/health/ready
+      - name: Index a starter document for the Engineer
+        working-directory: backend
+        # The database starts empty, and ask.spec/library.spec skip their Ready-document tests when
+        # the Engineer can see nothing indexed (a skip does not fail the job). Upload one small file
+        # through the API, as the Engineer, and fail here unless it reaches Ready.
+        run: |
+          uv run --no-sync python - <<'PY'
+          import os
+          import sys
+          import time
+
+          import httpx
+
+          DOC = (
+              "backup-policy.md",
+              b"# Backup policy\n\n"
+              b"Nightly backups of the rack inventory database are kept for 35 days.\n\n"
+              b"Monthly snapshots have a retention period of 12 months and are stored off site.\n\n"
+              b"The operations team tests a full restore every quarter.\n",
+          )
+
+          def check(r: httpx.Response, step: str) -> dict:
+              if r.is_success:
+                  return r.json() if r.content else {}
+              code = r.json().get("error", {}).get("code") if "json" in r.headers.get("content-type", "") else ""
+              sys.exit(f"{step} failed: HTTP {r.status_code} {code or ''}".rstrip())
+
+          with httpx.Client(base_url="http://127.0.0.1:8000/api/v1", timeout=30) as http:
+              login = check(http.post("/auth/login", json={
+                  "email": "engineer@acme.example.com", "password": os.environ["E2E_DEMO_PASSWORD"],
+                  "tenant_slug": "acme", "mode": "token"}), "login")
+              http.headers["Authorization"] = f"Bearer {login['token']}"
+              try:
+                  collection = check(http.post("/collections", json={
+                      "name": "E2E starter corpus",
+                      "description": "Indexed by CI so the Ready-document tests run."}), "create collection")
+                  upload = check(http.post(f"/collections/{collection['id']}/documents",
+                                           files={"files": (*DOC, "text/markdown")}), "upload")
+                  item = upload["items"][0]
+                  if item["status"] != "queued":
+                      sys.exit(f"upload was {item['status']}: {item.get('error')}")
+                  deadline = time.monotonic() + 180
+                  while True:
+                      status = check(http.get(f"/documents/{item['document_id']}"), "poll")["status"]
+                      if status == "indexed":
+                          break
+                      if status == "failed" or time.monotonic() > deadline:
+                          sys.exit(f"starter document did not reach Ready (status {status}); see worker.log")
+                      time.sleep(2)
+                  ready = check(http.get("/documents", params={"status": "indexed"}), "list")["items"]
+                  if not ready:
+                      sys.exit("the Engineer sees no Ready documents after indexing")
+                  print(f"starter document Ready; the Engineer sees {len(ready)} Ready document(s)")
+              finally:
+                  http.post("/auth/logout")
+          PY
+      - name: Install web and Playwright Chromium
+        working-directory: apps/web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Build and start web
+        working-directory: apps/web
+        run: |
+          npm run build
+          nohup npm run start -- --hostname 127.0.0.1 --port 3000 > "$RUNNER_TEMP/stack-logs/web.log" 2>&1 &
+          curl -fsS --retry 30 --retry-delay 2 --retry-all-errors -o /dev/null -w "web %{http_code}\n" http://127.0.0.1:3000/login
+      - name: Playwright (including the axe gates)
+        working-directory: apps/web
+        run: npm run test:e2e:ci
+      - name: Upload Playwright report and test results
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-results
+          # Saved sessions (e2e/.auth) are deliberately not included.
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+            ${{ runner.temp }}/stack-logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The action lists a PR's commits through the API to scan only those.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Required by the action only for repositories owned by an organization.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_ENABLE_COMMENTS: false
+          # Rules and known false positives: .gitleaks.toml at the repository root.
+
+  audit-python:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.12.22"
+      - name: pip-audit (runtime dependencies in uv.lock)
+        # pip-audit has no severity filter: any known vulnerability fails the gate. To accept one
+        # deliberately, add `--ignore-vuln <ID>` here with a comment saying why and until when.
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt \
+            -o "$RUNNER_TEMP/requirements.txt"
+          uvx --from pip-audit==2.10.1 pip-audit -r "$RUNNER_TEMP/requirements.txt" \
+            --require-hashes --disable-pip --progress-spinner off
+
+  audit-web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - name: npm audit (production dependencies, high and critical)
+        run: npm audit --omit=dev --audit-level=high
+
   compose-smoke:
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     needs: [backend, web]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build images (no push)
+        run: |
+          docker build --pull -t rackflow-backend:ci backend
+          docker build --pull -t rackflow-web:ci --build-arg API_PROXY_TARGET=http://api:8000 apps/web
       - name: Build and start stack
+        # Reuses the layers built above.
         run: docker compose up -d --build --wait --wait-timeout 600
       - name: Smoke checks
         run: |
           curl -fsS http://127.0.0.1:8000/health/live
           # Not ready until the embedding model has downloaded, and this job always starts cold.
           curl -fsS --retry 60 --retry-delay 5 --retry-all-errors http://127.0.0.1:8000/api/v1/health/ready
-          # The web service has no healthcheck, so `up --wait` does not wait for it.
+          # up --wait already waited for web's image healthcheck; this checks the page itself.
           curl -fsS --retry 12 --retry-delay 5 --retry-all-errors -o /dev/null -w "web %{http_code}\n" http://127.0.0.1:3000/login
       - name: Logs on failure
         if: failure()

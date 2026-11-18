@@ -1,6 +1,27 @@
+# Build context is ./backend. Only pyproject.toml, uv.lock, src, migrations and alembic.ini are used.
+# Secrets and local runtime data never enter the context.
+.env
+.env.*
+*.pem
+*.key
+.data
+var
+
+# Local environments, caches and build output
 .venv
 .pytest_cache
 .mypy_cache
 .ruff_cache
 **/__pycache__
+**/*.py[cod]
+*.egg-info
+build
+dist
+.coverage
+htmlcov
+
+# Tests and tooling are not part of the image
 tests
+Dockerfile
+.dockerignore
+*.log

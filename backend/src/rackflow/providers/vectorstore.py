@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from functools import lru_cache
 
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from rackflow.core.config import get_settings
 from rackflow.providers.interfaces import VectorFilter, VectorHit, VectorRecord
@@ -17,6 +18,9 @@ from rackflow.providers.interfaces import VectorFilter, VectorHit, VectorRecord
 log = logging.getLogger(__name__)
 
 _INDEXED_FIELDS = ("tenant_id", "collection_id", "document_id", "document_version_id")
+# Readiness probes must answer fast even when Qdrant hangs: the probe client uses this timeout
+# instead of the 10 s one used for indexing and search.
+PROBE_TIMEOUT_SECONDS = 3
 
 
 class VectorDimensionMismatch(RuntimeError):
@@ -24,8 +28,10 @@ class VectorDimensionMismatch(RuntimeError):
 
 
 class QdrantVectorStore:
-    def __init__(self, client: QdrantClient, collection: str) -> None:
+    def __init__(self, client: QdrantClient, collection: str,
+                 *, probe_client: QdrantClient | None = None) -> None:
         self.client = client
+        self.probe_client = probe_client or client
         self.collection = collection
         self._ready = False
 
@@ -140,6 +146,20 @@ class QdrantVectorStore:
     def collection_exists(self) -> bool:
         return bool(self.client.collection_exists(self.collection))
 
+    def point_count(self) -> int | None:
+        """Number of points in the collection, or None when the collection does not exist.
+
+        One request on the short-timeout probe client. Unfiltered approximate counts are the
+        segments' live point totals, so zero means zero without scanning every point ID.
+        Raises when Qdrant is unreachable or answers with anything but 404."""
+        try:
+            return int(self.probe_client.count(self.collection, exact=False,
+                                               timeout=PROBE_TIMEOUT_SECONDS).count)
+        except UnexpectedResponse as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+
 
 @lru_cache(maxsize=1)
 def get_vector_store() -> QdrantVectorStore:
@@ -147,4 +167,6 @@ def get_vector_store() -> QdrantVectorStore:
     secret = settings.vector_store_api_key
     key = secret.get_secret_value() if secret else None
     client = QdrantClient(url=settings.vector_store_url, api_key=key, timeout=10)
-    return QdrantVectorStore(client, settings.vector_collection)
+    probe = QdrantClient(url=settings.vector_store_url, api_key=key,
+                         timeout=PROBE_TIMEOUT_SECONDS, check_compatibility=False)
+    return QdrantVectorStore(client, settings.vector_collection, probe_client=probe)

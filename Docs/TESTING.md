@@ -59,9 +59,75 @@ Do not treat an LLM judge as the only quality signal; include deterministic chec
 - **Browser:** `npm run test:e2e` in `apps/web` runs against an already-running stack with
   `DEMO_MODE=true`, with one worker, in Edge by default on Windows. The engineer journey asks one live
   question. See `apps/web/README.md`.
-- **CI** (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull requests: ruff, mypy, pytest,
-  eslint, tsc, build, and `compose-smoke`. It does **not** run Playwright or axe, and does not check
-  that `/` builds as Static.
+  - `npm run test:e2e:ci` turns on CI mode (also on when `CI` is set): retries 1, `forbidOnly`, an HTML
+    report, and Playwright's Chromium unless `E2E_BROWSER_CHANNEL` is set.
+  - The demo password is read from `E2E_DEMO_PASSWORD`, then the older `E2E_PASSWORD`, then
+    `E2E_PASSWORD_FILE` or `.data/demo-password.txt`.
+  - Output folders: `E2E_OUTPUT_DIR` (default `test-results`), `E2E_REPORT_DIR` (default
+    `playwright-report`), `E2E_SCREENSHOT_DIR` (default `test-results/screenshots`). Point them outside
+    the repository for scratch runs.
+- **CI** (`.github/workflows/ci.yml`) runs on pushes to `main`, pull requests and manual dispatch. Since
+  Stage 6 it has seven jobs: `backend` (ruff, mypy, pytest), `web` (eslint, tsc, build), `e2e` (full
+  stack, Playwright including the axe gates), `secrets` (gitleaks), `audit-python` (pip-audit),
+  `audit-web` (npm audit) and `compose-smoke` (image builds plus the Compose stack). **None of the new
+  jobs has run on GitHub yet.** CI still does not check that `/` builds as Static.
+- **Tests that never run here:** POSIX-only tests (file modes 0600/0700 for `generate_env.py` and
+  `backup.py`) are skipped on Windows, so a Windows run reports 2 skipped.
+
+---
+
+## Stage 6 — production hardening, branch `production-hardening-2026-11`, 2026-11-07 to 2026-11-08
+
+Uncommitted working tree on top of `5648c83`. Windows 11, Python 3.12, PostgreSQL 18.6, Qdrant 1.20.0,
+Node 26. **No Docker on this machine and nothing pushed**, so no container was built or started and no
+GitHub Actions job ran. The results below are **as reported by each owner**; this documentation pass
+re-read the code and configuration they describe but did not re-run the suites. Every owner used a
+private database `rackflow_test_<owner>` and collection, dropped afterwards.
+
+### Backend suite
+
+| When | Result | Notes |
+| --- | --- | --- |
+| Build round (each owner, while others were editing) | 412 to 506 passed, 4 or 5 failed | The same 4 failures in every run: two older production-settings tests broken by the new https rules, and two `test_foundation` readiness tests that expected the old check set. Wall times of about 12 h came from the machine sleeping. |
+| After the review fixes (config, backups, TLS and envgen owners, separate runs) | **516 passed, 2 skipped, 0 failed** (about 9.5 to 11 min) | The 2 skips are POSIX file-mode tests. The 4 earlier failures were fixed in `test_security_gates.py`, `test_demo_login.py` and `test_foundation.py`. |
+
+New test files: `test_production_config.py` (56), `test_production_credentials.py` (33),
+`test_admin_personas.py` (10), `test_readiness.py` (15, against real PostgreSQL and Qdrant),
+`test_backup_scripts.py` (42 passed + 1 POSIX-only), `test_generate_env.py` (14 + 1 POSIX-only).
+ruff and mypy were reported clean on every owner's files. Pre-existing mypy findings in
+`test_security_gates.py` (lines 32, 48, 61) were not touched.
+
+### Other checks
+
+| Area | Check | Result |
+| --- | --- | --- |
+| Restore drill | `backup.py` on the live local stack, then `restore.py` into `rackflow_restore_drill` | Exit 0; 25 tables and 7,652 rows, 9 Qdrant points, 9 files and 634,563 bytes all matched; re-run without `--force` refused all three targets; with `--force` matched. Retention kept a decoy directory without a manifest. Cleaned up. 2026-11-07 |
+| Readiness probe client | probe pointed at a socket that never answers | `point_count()` raised after 3.0 s |
+| Compose and Caddy | script parsing and merging both files (with `!reset`, `:-`, `:?`), then the merged API environment through the real `Settings` | OK; a mutated copy (HSTS `includeSubDomains`, migrate healthcheck back on, `restart: "no"`) failed with 8 errors. Script is in the TLS owner's scratch folder, **not in the repository** |
+| Client addresses | `ratelimit.client_ip` with `TRUSTED_PROXY_IPS=172.30.0.10,172.30.0.11` | Real client returned for web peer with one or two header entries; untrusted peer with a header gets its own address |
+| Dockerfiles | hadolint 2.12.0; build-context script; base tags looked up on the registries | Clean; no `.env`, `.data`, tests or e2e sign-in state in either context. Images not built |
+| Backend HEALTHCHECK | the exact command run with simulated roles | worker and migrate exit 0 with nothing listening; api exits 1 with nothing listening and 0 against the live API |
+| Web build | scratch copy, `next build` with `API_PROXY_TIMEOUT_MS=180000`, standalone server | Built; value baked into `server.js`; an invalid value fails the build at config load |
+| Web headers | Playwright (Edge) with a `securitypolicyviolation` listener on landing, login, demo sign-in, `/ask`, `/library` | 0 violations on dev, `next start` and the standalone server; a negative control was reported. HSTS only in production |
+| Web | `npx tsc --noEmit`, eslint on changed files | Exit 0 |
+| E2E | `npm run test:e2e:ci` and local mode on landing, a11y and one roles test against dev :3000 | 29 to 30 passed per run; `E2E_DEMO_PASSWORD` took precedence over a decoy password file. Full suite not run (shared sign-in limits) |
+| CI workflow | PyYAML parse, actionlint 1.7.12 (shellcheck off) | Clean |
+| CI e2e job, backend half | the job's real steps run locally against a private stack on :8765 | Ready with all 5 checks; starter document Ready in about 6 to 8 s; a wrong password and a name clash both exit 1 |
+| Secret scan | gitleaks 8.30.1 over all 16 commits | 1 false positive, allowlisted; then no leaks; a fake secret beside the allowlisted prose is still caught |
+| Dependency audit | `npm audit --omit=dev --audit-level=high`; pip-audit on the runtime export | npm 0; **pip-audit exit 1: 7 advisories in pypdf 6.21.2**, fixed by 6.21.4 (checked on a scratch lock) |
+
+### Not verified (Stage 6)
+
+- Any `docker build`, `docker compose config`/`up`, `caddy validate`, certificate issuance, an end-to-end
+  request through Caddy, the read-only root at runtime, Qdrant enforcing its API key, or the
+  `compose.backup.yml` merge.
+- Any GitHub Actions run, including `next start` with `output: "standalone"` in the `e2e` job.
+- POSIX file modes and `--chown` for real (Windows only; faked in unit tests); the backup cron line.
+- Backups against a Qdrant with an API key, or against Docker volumes.
+- The CI-mode Playwright run with Playwright's own Chromium (only Edge is installed here).
+- The full Playwright suite after Stage 6.
+- The live API on :8000 and the worker still run code from before Stage 6: they do not reload and were
+  not restarted.
 
 ---
 

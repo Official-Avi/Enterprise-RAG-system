@@ -1,11 +1,16 @@
 """Admin CLI.
 
+    rackflow-admin bootstrap-admin --tenant acme --tenant-name "Acme Corp" --email a@b.com
     rackflow-admin create-user --email a@b.com --name "A" --tenant acme --role org_admin
     rackflow-admin seed-demo            # two demo tenants with one user per role
     rackflow-admin reindex --tenant acme [--include-failed] [--dry-run]
 
-Passwords are read from RACKFLOW_SEED_PASSWORD / --password-env, or generated and printed once.
-They are never hard-coded or written to logs.
+Passwords are read from the env var named by --password-env, or generated and printed once.
+They are never hard-coded or written to logs. Every password the CLI sets must pass the policy in
+auth/passwords.py (12+ characters, not a common password, not containing the email name).
+
+seed-demo and seed-eval refuse to run when APP_ENV=production unless --allow-in-production is
+passed.
 """
 
 from __future__ import annotations
@@ -19,7 +24,8 @@ import sys
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from rackflow.auth.passwords import hash_password
+from rackflow.auth.passwords import WeakPasswordError, check_password_policy, hash_password
+from rackflow.core.config import get_settings
 from rackflow.db.models import Role, Tenant, TenantMembership, User
 from rackflow.db.session import session_scope
 
@@ -67,15 +73,48 @@ def ensure_user(
     return user, created
 
 
-def _password(env_name: str) -> tuple[str, bool]:
+def _password(env_name: str, *, emails: tuple[str, ...]) -> tuple[str, bool]:
+    """The password from $env_name, or a generated one. Raises WeakPasswordError if the supplied
+    one fails the policy for these accounts."""
     value = os.environ.get(env_name)
     if value:
+        check_password_policy(value, emails=emails)
         return value, False
-    return secrets.token_urlsafe(16), True
+    while True:  # a random token essentially always passes; loop rather than assume it
+        generated = secrets.token_urlsafe(16)
+        try:
+            check_password_policy(generated, emails=emails)
+        except WeakPasswordError:
+            continue
+        return generated, True
+
+
+def _fail(message: str) -> int:
+    print(message, file=sys.stderr)
+    return 2
+
+
+def _production_refused(args: argparse.Namespace, command: str) -> bool:
+    """True (after explaining) when this is production and the operator did not opt in."""
+    if get_settings().app_env != "production" or args.allow_in_production:
+        return False
+    _fail(f"refusing to run {command} with APP_ENV=production: it creates demo/evaluation data. "
+          "Pass --allow-in-production if that is really intended.")
+    return True
+
+
+def _weak(env_name: str, exc: WeakPasswordError) -> int:
+    return _fail(f"${env_name}: {exc} Nothing was changed.")
 
 
 def cmd_seed_demo(args: argparse.Namespace) -> int:
-    password, generated = _password(args.password_env)
+    if _production_refused(args, "seed-demo"):
+        return 2
+    try:
+        password, generated = _password(args.password_env,
+                                        emails=tuple(u[2] for u in DEMO_USERS))
+    except WeakPasswordError as exc:
+        return _weak(args.password_env, exc)
     with session_scope() as db:
         for slug, tname, email, name, role in DEMO_USERS:
             tenant = ensure_tenant(db, slug, tname)
@@ -90,7 +129,10 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_create_user(args: argparse.Namespace) -> int:
-    password, generated = _password(args.password_env)
+    try:
+        password, generated = _password(args.password_env, emails=(args.email,))
+    except WeakPasswordError as exc:
+        return _weak(args.password_env, exc)
     with session_scope() as db:
         tenant = ensure_tenant(db, args.tenant, args.tenant_name or args.tenant)
         _, created = ensure_user(db, email=args.email, name=args.name, password=password,
@@ -98,6 +140,50 @@ def cmd_create_user(args: argparse.Namespace) -> int:
     print(("Created" if created else "Updated membership for") + f" {args.email}")
     if generated and created:
         print(f"Generated password (shown once): {password}")
+    return 0
+
+
+def cmd_bootstrap_admin(args: argparse.Namespace) -> int:
+    """Create a tenant's first org_admin. Refuses if the tenant already has one, so it cannot be
+    used to slip an extra admin into a running tenant (use the admin console for that)."""
+    from rackflow.audit import record_audit
+
+    email = args.email.strip().lower()
+    local, _, domain = email.partition("@")
+    if not local or "." not in domain:
+        return _fail("--email must be an email address")
+    try:
+        password, generated = _password(args.password_env, emails=(email,))
+    except WeakPasswordError as exc:
+        return _weak(args.password_env, exc)
+    with session_scope() as db:
+        try:
+            tenant = ensure_tenant(db, args.tenant, args.tenant_name)
+        except ValueError as exc:
+            return _fail(str(exc))
+        # Lock the tenant row so two concurrent bootstraps cannot both see "no admin".
+        db.execute(select(Tenant.id).where(Tenant.id == tenant.id).with_for_update())
+        has_admin = db.scalar(select(TenantMembership.id).where(
+            TenantMembership.tenant_id == tenant.id,
+            TenantMembership.role == Role.ORG_ADMIN).limit(1))
+        if has_admin is not None:
+            db.rollback()
+            return _fail(f"tenant {args.tenant!r} already has an admin; nothing was changed. "
+                         "Add more admins from the admin console.")
+        user, created = ensure_user(db, email=email, name=args.name or local,
+                                    password=password, tenant=tenant, role=Role.ORG_ADMIN)
+        record_audit(db, action="member.bootstrap_admin", resource_type="user",
+                     resource_id=user.id, tenant_id=tenant.id,
+                     metadata={"role": Role.ORG_ADMIN.value, "new_account": created,
+                               "source": "cli"})
+    print(f"{'Created' if created else 'Existing user'} {email} is now the first org_admin of "
+          f"{args.tenant}.")
+    if not created:
+        print("The account already existed, so its password was left unchanged.")
+    elif generated:
+        print(f"Generated password (shown once, store it safely): {password}")
+    else:
+        print(f"The password is the one from ${args.password_env}.")
     return 0
 
 
@@ -174,6 +260,8 @@ def cmd_seed_eval(args: argparse.Namespace) -> int:
     from rackflow.evaluation.dataset import load_dataset
     from rackflow.evaluation.seed import seed_dataset
 
+    if _production_refused(args, "seed-eval"):
+        return 2
     with session_scope() as db:
         row = db.execute(
             select(Tenant.id, User.id)
@@ -261,7 +349,19 @@ def main(argv: list[str] | None = None) -> int:
 
     seed = sub.add_parser("seed-demo", help="create demo tenants and one user per role")
     seed.add_argument("--password-env", default="RACKFLOW_SEED_PASSWORD")
+    seed.add_argument("--allow-in-production", action="store_true",
+                      help="run even though APP_ENV=production")
     seed.set_defaults(func=cmd_seed_demo)
+
+    ba = sub.add_parser("bootstrap-admin",
+                        help="create a tenant (if needed) and its first org_admin")
+    ba.add_argument("--tenant", required=True, help="tenant slug")
+    ba.add_argument("--tenant-name", required=True)
+    ba.add_argument("--email", required=True)
+    ba.add_argument("--name", help="display name (default: the email name)")
+    ba.add_argument("--password-env", default="RACKFLOW_ADMIN_PASSWORD",
+                    help="env var holding the password; unset = generate one and print it once")
+    ba.set_defaults(func=cmd_bootstrap_admin)
 
     cu = sub.add_parser("create-user", help="create a user and tenant membership")
     cu.add_argument("--email", required=True)
@@ -276,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
     se.add_argument("--tenant", required=True, help="tenant slug")
     se.add_argument("--owner-email", required=True, help="member who owns the main collection")
     se.add_argument("--version", default="v1")
+    se.add_argument("--allow-in-production", action="store_true",
+                    help="run even though APP_ENV=production")
     se.set_defaults(func=cmd_seed_eval)
 
     si = sub.add_parser("seed-infra", help="seed SIMULATED racks/nodes/workloads for a tenant")

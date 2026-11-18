@@ -1,18 +1,18 @@
 # RackFlow AI — Progress Tracker
 
-**Current phase:** UI redesign and bug fixes on branch `ui-redesign-2026-10`, awaiting the final gate and merge  
-**Overall status:** v0.1.0 is the tagged pilot on `main`. The redesign and review fixes are implemented and owner-checked. **The final gate has not run, and this is not production ready.**  
-**Last updated:** 2026-11-06  
+**Current phase:** Stage 6, production hardening, on branch `production-hardening-2026-11`  
+**Overall status:** v0.1.0 is the tagged pilot. The UI redesign is merged into local `main` (`5648c83`). Stage 6 is implemented and unit-tested but **uncommitted, and nothing that needs Docker or GitHub Actions has run. This is not production ready.**  
+**Last updated:** 2026-11-08  
 **Rule:** The coding agent must update this file after every implementation session.
 
 ## Summary
-- **Branches:** `main` and `origin/main` are at `7fbb85b` (tag `v0.1.0`). Local `ui-redesign-2026-10` is at `45cd0dd`, one commit ahead of its remote at `569d4e6`. About 70 files, including these docs, are modified and **uncommitted**.
-- **Repository:** https://github.com/Official-Avi/Enterprise-RAG-system is **public** (reachable without signing in, checked 2026-11-06). Earlier documents call it private. Do not push without asking the owner.
-- **Last full gate:** Stage 4 on 2026-11-06, before the review fixes: 233 backend tests, eslint, tsc, ruff, mypy, build, all Playwright specs.
-- **Since then:** owner-level runs only. The last full backend run reported 350 passed, 1 failed. Final numbers are pending in `TESTING.md`.
-- **Answer model on the local stack:** Groq, `qwen/qwen3.8-27b` through `openai_compatible`. Matched passages leave the machine. `extractive` stays the default in code and `.env.example`.
-- **Running services:** the owners did not restart the API or worker, so the running stack may not include the latest backend fixes until `start-backend.ps1` runs again.
-- **Environment:** Windows reinstalled 2026-11-01. Toolchain recreated 2026-11-05: Python 3.12 via uv, PostgreSQL 18.6, Qdrant 1.20.0, Node 26.13.0. No Docker.
+- **Branches:** `production-hardening-2026-11` was cut from local `main` at `5648c83` (merge of `ui-redesign-2026-10`). Stage 6 changes are in the working tree, **uncommitted**. Whether `5648c83` is pushed is not recorded here.
+- **Repository:** https://github.com/Official-Avi/Enterprise-RAG-system is **public** (checked 2026-11-06). Do not push without asking the owner.
+- **Stage 6 result:** backend 516 passed, 2 skipped (POSIX only), 0 failed, owner-reported after the review fixes; restore drill passed on the local stack; web tsc and eslint clean; CSP checked in a browser. Details: `TESTING.md` "Stage 6".
+- **Go-live procedure:** `PRODUCTION_CHECKLIST.md`. Decisions: ADR-027 to ADR-034.
+- **Answer model on the local stack:** Groq, `qwen/qwen3.8-27b` through `openai_compatible`. Matched passages leave the machine. `extractive` stays the default in code, `.env.example` and the generated production env.
+- **Running services:** the shared API and worker on :8000 were not restarted during Stage 6, so they still run the pre-Stage-6 code (no new readiness check, no demo-account guard).
+- **Environment:** Windows reinstalled 2026-11-01. Python 3.12 via uv, PostgreSQL 18.6, Qdrant 1.20.0, Node 26. No Docker.
 
 ## Phase status
 Statuses reflect the last check of each phase, mostly v0.1.0 on 2026-10-27. Code in several phases has changed since, and those changes are covered by the final gate, which is pending.
@@ -28,35 +28,55 @@ Statuses reflect the last check of each phase, mostly v0.1.0 on 2026-10-27. Code
 | 6 | Operations and workload management | Verified at v0.1.0; changed since | No load test; load balancer guidance added, not exercised |
 | 7 | Model serving and evaluation | Partially complete | **LLM evaluation incomplete: 7 of 13 scored;** retry not run against real Groq |
 | 8 | Infrastructure / logical rack management | Verified at v0.1.0; changed since | Node and workload delete, PATCH null handling added |
-| 9 | Monitoring, security, enterprise hardening | Partially complete | No tracing, backups, or CI dependency or secret scanning |
-| 10 | Release and deployment | Partially complete | Clean install at v0.1.0 only; no staging or load tests |
+| 9 | Monitoring, security, enterprise hardening | Partially complete | Stage 6: production config refusals, password policy, readiness consistency, backups with a passed local drill, CI audit and secret-scan jobs (not yet run). No tracing; pip-audit red until pypdf is bumped |
+| 10 | Release and deployment | Partially complete | Stage 6: Caddy TLS overlay, hardened images, `generate_env.py`, `bootstrap-admin`, go-live checklist; **none executed** (no Docker). Clean install at v0.1.0 only; no staging or load tests |
 | UI | Redesign (`DESIGN.md`) | Implemented; Stage 4 gate passed; later fixes owner-checked | Final gate pending; differences from the spec in `DESIGN.md` §12 |
 
 ## Open risks
 Details and evidence are in `SECURITY.md` §10 and `TODO.md`.
 
 1. **Cross-tenant membership add (owner decision, ADR-026):** an org_admin can add another tenant's user by email, revealing that the account exists and possibly changing their default sign-in tenant.
-2. **Credentials to rotate (owner action):** the model API key appeared in a chat session; a local database password appeared in tool output; credentials from before the reinstall. No full malware scan is recorded.
-3. **Data egress:** with Groq on, questions, retrieved passages and an earlier question for follow-ups leave the machine.
-4. **Demo mode:** password-less org_admin access for anyone who can reach the site. Never on real data or a public address.
-5. **Rate limits:** per API process. Without a load balancer, all Compose sign-ins share one address.
-6. **Free-plan model limits:** chat returns `MODEL_OVERLOADED` under load. An evaluation run holds a worker for about 13 to 15 minutes, and uploads queue behind it with one worker.
-7. **Stop does not cancel on the server:** the question and answer are saved and can feed follow-up search.
-8. **Regression protection:** several fixes, including the blocker `safeNext` fix, have no permanent test.
-9. **Demo data clutter:** test documents and leftover chats in the shared accounts, and leftover user `console-admin-test@example.com`.
-10. **Not implemented:** backups and restore, TLS configuration, secret management, S3 storage, tracing, retention, malware scanning, SSO.
+2. **Credentials to rotate (owner action):** the Groq API key appeared in a chat session; a local database password appeared in tool output; credentials from before the reinstall. No full malware scan is recorded.
+3. **Data egress:** with Groq on, questions, matched passages and an earlier question for follow-ups leave the machine.
+4. **Production setup never executed:** the Caddy overlay, images, CI jobs and backups against Docker volumes are checked statically only. The first real run may find problems.
+5. **pip-audit gate red:** pypdf 6.21.2 has 7 advisories; bump to 6.21.4 before merging.
+6. **Demo mode:** password-less org_admin access for anyone who can reach the site. Never on real data or a public address. Production refuses it.
+7. **Rate limits:** per API process. Without Caddy (development Compose), all sign-ins share one address.
+8. **Free-plan model limits:** chat returns `MODEL_OVERLOADED` under load. An evaluation run holds a worker, and uploads queue behind it with one worker.
+9. **Stop does not cancel on the server:** the question and answer are saved and can feed follow-up search.
+10. **Regression protection:** several UI fixes have no permanent test; the new web security headers and the Compose overlay rules have no test in the repository yet.
+11. **Demo data clutter:** test documents and leftover chats in the shared accounts, and leftover user `console-admin-test@example.com` (not recorded as cleaned).
+12. **Not implemented:** backup encryption and off-host copy, managed secret store, S3 storage, tracing, retention, malware scanning of uploads, SSO.
 
 ## Not verified
-- Final gate results are in `TESTING.md`. `test_answer_is_withheld_once_access_can_no_longer_be_checked` now passes; the cause of its earlier failure was not reproduced.
-- Docker Compose and CI on this branch: fixed web address, `DEMO_MODE` and `TRUSTED_PROXY_IPS` pass-through, curl retries. No CI result is recorded.
+- Stage 6 without Docker or GitHub: `docker compose config`/`up` with the overlay, `caddy validate`, TLS issuance, image builds, read-only roots, Qdrant key enforcement, every new CI job, backups against Docker volumes or a keyed Qdrant, POSIX file modes (`TESTING.md` "Stage 6").
+- Docker Compose and CI changes since v0.1.0. No CI result is recorded since then.
 - Clean install using the current README.
 - The Claude adapter against the live API.
 - RAG and chat fixes beyond the full backend suites run by other owners; that owner's report was not received.
 - Ask fixes against the real backend (browser checks used a mocked API); console writes against real data (stubbed); several landing edge cases (`TESTING.md`).
 - `next start` behaviour for `X-Forwarded-For`.
-- Load, backup and restore, real mobile devices, screen readers, Windows High Contrast.
+- Load, real mobile devices, screen readers, Windows High Contrast. Backup and restore: drill passed on the local Windows stack only.
 
 ## Latest session
+### 2026-11-07 to 2026-11-08 — Stage 6: production hardening
+- Implemented, by eleven owners in parallel, then a diff review (14 findings: 4 blocker, 5 major, 5 minor, including duplicates) and fixes:
+  - Production configuration refusals in `core/config.py`, `WEB_PROXY_TIMEOUT_SECONDS` (ADR-027).
+  - `bootstrap-admin`, CLI password policy, production guard on demo seeding, demo sign-in off in production; demo accounts protected and last-admin locking in `routers/admin.py` (`create_member` untouched) (ADR-029).
+  - Readiness `vector_collection_consistent`, bounded probes, dependency-free liveness (ADR-031).
+  - `scripts/ops/backup.py`, `restore.py` and their runbook with retention and the restore drill (ADR-030); `generate_env.py` and `deploy/env.production.example`.
+  - Caddy TLS service, `deploy/compose.prod.yml` overlay with restart policies, read-only roots, dropped capabilities and a required Qdrant key; client-address chain trusting web and Caddy (ADR-028).
+  - Two-stage backend and three-stage web images, non-root, HEALTHCHECKs, stricter `.dockerignore`.
+  - Web CSP, COOP and production HSTS; `API_PROXY_TIMEOUT_MS` derived from one timeout variable (ADR-032, ADR-033).
+  - CI: SHA-pinned actions, least-privilege token, new `e2e`, `secrets`, `audit-python`, `audit-web` jobs, image builds; Dependabot (ADR-034).
+  - E2E: `test:e2e:ci`, `E2E_DEMO_PASSWORD`, configurable output folders.
+- Review blockers fixed: worker and migrate inheriting the API healthcheck (fixed in both the image and Compose); two production-settings tests and two readiness tests out of date. Majors fixed: Qdrant key never passed to containers, no restart policies, Compose disaster recovery leaving root-owned files (`--chown`). Minors fixed: owner-only backup files, privilege drop, one HSTS policy, one timeout variable, a starter document so the CI e2e job cannot pass on skipped tests. Open: pypdf advisories (lock not bumped; no owner holds `uv.lock`).
+- Tests run and results: `TESTING.md` "Stage 6". Backend 516 passed, 2 skipped, 0 failed (owner-reported); restore drill passed 2026-11-07.
+- Not run: Docker, Caddy, GitHub Actions. This documentation pass re-read the code and configuration but ran no suite.
+- Decisions made: ADR-027 to ADR-034; ADR-025 amended. ADR-026 still awaits the owner.
+- Next steps: `TODO.md` "To do before merging this branch", then `PRODUCTION_CHECKLIST.md` on a staging host.
+- TODO/PROGRESS updated: Yes
+
 ### 2026-11-06 — Redesign finish, diff review and fixes
 - Implemented: finished the UI redesign; Groq via `openai_compatible`; a 68-finding diff review (1 blocker, 14 major, 53 minor, some duplicates) followed by fixes from seven owners. See `RELEASE_NOTES.md` "Unreleased".
 - Files changed: commit `45cd0dd`, plus the uncommitted working tree.
