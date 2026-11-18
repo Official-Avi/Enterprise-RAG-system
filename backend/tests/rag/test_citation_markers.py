@@ -6,7 +6,7 @@ import pytest
 
 from rackflow.providers.chat import ExtractiveProvider
 from rackflow.providers.interfaces import ChatTurn
-from rackflow.rag.answer import refusal_text, verify_citations
+from rackflow.rag.answer import UNVERIFIED_MESSAGE, interpret_reply, refusal_text, verify_citations
 from rackflow.rag.context import build_context
 from rackflow.rag.prompts import SYSTEM_PROMPT
 from rackflow.rag.retrieval import RetrievedChunk
@@ -72,6 +72,58 @@ def test_refusal_text_shows_no_markers() -> None:
     answer = refusal_text("INSUFFICIENT_EVIDENCE: [1] and 【2†L1-L2】 do not name the owner.")
     assert answer.endswith("and do not name the owner.")
     assert "[" not in answer and "【" not in answer
+
+
+CV = [_chunk("Proficient in Python, FastAPI and PostgreSQL. Backend developer intern in 2024.",
+              "cv.pdf")]
+
+
+def test_cited_refusal_is_shown_as_a_partial_answer() -> None:
+    """2026-11-18: "is he eligible for python developer role?" on a CV was hidden as a refusal
+    although the model listed the CV's Python skills with a citation."""
+    answer, status, citations = interpret_reply(
+        "INSUFFICIENT_EVIDENCE: The CV lists Python and FastAPI [1], "
+        "but no job criteria are given.",
+        CV)
+    assert status == "supported" and [c.marker for c in citations] == [1]
+    assert answer.startswith("The CV lists Python") and "INSUFFICIENT" not in answer
+
+
+@pytest.mark.parametrize("reply", [
+    "INSUFFICIENT_EVIDENCE: The CV says nothing about salary.",
+    "INSUFFICIENT_EVIDENCE: Source [7] is not relevant.",  # a marker outside the sources
+])
+def test_refusal_without_a_real_citation_stays_a_refusal(reply: str) -> None:
+    answer, status, citations = interpret_reply(reply, CV)
+    assert status == "insufficient" and citations == []
+    assert answer.startswith("The available sources don't contain enough information")
+
+
+@pytest.mark.parametrize("reply", [
+    "The provided resume documents [1] do not contain any information regarding salary.",
+    "There is no mention of salary in the CV [1].",
+    "The CV does not mention salary.\n[1]",
+])
+def test_citing_a_source_only_to_say_it_lacks_something_is_a_refusal(reply: str) -> None:
+    """2026-11-18: "What is his salary expectation?" came back as a supported answer whose only
+    citations were attached to "the documents do not contain any information"."""
+    answer, status, citations = interpret_reply(reply, CV)
+    assert status == "insufficient" and citations == []
+    assert answer.startswith("The available sources don't contain enough information")
+    assert "[1]" not in answer
+
+
+def test_facts_plus_a_missing_criterion_stay_supported() -> None:
+    reply = ("The sources do not contain the job criteria.\n"
+             "* He is proficient in Python and FastAPI [1].\n"
+             "To decide, the role's requirements are needed.")
+    _, status, citations = interpret_reply(reply, CV)
+    assert status == "supported" and len(citations) == 1
+
+
+def test_uncited_answer_is_not_shown() -> None:
+    expected = (UNVERIFIED_MESSAGE, "insufficient", [])
+    assert interpret_reply("He is clearly eligible.", CV) == expected
 
 
 def test_prompt_sets_no_formatting_rule() -> None:

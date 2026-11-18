@@ -162,6 +162,50 @@ def refusal_text(reply: str) -> str:
             + (f" {explanation}" if explanation else ""))
 
 
+def interpret_reply(reply: str, sources: list[RetrievedChunk]
+                    ) -> tuple[str, Literal["supported", "insufficient"], list[CitationResult]]:
+    """The answer the reader sees, its evidence status and its verified citations.
+
+    A refusal that still cites real sources is a partial answer ("the CV lists Python [1], but no
+    job criteria are given"), so it is shown with its citations instead of hiding the facts. A
+    refusal with no verifiable citation stays a refusal.
+    """
+    text = reply.strip()
+    refused = text.upper().startswith(INSUFFICIENT_MARKER)
+    body = text[len(INSUFFICIENT_MARKER):].strip() if refused else text
+    cleaned, citations = verify_citations(body, sources)
+    if citations and cleaned and not _only_cites_absence(cleaned):
+        return cleaned, "supported", citations
+    if refused or (citations and cleaned):
+        # Either a plain refusal, or "the documents [1][2] don't mention salary": citing a source
+        # to say what it lacks is still a refusal.
+        return refusal_text(f"{INSUFFICIENT_MARKER} {body}"), "insufficient", []
+    return UNVERIFIED_MESSAGE, "insufficient", []
+
+
+_ABSENCE_RE = re.compile(
+    r"\b(?:do|does|did)(?: not|n't) (?:contain|mention|include|say|state|specify|provide|"
+    r"list|cover|address|discuss|describe|give)\b"
+    r"|\bno (?:information|mention|details?|data|reference)\b"
+    r"|\bnot (?:mentioned|specified|stated|provided|included|listed|available|given)\b",
+    re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+_MARKERS_ONLY_RE = re.compile(r"^(?:\[\d{1,3}\]\s*)+[.!?]?$")
+
+
+def _only_cites_absence(answer: str) -> bool:
+    """True when every sentence that carries a citation only says something is missing."""
+    sentences: list[str] = []
+    for part in _SENTENCE_SPLIT_RE.split(answer):
+        part = part.strip()
+        if sentences and _MARKERS_ONLY_RE.match(part):
+            sentences[-1] += " " + part  # "...expectations. [1]" belongs to the sentence before
+        elif part:
+            sentences.append(part)
+    cited = [s for s in sentences if MARKER_RE.search(s)]
+    return bool(cited) and all(_ABSENCE_RE.search(s) for s in cited)
+
+
 def prior_user_turns(db: Session, tenant_id: uuid.UUID, conversation_id: uuid.UUID) -> list[str]:
     """The conversation's latest user questions, oldest first. Call before storing the new one."""
     rows = db.scalars(
@@ -212,15 +256,7 @@ def answer_question(db: Session, principal: Principal, question: str,
         retrieved_count=len(sources), sources=sources, prompt_tokens=completion.prompt_tokens,
         completion_tokens=completion.completion_tokens,
     )
-    text = completion.text.strip()
-    if text.upper().startswith(INSUFFICIENT_MARKER):
-        result.answer = refusal_text(text)
-    else:
-        cleaned, citations = verify_citations(text, sources)
-        if citations:
-            result.answer, result.citations = cleaned, citations
-            result.evidence_status = "supported"
-        else:
-            result.answer = UNVERIFIED_MESSAGE
+    result.answer, result.evidence_status, result.citations = interpret_reply(completion.text,
+                                                                             sources)
     result.latency_ms = int((time.perf_counter() - started) * 1000)
     return result
