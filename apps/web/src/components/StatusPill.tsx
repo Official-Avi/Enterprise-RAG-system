@@ -1,5 +1,5 @@
 import { describeStatus, type StatusContext, type StatusTone, type UploadPhase } from "@/lib/status";
-import { cx } from "./ui";
+import { chipClass, cx, StatusGlyph, type StatusGlyphName } from "./ui";
 
 const TONE: Record<StatusTone, string> = {
   ok: "bg-ok-soft text-ok",
@@ -17,24 +17,28 @@ const TEXT_TONE: Record<StatusTone, string> = {
   neutral: "text-muted",
 };
 
-/** Reading and retrying show a spinner (§5.4); with reduced motion the static glyph stays (§8.4). */
-function Glyph({ phase, glyph, spaced }: { phase: UploadPhase; glyph: string; spaced?: boolean }) {
-  const text = spaced ? `${glyph} ` : glyph;
-  if (phase !== "processing" && phase !== "retry_wait") return <span aria-hidden="true">{text}</span>;
+// lib/status speaks in text glyphs; the pills draw them from the icon set so every status
+// renders the same in every font. Unknown glyphs fall back to the text.
+const GLYPH_ICON: Record<string, StatusGlyphName> = {
+  "↑": "arrowUp",
+  "◷": "clock",
+  "↻": "refresh",
+  "✓": "check",
+  "\u26A0": "alert", // lib/status warning sign
+  "⌫": "trash",
+  "⧉": "copy",
+  "⊘": "ban",
+};
+
+/** Reading and retrying spin (§5.4); with reduced motion the ring holds still (§8.4). */
+function Glyph({ phase, glyph }: { phase: UploadPhase; glyph: string }) {
+  const live = phase === "processing" || phase === "retry_wait";
+  const icon: StatusGlyphName | undefined = live ? "spin" : GLYPH_ICON[glyph];
+  if (!icon) return <span aria-hidden="true">{glyph}</span>;
   return (
-    <>
-      <span aria-hidden="true" className="motion-safe:hidden">{text}</span>
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 16 16"
-        fill="none"
-        data-status-spinner
-        className={cx("size-3 shrink-0 motion-safe:animate-spin motion-reduce:hidden", spaced && "mr-1 inline align-[-1px]")}
-      >
-        <circle cx="8" cy="8" r="6" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
-        <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      </svg>
-    </>
+    <span data-status-spinner={live || undefined} className="inline-flex">
+      <StatusGlyph glyph={icon} />
+    </span>
   );
 }
 
@@ -61,23 +65,23 @@ export function StatusPill({
   }
   if (variant === "inline") {
     return (
-      <span className="text-xs">
-        <span className={cx("font-medium", TEXT_TONE[s.tone])}>
-          <Glyph phase={phase} glyph={s.glyph} spaced />
+      <span className="inline-flex flex-wrap items-center gap-x-2 text-xs">
+        <span className={cx("inline-flex items-center gap-1 font-medium", TEXT_TONE[s.tone])}>
+          <Glyph phase={phase} glyph={s.glyph} />
           {s.label}
         </span>
-        {showSub && s.sub && <span className="text-muted"> · {s.sub}</span>}
+        {showSub && s.sub && (
+          <span className="text-muted">
+            <span className="sr-only">, </span>
+            {s.sub}
+          </span>
+        )}
       </span>
     );
   }
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5">
-      <span
-        className={cx(
-          "badge inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium",
-          TONE[s.tone],
-        )}
-      >
+    <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+      <span className={cx(chipClass, TONE[s.tone])}>
         <Glyph phase={phase} glyph={s.glyph} />
         {s.label}
       </span>

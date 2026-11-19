@@ -21,9 +21,14 @@ const UNREACHABLE = "Can't reach RackFlow. Check that the server is running.";
 const COOLDOWN_MS = 60_000;
 const SPINNER_DELAY_MS = 300;
 
-const GRID = "mx-auto grid max-w-[1040px] grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4";
+// Four ruled columns (two by two on tablets, a ruled stack on phones), not four floating cards.
+const GRID = "grid grid-cols-1 border-t border-border sm:grid-cols-2 lg:grid-cols-4";
+const COLUMN = "flex border-b border-border sm:odd:border-r lg:border-r lg:last:border-r-0";
+const COMPACT = "flex flex-col gap-2";
 const MINUS = "M6 12h12";
 const CHEVRON = "M9 6l6 6-6 6";
+const ALERT = "M12 4 2.5 20h19zM12 10v4.5M12 17.5h.01";
+const CROSS_CIRCLE = "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9 9l6 6M15 9l-6 6";
 
 // The auditor has no chat permission, so it lands in the console (§2.2).
 const destination = (p: DemoPersona) => (p.key === "auditor" ? "Opens the admin console" : "Opens Ask");
@@ -118,13 +123,13 @@ export function DemoPersonaCards({ variant = "landing" }: { variant?: Variant })
 
   return (
     <div>
-      <ul className={variant === "landing" ? GRID : "flex flex-col gap-2"}>
+      <ul className={variant === "landing" ? GRID : COMPACT}>
         {personas.map((p) => {
           const Card = variant === "landing" ? LandingCard : CompactRow;
           const isCurrent = !pending && current?.key === p.key;
           const locked = pending !== null || (throttled && !isCurrent);
           return (
-            <li key={p.key} className="flex">
+            <li key={p.key} className={variant === "landing" ? COLUMN : "flex"}>
               <Card
                 persona={p}
                 state={pending === p.key ? (slow ? "spinning" : "busy") : locked ? "locked" : "idle"}
@@ -163,64 +168,63 @@ function buttonState(state: CardState) {
   };
 }
 
+/** One ruled column per persona. The button holds only its CTA, so its name matches its visible
+ *  text (WCAG 2.5.3); its ::after stretches over the column, so the whole column is one target. */
 function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, buttonRef }: CardProps) {
   const id = useId();
   const { cursorClass, ...aria } = buttonState(state);
   const interactive = state === "idle";
-  const pill = isCurrent ? "You're here" : p.key === "engineer" ? "Start here" : null;
+  const busy = state === "busy" || state === "spinning";
+  const tag = isCurrent ? "You're here" : p.key === "engineer" ? "Start here" : null;
   const cta = state === "spinning" ? `Signing in as ${p.title}…` : isCurrent ? "Back to workspace" : `Continue as ${p.title}`;
-  const describedBy = [pill && `${id}-pill`, isCurrent && `${id}-title`, `${id}-who`, `${id}-sum`, `${id}-caps`, `${id}-dest`]
+  const describedBy = [tag && `${id}-pill`, isCurrent && `${id}-title`, `${id}-who`, `${id}-caps`, `${id}-dest`]
     .filter(Boolean)
     .join(" ");
 
   return (
-    // The button holds only its CTA, so its name matches its visible text (WCAG 2.5.3). Its ::after
-    // stretches over this card, so the whole card is still one target.
     <div
-      title={`${p.display_name} · ${p.email}`}
+      title={`${p.display_name}, ${p.email}`}
       className={cx(
-        "group relative flex min-h-[236px] w-full flex-col rounded-2xl border bg-panel p-5 text-left",
-        "transition-[translate,scale,border-color,box-shadow,opacity] duration-150 ease-[var(--ease-snappy)]",
-        highlighted ? "border-accent ring-2 ring-accent/30" : "border-border",
-        interactive && "hover:-translate-y-0.5 hover:border-accent hover:shadow-md active:scale-[.98] active:duration-100",
-        state === "locked" && "opacity-50",
+        "group relative flex w-full flex-col p-6 text-left",
+        "transition-[background-color,opacity] duration-[var(--dur-micro)] ease-out",
+        highlighted && "bg-accent-soft/60 shadow-[inset_0_2px_0_var(--accent)]",
+        interactive && "hover:bg-panel-2 has-[button:active]:bg-panel-3",
+        busy && "bg-panel-2",
+        state === "locked" && "opacity-55",
       )}
     >
-      <span className="flex items-start justify-between gap-2">
-        <Avatar title={p.title} size="lg" />
-        {pill && (
-          <Pill id={`${id}-pill`} current={isCurrent}>
-            {pill}
-          </Pill>
+      <span className="flex items-start justify-between gap-3">
+        <span id={`${id}-title`} className="font-display text-title font-semibold text-text">
+          {p.title}
+        </span>
+        {tag && (
+          <Tag id={`${id}-pill`} current={isCurrent}>
+            {tag}
+          </Tag>
         )}
       </span>
-      <span id={`${id}-title`} className="mt-3 text-lg leading-[26px] font-semibold">
-        {p.title}
+      {/* The sign-in address only: the title already names the role, and the capability rows
+          below say what the summary would. The display name stays in the column's tooltip. */}
+      <span id={`${id}-who`} className="mt-1 block truncate font-mono text-xs text-muted">
+        {p.email}
       </span>
-      {/* Two lines: side by side, a 248px card clips the email at every desktop width. */}
-      <span id={`${id}-who`} className="mt-0.5 flex min-w-0 flex-col text-xs text-muted">
-        <span className="truncate">{p.display_name}</span>
-        <span className="truncate font-mono">{p.email}</span>
-      </span>
-      <span id={`${id}-sum`} className="mt-3 text-sm leading-5">
-        {p.summary}
-      </span>
-      <span id={`${id}-caps`} className="mt-3 flex flex-col gap-1 text-[13px] leading-5">
-        {p.can.slice(0, 3).map((c) => (
-          <span key={c} className="flex items-start gap-2">
+      {/* Two things the role can do and one it can't: enough to tell the four apart at a glance. */}
+      <span id={`${id}-caps`} className="mt-4 flex flex-col gap-1 text-sm leading-6">
+        {p.can.slice(0, 2).map((c) => (
+          <span key={c} className="flex items-start gap-2 text-text">
             <LineIcon className="text-accent">
-              <Icon name="check" width={14} height={14} />
+              <Icon name="check" />
             </LineIcon>
             {c}
           </span>
         ))}
         {p.cannot.length === 0 ? (
-          <span className="pl-[22px] text-muted">No limits</span>
+          <span className="pl-6 text-muted">No limits</span>
         ) : (
-          p.cannot.slice(0, 2).map((c) => (
+          p.cannot.slice(0, 1).map((c) => (
             <span key={c} className="flex items-start gap-2 text-muted">
               <LineIcon>
-                <Glyph d={MINUS} size={14} />
+                <Glyph d={MINUS} size={16} />
               </LineIcon>
               <span>
                 <span className="sr-only">Can&apos;t: </span>
@@ -230,8 +234,8 @@ function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, butt
           ))
         )}
       </span>
-      <span className="mt-auto flex flex-col pt-4">
-        <span className="flex items-center gap-1.5 text-sm font-semibold text-accent">
+      <span className="mt-auto flex flex-col gap-1 pt-6">
+        <span className="flex items-center gap-2 font-display text-base font-medium text-accent">
           {state === "spinning" && <Spinner />}
           <button
             ref={buttonRef}
@@ -240,24 +244,17 @@ function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, butt
             aria-describedby={describedBy}
             {...aria}
             className={cx(
-              // The focus ring goes on the ::after, which has the card's shape.
-              "min-h-6 text-left font-semibold after:absolute after:inset-0 after:rounded-2xl",
-              "focus-visible:outline-none! focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-[var(--focus)]",
+              "min-h-6 text-left underline-offset-4 after:absolute after:inset-0 aria-disabled:cursor-not-allowed",
+              interactive && "group-hover:underline",
+              // The ring goes on the ::after, inset, so it traces the column without crossing its rules.
+              "focus-visible:outline-none! focus-visible:after:outline-2 focus-visible:after:outline-offset-[-2px] focus-visible:after:outline-[var(--focus)]",
               cursorClass,
             )}
           >
             {cta}
           </button>
-          {state !== "spinning" && (
-            <Icon
-              name="arrowRight"
-              width={15}
-              height={15}
-              className={cx("shrink-0 transition-[translate] duration-150", interactive && "group-hover:translate-x-0.5")}
-            />
-          )}
         </span>
-        <span id={`${id}-dest`} className="mt-0.5 text-xs text-muted">
+        <span id={`${id}-dest`} className="text-sm text-muted">
           {destination(p)}
         </span>
       </span>
@@ -265,10 +262,11 @@ function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, butt
   );
 }
 
-/** 56px row for the login page: avatar, title, summary and a chevron (§4.2). */
+/** 56px row for the login page: avatar, title, summary and a chevron. */
 function CompactRow({ persona: p, state, isCurrent, highlighted, onChoose, buttonRef }: CardProps) {
   const { cursorClass, ...aria } = buttonState(state);
   const interactive = state === "idle";
+  const busy = state === "busy" || state === "spinning";
   const sub = state === "spinning" ? `Signing in as ${p.title}…` : isCurrent ? "Back to workspace" : p.summary;
 
   return (
@@ -278,23 +276,20 @@ function CompactRow({ persona: p, state, isCurrent, highlighted, onChoose, butto
       onClick={onChoose}
       {...aria}
       className={cx(
-        "flex min-h-14 w-full items-center gap-3 rounded-xl border bg-panel px-3 py-2 text-left focus-visible:rounded-xl!",
-        "transition-[scale,border-color,background-color,opacity] duration-150 ease-[var(--ease-snappy)]",
-        highlighted ? "border-accent ring-2 ring-accent/30" : "border-border",
-        interactive && "hover:border-accent hover:bg-panel-2 active:scale-[.98] active:duration-100",
+        "flex min-h-14 w-full items-center gap-3 rounded-card border bg-panel px-3 py-2 text-left focus-visible:rounded-card! aria-disabled:cursor-not-allowed",
+        "transition-[background-color,border-color,opacity] duration-[var(--dur-micro)] ease-out",
+        highlighted ? "border-accent bg-accent-soft/40" : "border-border",
+        interactive && "hover:border-border-strong hover:bg-panel-2 active:bg-panel-3",
+        busy && "bg-panel-2",
         cursorClass,
-        state === "locked" && "opacity-50",
+        state === "locked" && "opacity-55",
       )}
     >
-      <Avatar title={p.title} size="sm" />
+      <Avatar title={p.title} />
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-2">
-          <span className="text-sm font-semibold">{p.title}</span>
-          {isCurrent && (
-            <Pill current>
-              You&apos;re here
-            </Pill>
-          )}
+          <span className="font-display text-sm font-medium text-text">{p.title}</span>
+          {isCurrent && <Tag current>You&apos;re here</Tag>}
         </span>
         {/* A touch screen has no tooltip, so narrow rows wrap instead of cutting the summary. */}
         <span className="block text-xs text-muted sm:truncate" title={sub}>
@@ -306,22 +301,32 @@ function CompactRow({ persona: p, state, isCurrent, highlighted, onChoose, butto
   );
 }
 
+/** Placeholders in the shape of what is coming: ruled columns, or rows on the login page. */
 function Skeletons({ variant }: { variant: Variant }) {
-  const landing = variant === "landing";
+  const bar = "animate-shimmer rounded-sm bg-panel-3 motion-reduce:animate-none";
   return (
     <div aria-busy="true">
       <span className="sr-only">Loading demo accounts…</span>
-      <div aria-hidden="true" className={landing ? GRID : "flex flex-col gap-2"}>
-        {[0, 1, 2, 3].map((i) => (
-          <div
-            key={i}
-            className={cx(
-              "animate-shimmer border border-border bg-panel-2 motion-reduce:animate-none",
-              landing ? "h-[236px] rounded-2xl" : "h-14 rounded-xl",
-            )}
-          />
-        ))}
-      </div>
+      {variant === "landing" ? (
+        <div aria-hidden="true" className={GRID}>
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className={cx(COLUMN, "h-[292px] flex-col gap-3 p-6")}>
+              <div className={cx(bar, "h-6 w-1/2")} />
+              <div className={cx(bar, "h-4 w-3/4")} />
+              <div className={cx(bar, "mt-4 h-4 w-full")} />
+              <div className={cx(bar, "h-4 w-5/6")} />
+              <div className={cx(bar, "h-4 w-2/3")} />
+              <div className={cx(bar, "mt-auto h-5 w-1/2")} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div aria-hidden="true" className={COMPACT}>
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className={cx(bar, "h-14 rounded-card")} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -331,26 +336,22 @@ function NoticeBar({ notice, variant }: { notice: Notice; variant: Variant }) {
   return (
     <div
       className={cx(
-        // Sticky so that on a one-column phone layout it stays on screen beside the tapped card.
-        "sticky bottom-[max(1rem,env(safe-area-inset-bottom))] z-10 flex flex-wrap items-center gap-x-3 gap-y-2",
-        "rounded-xl border px-4 py-3 text-sm max-sm:shadow-elev-3",
-        variant === "landing" ? "mx-auto mt-4 max-w-[1040px]" : "mt-3",
-        throttled ? "border-warn/30 bg-warn-soft text-warn" : "border-bad/30 bg-bad-soft text-bad",
+        // Sticky so that on a one-column phone layout it stays on screen beside the tapped column.
+        "sticky bottom-[max(1rem,env(safe-area-inset-bottom))] z-[var(--z-raised)] flex flex-wrap items-center gap-x-3 gap-y-2",
+        "rounded-card px-4 py-3 text-sm max-sm:shadow-elev-3",
+        variant === "landing" ? "mt-4" : "mt-3",
+        throttled ? "bg-warn-soft text-warn" : "bg-bad-soft text-bad",
       )}
     >
       <p className="flex min-w-0 flex-1 items-start gap-2">
-        <span aria-hidden="true" className="font-semibold">
-          {throttled ? "!" : "✕"}
+        <span className="flex h-5 shrink-0 items-center">
+          <Glyph d={throttled ? ALERT : CROSS_CIRCLE} size={16} />
         </span>
         {noticeText(notice)}
       </p>
       {notice.kind === "unreachable" && (
-        <button
-          type="button"
-          onClick={notice.retry}
-          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong bg-panel px-3 text-sm font-medium text-text transition-colors duration-150 hover:bg-panel-2 focus-visible:rounded-lg! sm:min-h-9"
-        >
-          <Icon name="refresh" width={15} height={15} />
+        <button type="button" onClick={notice.retry} className="key min-h-11 focus-visible:outline-offset-2 sm:min-h-10">
+          <Icon name="refresh" />
           Try again
         </button>
       )}
@@ -359,26 +360,27 @@ function NoticeBar({ notice, variant }: { notice: Notice; variant: Variant }) {
 }
 
 /** The initial is generated content: it is decoration, not part of the button's visible label (2.5.3). */
-function Avatar({ title, size }: { title: string; size: "lg" | "sm" }) {
+function Avatar({ title }: { title: string }) {
   return (
     <span
       aria-hidden="true"
       data-initial={title.charAt(0).toUpperCase()}
       className={cx(
-        "grid shrink-0 place-items-center rounded-full bg-accent-soft font-semibold text-accent",
+        "grid size-9 shrink-0 place-items-center rounded-full border border-border-2 bg-panel-2 font-display text-sm font-semibold text-text-2",
         "before:content-[attr(data-initial)]",
-        size === "lg" ? "h-10 w-10 text-base" : "h-9 w-9 text-sm",
       )}
     />
   );
 }
 
-function Pill({ id, current, children }: { id?: string; current: boolean; children: ReactNode }) {
+/** A small tag: "Start here" in the accent, "You're here" in the ok colour with a check, so the
+ *  state never rests on colour alone. Square-cornered chip, never a pill. */
+function Tag({ id, current, children }: { id?: string; current: boolean; children: ReactNode }) {
   return (
     <span
       id={id}
       className={cx(
-        "badge inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+        "badge inline-flex h-6 shrink-0 items-center gap-1 rounded-chip px-2 text-xs font-medium",
         current ? "bg-ok-soft text-ok" : "bg-accent-soft text-accent",
       )}
     >
@@ -388,9 +390,9 @@ function Pill({ id, current, children }: { id?: string; current: boolean; childr
   );
 }
 
-/** Centres a 14px icon on the first 20px line of a capability. */
+/** Centres a 16px icon on the first 24px line of a capability. */
 function LineIcon({ className, children }: { className?: string; children: ReactNode }) {
-  return <span className={cx("flex h-5 shrink-0 items-center", className)}>{children}</span>;
+  return <span className={cx("flex h-6 shrink-0 items-center", className)}>{children}</span>;
 }
 
 function Glyph({ d, size }: { d: string; size: number }) {
@@ -413,7 +415,7 @@ function Glyph({ d, size }: { d: string; size: number }) {
 
 function Spinner() {
   return (
-    <svg viewBox="0 0 24 24" width={16} height={16} aria-hidden="true" className="shrink-0 animate-spin">
+    <svg viewBox="0 0 24 24" width={16} height={16} aria-hidden="true" className="shrink-0 animate-spin motion-reduce:animate-none">
       <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeOpacity={0.25} strokeWidth={2.5} />
       <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" />
     </svg>

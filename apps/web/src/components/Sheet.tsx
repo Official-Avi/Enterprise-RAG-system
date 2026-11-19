@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { Icon } from "./icons";
-import { cx } from "./ui";
+import { cx, iconButtonClass } from "./ui";
 
 // Marks the history entry pushed while a bottom sheet is open, so browser Back closes it (§5.7).
 const HISTORY_KEY = "__rackflowSheet";
@@ -131,9 +131,11 @@ export function Sheet({
       onPointerDown={onPointerDown}
       onClick={onClick}
       className={cx(
-        "fixed m-0 overflow-hidden border-border bg-panel text-text shadow-elev-3 backdrop:bg-black/40",
-        "transition-[translate,overlay,display] transition-discrete duration-200 open:duration-[260ms]",
-        "ease-[var(--ease-drawer)]",
+        "fixed m-0 overflow-hidden border-border bg-panel text-text shadow-elev-3",
+        "backdrop:bg-[color-mix(in_oklab,var(--graphite)_55%,transparent)]",
+        // Slides in over --dur-long, leaves faster; the reduced-motion block ends both at once.
+        "transition-[translate,overlay,display] transition-discrete duration-(--dur-short) open:duration-(--dur-long)",
+        "ease-(--ease-drawer)",
         SIDE_CLASS[side],
       )}
     >
@@ -144,14 +146,14 @@ export function Sheet({
         )}
       >
         {side === "bottom" && (
-          <div aria-hidden="true" className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-border-strong" />
+          <div aria-hidden="true" className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-border-2" />
         )}
-        <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border pl-4 pr-1.5">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border pr-2 pl-4">
           <h2
             ref={headingRef}
             id={titleId}
             tabIndex={-1}
-            className="min-w-0 truncate text-base font-semibold"
+            className="min-w-0 truncate text-lg"
           >
             {title}
           </h2>
@@ -159,10 +161,7 @@ export function Sheet({
             type="button"
             aria-label="Close"
             onClick={onClose}
-            className={cx(
-              "inline-flex size-11 shrink-0 items-center justify-center rounded-lg text-muted",
-              "transition-colors hover:bg-panel-2 hover:text-text",
-            )}
+            className={cx(iconButtonClass, "size-11")}
           >
             <Icon name="close" width={20} height={20} />
           </button>

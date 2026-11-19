@@ -1,0 +1,33 @@
+[
+ {
+  "mode": "redesign",
+  "depth": "full",
+  "scope": "site",
+  "shape": "Workbench",
+  "theme": "cobalt",
+  "axes": "light/grotesk-sans/cool",
+  "hero": "Settled",
+  "nav": "edge-aligned bar",
+  "footer": "colophon block",
+  "imagery": "product",
+  "photos": [],
+  "entry": "/",
+  "sections": [
+   "hero: head and sentence beside the working upload/ask tool",
+   "demo accounts",
+   "how it works: three captures",
+   "features: three split rows of captures",
+   "try it with your own file",
+   "questions",
+   "footer"
+  ],
+  "signature": "the cited passage: numbered key chip opening the quote in the cobalt marker, page in mono",
+  "waived": [],
+  "prompt": "document question answering tool for engineers, operators and IT admins",
+  "modes": "light+dark",
+  "draw": "43f8ff",
+  "job": "try",
+  "date": "2026-11-18",
+  "fingerprint": "Left-margin|Asymmetric spans|Hairline|Solid|Tightly cropped to the grid|None"
+ }
+]

@@ -1,0 +1,12 @@
+src\app\login\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere | fix: A focus ring at 3:1 or better, instant
+src\components\landing\Features.tsx
+  FAIL 48 :203 colour literal shadow-[0_1px_4px_rgb(0_0_0/0.05)] in a class on <li class="flex min-w-0 flex-col rounded-x…"> | fix: Lift the value into the token block (@theme or :root) and use its utility name
+src\components\landing\LandingFooter.tsx
+  FAIL 63 :80 middle-dot meta string "© 2026 RackFlow AI · v · Demo mode is on. Demo ac…" | fix: Line breaks, columns or hairlines; one dot in a byline at most
+src\app\page.tsx
+  REFLEX 26b :1 no :active styling anywhere | fix: All eight states; guard: not a form control, no aria-disabled anywhere
+  WARN 58 :60 hero paragraph runs 22 words | fix: One sentence, twelve words or fewer
+src\app\login\page.tsx
+  WARN 49 :164 long clickable label "Signing in to a specific workspace?" without nowrap | fix: Shorten the label or set nowrap
+sloplint: 3 FAIL, 1 REFLEX, 2 WARN across 12 file(s).

@@ -6,7 +6,9 @@ import { MeContext } from "@/lib/hooks";
 import { Icon } from "@/components/icons";
 import { cx } from "@/components/ui";
 import {
+  chipShape,
   chipTone,
+  citationLabel,
   citationName,
   citationPlace,
   isDocumentDeleted,
@@ -67,11 +69,12 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 const actionClass = cx(
-  "inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] font-medium text-muted",
-  "transition-colors hover:bg-panel-2 hover:text-text pointer-coarse:h-11",
+  "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-text-2",
+  "transition-colors duration-[var(--dur-micro)] ease-out hover:bg-panel-3 hover:text-text active:bg-panel-3",
+  "pointer-coarse:h-11 disabled:cursor-not-allowed disabled:text-muted disabled:hover:bg-transparent",
 );
 
-/** One source card: chip, filename, page, highlighted quote, Best match, Copy quote, Download.
+/** One source row: chip, filename, Best match, page, highlighted quote, Copy quote, Download.
  *  A deleted document keeps its number and any quote we still have, but offers no download. */
 export function SourceCard({
   citation,
@@ -158,7 +161,6 @@ export function SourceCard({
   };
 
   const place = citationPlace(citation);
-  const shownPlace = place === "section" ? "Section" : `Page ${citation.page}`;
   const [nameStart, nameEnd] = splitName(name);
 
   return (
@@ -169,40 +171,29 @@ export function SourceCard({
       data-deleted={deleted ? "" : undefined}
       onClick={onCardClick}
       className={cx(
-        "relative isolate rounded-xl border bg-panel p-3 transition-colors",
-        active ? "border-accent" : hovered ? "border-border-strong" : "border-border",
+        "relative isolate px-4 py-4 transition-colors duration-[var(--dur-micro)] ease-out",
+        active ? "bg-accent-soft" : hovered ? "bg-panel-2" : !deleted && "cursor-pointer hover:bg-panel-2",
       )}
     >
       {flash > flashDone && (
         <span
           key={flash}
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 -z-10 rounded-[inherit] animate-flash motion-reduce:bg-accent/18"
+          className="pointer-events-none absolute inset-0 -z-10 animate-flash motion-reduce:bg-accent/18"
         />
       )}
 
       <h3
         tabIndex={-1}
         data-card-heading
-        className="flex min-w-0 items-center gap-2 rounded-lg text-[13px]/5 font-medium"
+        className="flex min-w-0 items-center gap-2 rounded-md text-sm/5 font-medium focus-visible:outline-offset-4"
       >
-        <span
-          aria-hidden="true"
-          className={cx(
-            "cite-chip inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full px-[5px]",
-            "text-[11px]/[18px] font-semibold tabular-nums",
-            chipTone(citation, active),
-          )}
-        >
+        <span aria-hidden="true" className={cx(chipShape, chipTone(citation, active))}>
           {number}
         </span>
-        <span className="sr-only">
-          {deleted
-            ? `Source ${number} · ${SOURCE_GONE}${name ? ` · ${name}` : ""}`
-            : `Source ${number} · ${name} · ${place}`}
-        </span>
+        <span className="sr-only">{citationLabel(citation, number)}</span>
         {deleted ? (
-          <span aria-hidden="true" className="min-w-0 text-muted">
+          <span aria-hidden="true" className="min-w-0 font-normal text-muted">
             {SOURCE_GONE}
           </span>
         ) : (
@@ -211,14 +202,27 @@ export function SourceCard({
               <span className="min-w-0 overflow-hidden text-ellipsis whitespace-pre">{nameStart}</span>
               <span className="shrink-0 whitespace-pre">{nameEnd}</span>
             </span>
-            <span aria-hidden="true" className="ml-auto shrink-0 font-normal text-muted">
-              {shownPlace}
+            {isBest && (
+              <span
+                aria-hidden="true"
+                className="badge inline-flex h-6 shrink-0 items-center gap-1 rounded-chip border border-border bg-panel px-2 text-xs font-medium text-text-2"
+              >
+                <Icon name="check" width={12} height={12} className="text-ok" />
+                Best match
+              </span>
+            )}
+            <span
+              aria-hidden="true"
+              className={cx("ml-auto shrink-0 pl-2 text-xs font-normal text-muted", place !== "section" && "font-mono")}
+            >
+              {place === "section" ? "Section" : `p. ${citation.page}`}
             </span>
           </>
         )}
       </h3>
+      {isBest && !deleted && <p className="sr-only">Best match</p>}
       {deleted && name && (
-        <p title={name} className="mt-1 truncate text-[13px]/5 text-muted">
+        <p title={name} className="mt-1 truncate pl-7 text-xs text-muted line-through">
           {name}
         </p>
       )}
@@ -227,7 +231,7 @@ export function SourceCard({
         <p
           ref={quoteRef}
           className={cx(
-            "mt-2 whitespace-pre-line text-sm/[22px]",
+            "mt-2 pl-7 whitespace-pre-line text-sm leading-6 wrap-anywhere",
             deleted ? "text-muted" : "text-text",
             !expanded && "line-clamp-6",
           )}
@@ -238,7 +242,7 @@ export function SourceCard({
           ) : (
             <mark
               className={cx(
-                "box-decoration-clone rounded-[4px] px-0.5 text-text transition-colors",
+                "box-decoration-clone rounded-sm px-0.5 text-text transition-colors duration-[var(--dur-micro)] ease-out",
                 active || hovered ? "bg-cite-hl-active" : "bg-cite-hl",
               )}
             >
@@ -248,29 +252,26 @@ export function SourceCard({
         </p>
       )}
       {!quote && deleted && (
-        <p className="mt-2 text-sm/[22px] text-muted">The document was removed, so this passage can&apos;t be shown.</p>
+        <p className="mt-2 pl-7 text-sm leading-6 text-muted">The document was removed, so this passage can&apos;t be shown.</p>
       )}
       {(overflows || expanded) && (
         <button
           type="button"
           aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
-          className="mt-1 inline-flex min-h-6 items-center rounded-lg text-[13px] font-medium text-accent hover:underline pointer-coarse:min-h-11"
+          className={cx(
+            "mt-1 ml-5 inline-flex min-h-8 items-center rounded-md px-2 text-sm font-medium text-accent underline-offset-2",
+            "hover:underline active:text-accent-hover pointer-coarse:min-h-11",
+          )}
         >
           {expanded ? "Show less" : "Show more"}
         </button>
       )}
 
-      <div className="mt-2 flex flex-wrap items-center gap-1 empty:hidden">
-        {isBest && !deleted && (
-          <span className="badge mr-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent">
-            <Icon name="check" width={12} height={12} />
-            Best match
-          </span>
-        )}
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 pl-5 empty:hidden">
         {quote && (
           <button type="button" onClick={() => void onCopy()} className={actionClass}>
-            <Icon name={copied ? "check" : "quote"} />
+            <Icon name={copied ? "check" : "copy"} />
             {copied ? "Copied" : "Copy quote"}
           </button>
         )}
@@ -285,7 +286,7 @@ export function SourceCard({
           </a>
         )}
       </div>
-      {footer}
+      {footer && <div className="pl-5">{footer}</div>}
     </div>
   );
 }

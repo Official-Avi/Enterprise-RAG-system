@@ -30,8 +30,18 @@ function gibToBytes(raw: string): number | null {
 function FieldBox({ id, label, children }: { id: string; label: string; children: ReactNode }) {
   return (
     <div>
-      <label htmlFor={id} className="mb-1 block text-sm font-medium">{label}</label>
+      <label htmlFor={id} className="mb-1 block text-sm font-medium text-text">{label}</label>
       {children}
+    </div>
+  );
+}
+
+/** A section head inside a console page: one step under the page h1, in the display face. */
+export function SectionTitle({ id, children, meta }: { id?: string; children: ReactNode; meta?: ReactNode }) {
+  return (
+    <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+      <h2 id={id} className="text-base font-semibold">{children}</h2>
+      {meta && <div className="text-xs text-muted">{meta}</div>}
     </div>
   );
 }
@@ -41,12 +51,12 @@ function FieldBox({ id, label, children }: { id: string; label: string; children
 export function SourceRadios({ manualHint, simulatedHint }: { manualHint?: string; simulatedHint?: string }) {
   return (
     <fieldset>
-      <legend className="mb-1 text-sm font-medium">Data source</legend>
+      <legend className="mb-1 text-sm font-medium text-text">Data source</legend>
       <label className="flex min-h-8 items-center gap-2 text-sm">
-        <input type="radio" name="source" value="manual" defaultChecked /> Configured{manualHint ? ` (${manualHint})` : ""}
+        <input type="radio" name="source" value="manual" defaultChecked className="size-4 shrink-0 accent-accent" /> Configured{manualHint ? ` (${manualHint})` : ""}
       </label>
       <label className="flex min-h-8 items-center gap-2 text-sm">
-        <input type="radio" name="source" value="simulated" /> Simulated{simulatedHint ? ` (${simulatedHint})` : ""}
+        <input type="radio" name="source" value="simulated" className="size-4 shrink-0 accent-accent" /> Simulated{simulatedHint ? ` (${simulatedHint})` : ""}
       </label>
     </fieldset>
   );
@@ -103,7 +113,7 @@ function EditDialog({
         {children}
         {note && <p className="text-xs text-muted">{note}</p>}
         {error && <p role="alert" className="text-sm text-bad">{error}</p>}
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2 pt-2">
           <Button type="button" onClick={close}>Cancel</Button>
           <Button type="submit" variant="primary">Save</Button>
         </div>
@@ -114,7 +124,7 @@ function EditDialog({
 
 function RowButton({ name, verb, danger, onClick }: { name: string; verb: string; danger?: boolean; onClick: () => void }) {
   return (
-    <Button variant={danger ? "danger" : "secondary"} aria-label={`${verb} ${name}`} className="px-2 py-1 text-xs max-sm:min-h-11" onClick={onClick}>
+    <Button variant={danger ? "danger" : "secondary"} aria-label={`${verb} ${name}`} size="sm" onClick={onClick}>
       {verb}
     </Button>
   );
@@ -183,7 +193,7 @@ export function RackActions({ rack, onChanged, onDeleted }: { rack: Rack; onChan
         note={rack.rack_units ? `Height is ${rack.rack_units}U. It is set when the rack is registered.` : "Height is not set. It is set when the rack is registered."}
       >
         <FieldBox id="er-name" label="Name"><input id="er-name" name="name" required maxLength={120} defaultValue={rack.name} className={inputClass} /></FieldBox>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <FieldBox id="er-env" label="Environment">
             <select id="er-env" name="environment" defaultValue={rack.environment} className={inputClass}>{ENVIRONMENTS.map((e) => <option key={e}>{e}</option>)}</select>
           </FieldBox>
@@ -229,7 +239,7 @@ export function NodeActions({ node, racks, onChanged }: { node: NodeResource; ra
       <RowButton name={node.name} verb="Delete" danger onClick={() => setMode("delete")} />
       <EditDialog title="Edit" name={node.name} open={mode === "edit"} onClose={close} build={build} path={path} onSaved={onChanged}>
         <FieldBox id="en-name" label="Name"><input id="en-name" name="name" required maxLength={120} defaultValue={node.name} className={inputClass} /></FieldBox>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <FieldBox id="en-rack" label="Rack">
             <select id="en-rack" name="rack" defaultValue={node.rack_id ?? ""} className={inputClass}>
               <option value="">Not in a rack</option>
@@ -294,7 +304,7 @@ export function WorkloadActions({ workload, nodes, onChanged }: { workload: Work
         onSaved={onChanged}
         note="This changes the workload record; nothing is deployed, started or stopped."
       >
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <FieldBox id="ew-node" label="Placed on node">
             <select id="ew-node" name="node" defaultValue={workload.node_id ?? ""} className={inputClass}>
               <option value="">Unplaced</option>
@@ -315,7 +325,7 @@ export function WorkloadActions({ workload, nodes, onChanged }: { workload: Work
             </FieldBox>
           )}
         </div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <FieldBox id="ew-cpu" label="CPU cores"><input id="ew-cpu" name="cpu" type="number" min={0} step="0.5" defaultValue={req.cpu_cores ?? ""} className={inputClass} /></FieldBox>
           <FieldBox id="ew-mem" label="Memory GiB"><input id="ew-mem" name="mem" type="number" min={0} step="any" defaultValue={gibText(req.memory_bytes)} className={inputClass} /></FieldBox>
           <FieldBox id="ew-gpu" label="GPUs"><input id="ew-gpu" name="gpu" type="number" min={0} defaultValue={req.accelerators ?? ""} className={inputClass} /></FieldBox>

@@ -1,3 +1,8 @@
+/* Hallmark · shape: Workbench (/), app screen (signed-in) · genre: modern-minimal · theme: Cobalt (deal 3/3, seed document-question-answering-tool-3613·0725647b·2026-11-18·r0) · redesign: full · draw: 43f8ff · job: try
+ * hero: Settled (/) · nav: edge-aligned bar (swapped from search-led, the landing has no search) · footer: colophon block · imagery: the product, captured from the running app · signature: the cited passage, a numbered key chip opening the quote in the cobalt marker with its page in mono
+ * modes: light+dark · axes: light/grotesk-sans/cool · posture: restrained · contrast: pass (every pairing computed in both modes, design.md) · v2.0.0 */
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V4 · weakest: S, a cool blue tool system fits many products; anchored it on the citation (marker highlight, page in mono, numbered key chip) that only an answers-with-sources product has. R cost: the ASCII field, cut so the working tool is the only hero visual */
+
 @import "tailwindcss";
 
 /* `dark:` follows the same two selectors as the dark tokens below. */
@@ -12,137 +17,251 @@
   }
 }
 
-/* Design tokens: restrained neutral foundation, one accent, explicit status colours.
-   Status is never conveyed by colour alone (badges always carry text + glyph). */
+/* Tokens. Light is the base; dark is re-derived per token (hue fixed, paper L 16.5%, ink L 94.5%,
+   elevation by lightness, shadows reduced to rings). design.md lists every hex and contrast pair.
+   Status is never colour alone: badges always carry text and a glyph. */
 :root {
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --panel-2: #f1f3f6;
-  --border: #e2e5ea;
-  --text: #111827;
-  --muted: #5a6371;
-  --accent: #0f6b66;
-  --accent-soft: #e3f1ef;
-  --accent-contrast: #ffffff;
-  --ok: #067647;
-  --ok-soft: #e7f6ec;
-  --warn: #9a4a05;
-  --warn-soft: #fdf1e3;
-  --bad: #b42318;
-  --bad-soft: #fdecea;
-  --info: #1d4ed8;
-  --info-soft: #e8efff;
-  --focus: #0f6b66;
-  /* Added for the landing page and /ask workspace (Docs/UI_DESIGN_SPEC.md §8.1). */
-  --border-strong: #7a8494;
-  --dropzone-border: #4e9c93;
-  --landing-bg: #ffffff;
-  --cite-chip-bg: #e3f1ef;
-  --cite-chip-fg: #0b5753;
-  --cite-chip-active-bg: #0f6b66;
-  --cite-chip-active-fg: #ffffff;
-  --cite-hl: #fdefb2;
-  --cite-hl-active: #fbdc6a;
-  --demo-bg: #fff4d6;
-  --demo-fg: #5c4200;
-  --demo-border: #f0d58c;
-  --elev-1: 0 1px 3px rgb(16 24 40 / 0.1), 0 1px 2px rgb(16 24 40 / 0.06);
-  --elev-3: 0 12px 16px -4px rgb(16 24 40 / 0.08), 0 4px 6px -2px rgb(16 24 40 / 0.03);
+  --bg: oklch(98.6% 0.005 250);
+  --landing-bg: var(--bg);
+  --panel: oklch(99.7% 0.002 250);
+  --panel-2: oklch(96.2% 0.008 252);
+  --panel-3: oklch(93% 0.011 252);
+  --border: oklch(90% 0.009 252);
+  --border-2: oklch(83% 0.012 252);
+  --border-strong: oklch(60% 0.016 256);
+  --text: oklch(21% 0.028 262);
+  --text-2: oklch(36% 0.022 260);
+  --muted: oklch(50% 0.018 258);
+  --accent: oklch(52% 0.19 258);
+  --accent-hover: oklch(46% 0.2 260);
+  --accent-edge: oklch(39% 0.16 260);
+  --accent-soft: oklch(95% 0.028 256);
+  --accent-contrast: oklch(98.6% 0.005 250);
+  --accent-2: oklch(76% 0.13 254);
+  --focus: oklch(52% 0.19 258);
+  --ok: oklch(50% 0.12 150);
+  --ok-soft: oklch(95.5% 0.03 150);
+  --warn: oklch(51% 0.11 62);
+  --warn-soft: oklch(95.5% 0.035 78);
+  --bad: oklch(52% 0.19 27);
+  --bad-soft: oklch(95.5% 0.022 25);
+  --info: oklch(49% 0.12 232);
+  --info-soft: oklch(95.5% 0.022 232);
+  --dropzone-border: oklch(60% 0.13 257);
+  --cite-chip-bg: oklch(95% 0.028 256);
+  --cite-chip-fg: oklch(43% 0.2 262);
+  --cite-chip-active-bg: oklch(52% 0.19 258);
+  --cite-chip-active-fg: oklch(98.6% 0.005 250);
+  --cite-hl: oklch(92% 0.05 250);
+  --cite-hl-active: oklch(86.5% 0.08 252);
+  --demo-bg: oklch(21% 0.024 262);
+  --demo-fg: oklch(93% 0.01 250);
+  --demo-border: oklch(30% 0.026 262);
+  --graphite: oklch(21% 0.024 262);
+  --graphite-2: oklch(26.5% 0.026 262);
+  --graphite-ink: oklch(93% 0.01 250);
+  --graphite-muted: oklch(69% 0.022 256);
+  --key-face: var(--panel);
+  --key-edge: oklch(80% 0.016 254);
+  --elev-1: 0 1px 2px oklch(21% 0.028 262 / 0.06);
+  --elev-3: 0 12px 24px -8px oklch(21% 0.028 262 / 0.16), 0 2px 6px -2px oklch(21% 0.028 262 / 0.08);
+  --key-shadow: 0 2px 0 0 var(--key-edge), 0 4px 6px -3px oklch(21% 0.028 262 / 0.22), inset 0 1px 0 oklch(100% 0 0 / 0.9);
+  --key-shadow-accent: 0 2px 0 0 var(--accent-edge), 0 4px 6px -3px oklch(30% 0.12 260 / 0.4), inset 0 1px 0 oklch(100% 0 0 / 0.22);
+  --key-shadow-press: inset 0 1px 2px oklch(21% 0.028 262 / 0.14);
+  --body-weight: 400;
+  /* Dialog and sheet backdrop. Built on graphite so it stays dark in both modes
+     (a --text mix turns light in dark mode and stops dimming the page). */
+  --scrim: color-mix(in oklab, var(--graphite) 55%, transparent);
+
+  /* Space: Hallmark's scale. Every step but 2px is a Tailwind 4px multiple (space-lg = p-6). */
+  --space-3xs: 2px;
+  --space-2xs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 40px;
+  --space-2xl: 64px;
+  --space-3xl: 96px;
+  --space-4xl: 144px;
+  --container: 1200px;
+  --gutter: 64px;
+  --gap-columns: 32px;
+  --section-gap: 128px;
+
+  /* Shape */
+  --rule-hair: 1px;
+  --cut: 8px;
+  --cut-l: 14px;
+
+  /* Motion */
+  --dur-micro: 120ms;
+  --dur-short: 220ms;
+  --dur-long: 420ms;
   --ease-snappy: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* Layers */
+  --z-base: 1;
+  --z-raised: 10;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-sticky-nav: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
+
   color-scheme: light dark;
 }
 
-/* An explicit theme (a later toggle sets data-theme on <html>) also fixes native controls. */
+@media (max-width: 60rem) {
+  :root {
+    --gutter: 24px;
+    --section-gap: 96px;
+  }
+}
+
+@media (max-width: 40rem) {
+  :root {
+    --gutter: 16px;
+    --section-gap: 72px;
+    --gap-columns: 16px;
+  }
+}
+
+/* An explicit theme (a toggle sets data-theme on <html>) also fixes native controls. */
 :root[data-theme="light"] {
   color-scheme: light;
 }
 
-/* Dark tokens, twice: for the OS preference and for an explicit data-theme="dark" (§8.1).
-   CSS can't share one block between a media query and a plain selector; keep both in sync. */
+/* Dark tokens, twice: for the OS preference and for an explicit data-theme="dark".
+   CSS can't share one block between a media query and a plain selector; the two are generated
+   from one list and must stay identical. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0c0e12;
-    --panel: #13161c;
-    --panel-2: #191d24;
-    --border: #272c35;
-    --text: #e6e9ee;
-    --muted: #9aa3b1;
-    --accent: #3cc4b4;
-    --accent-soft: #11302d;
-    --accent-contrast: #06201d;
-    --ok: #4ade80;
-    --ok-soft: #10281a;
-    --warn: #fbbf5e;
-    --warn-soft: #2d2010;
-    --bad: #f87171;
-    --bad-soft: #301414;
-    --info: #8ab4ff;
-    --info-soft: #142038;
-    --focus: #3cc4b4;
-    --border-strong: #6b7584;
-    --dropzone-border: #3a8a82;
-    --landing-bg: #0c0e12;
-    --cite-chip-bg: #11302d;
-    --cite-chip-fg: #7fdccf;
-    --cite-chip-active-bg: #3cc4b4;
-    --cite-chip-active-fg: #06201d;
-    --cite-hl: #4a3d0f;
-    --cite-hl-active: #6b5711;
-    --demo-bg: #3a2e0a;
-    --demo-fg: #f5d77a;
-    --demo-border: #5a4712;
-    --elev-1: 0 0 0 1px rgb(255 255 255 / 0.06), 0 1px 3px rgb(0 0 0 / 0.5);
-    --elev-3: 0 0 0 1px rgb(255 255 255 / 0.06), 0 8px 24px rgb(0 0 0 / 0.5);
+    --bg: oklch(16.5% 0.012 250);
+    --landing-bg: var(--bg);
+    --panel: oklch(19.5% 0.014 250);
+    --panel-2: oklch(22.5% 0.016 252);
+    --panel-3: oklch(26% 0.018 252);
+    --border: oklch(30% 0.018 252);
+    --border-2: oklch(37% 0.02 252);
+    --border-strong: oklch(57% 0.02 256);
+    --text: oklch(94.5% 0.008 262);
+    --text-2: oklch(84% 0.014 260);
+    --muted: oklch(73% 0.018 258);
+    --accent: oklch(70% 0.15 258);
+    --accent-hover: oklch(76% 0.12 260);
+    --accent-edge: oklch(52% 0.15 260);
+    --accent-soft: oklch(27% 0.05 256);
+    --accent-contrast: oklch(16.5% 0.02 250);
+    --accent-2: oklch(80% 0.1 254);
+    --focus: oklch(72% 0.14 258);
+    --ok: oklch(77% 0.13 150);
+    --ok-soft: oklch(25% 0.04 150);
+    --warn: oklch(81% 0.12 62);
+    --warn-soft: oklch(26% 0.04 78);
+    --bad: oklch(73% 0.15 27);
+    --bad-soft: oklch(26% 0.05 25);
+    --info: oklch(79% 0.09 232);
+    --info-soft: oklch(25% 0.035 232);
+    --dropzone-border: oklch(58% 0.11 257);
+    --cite-chip-bg: oklch(27% 0.05 256);
+    --cite-chip-fg: oklch(84% 0.08 262);
+    --cite-chip-active-bg: oklch(70% 0.15 258);
+    --cite-chip-active-fg: oklch(16.5% 0.02 250);
+    --cite-hl: oklch(33% 0.065 250);
+    --cite-hl-active: oklch(40% 0.09 252);
+    --demo-bg: oklch(29% 0.035 262);
+    --demo-fg: oklch(94.5% 0.008 250);
+    --demo-border: oklch(37% 0.035 262);
+    --graphite: oklch(12.5% 0.012 262);
+    --graphite-2: oklch(19% 0.016 262);
+    --graphite-ink: oklch(93% 0.01 250);
+    --graphite-muted: oklch(70% 0.02 256);
+    --key-face: oklch(25% 0.018 250);
+    --key-edge: oklch(11% 0.01 254);
+    --elev-1: 0 0 0 1px oklch(100% 0 0 / 0.04);
+    --elev-3: 0 0 0 1px var(--border-2), 0 16px 32px -8px oklch(0% 0 0 / 0.55);
+    --key-shadow: 0 2px 0 0 var(--key-edge), inset 0 1px 0 oklch(100% 0 0 / 0.06);
+    --key-shadow-accent: 0 2px 0 0 var(--accent-edge), inset 0 1px 0 oklch(100% 0 0 / 0.25);
+    --key-shadow-press: inset 0 1px 2px oklch(0% 0 0 / 0.5);
+    --body-weight: 370;
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0c0e12;
-  --panel: #13161c;
-  --panel-2: #191d24;
-  --border: #272c35;
-  --text: #e6e9ee;
-  --muted: #9aa3b1;
-  --accent: #3cc4b4;
-  --accent-soft: #11302d;
-  --accent-contrast: #06201d;
-  --ok: #4ade80;
-  --ok-soft: #10281a;
-  --warn: #fbbf5e;
-  --warn-soft: #2d2010;
-  --bad: #f87171;
-  --bad-soft: #301414;
-  --info: #8ab4ff;
-  --info-soft: #142038;
-  --focus: #3cc4b4;
-  --border-strong: #6b7584;
-  --dropzone-border: #3a8a82;
-  --landing-bg: #0c0e12;
-  --cite-chip-bg: #11302d;
-  --cite-chip-fg: #7fdccf;
-  --cite-chip-active-bg: #3cc4b4;
-  --cite-chip-active-fg: #06201d;
-  --cite-hl: #4a3d0f;
-  --cite-hl-active: #6b5711;
-  --demo-bg: #3a2e0a;
-  --demo-fg: #f5d77a;
-  --demo-border: #5a4712;
-  --elev-1: 0 0 0 1px rgb(255 255 255 / 0.06), 0 1px 3px rgb(0 0 0 / 0.5);
-  --elev-3: 0 0 0 1px rgb(255 255 255 / 0.06), 0 8px 24px rgb(0 0 0 / 0.5);
+  --bg: oklch(16.5% 0.012 250);
+  --landing-bg: var(--bg);
+  --panel: oklch(19.5% 0.014 250);
+  --panel-2: oklch(22.5% 0.016 252);
+  --panel-3: oklch(26% 0.018 252);
+  --border: oklch(30% 0.018 252);
+  --border-2: oklch(37% 0.02 252);
+  --border-strong: oklch(57% 0.02 256);
+  --text: oklch(94.5% 0.008 262);
+  --text-2: oklch(84% 0.014 260);
+  --muted: oklch(73% 0.018 258);
+  --accent: oklch(70% 0.15 258);
+  --accent-hover: oklch(76% 0.12 260);
+  --accent-edge: oklch(52% 0.15 260);
+  --accent-soft: oklch(27% 0.05 256);
+  --accent-contrast: oklch(16.5% 0.02 250);
+  --accent-2: oklch(80% 0.1 254);
+  --focus: oklch(72% 0.14 258);
+  --ok: oklch(77% 0.13 150);
+  --ok-soft: oklch(25% 0.04 150);
+  --warn: oklch(81% 0.12 62);
+  --warn-soft: oklch(26% 0.04 78);
+  --bad: oklch(73% 0.15 27);
+  --bad-soft: oklch(26% 0.05 25);
+  --info: oklch(79% 0.09 232);
+  --info-soft: oklch(25% 0.035 232);
+  --dropzone-border: oklch(58% 0.11 257);
+  --cite-chip-bg: oklch(27% 0.05 256);
+  --cite-chip-fg: oklch(84% 0.08 262);
+  --cite-chip-active-bg: oklch(70% 0.15 258);
+  --cite-chip-active-fg: oklch(16.5% 0.02 250);
+  --cite-hl: oklch(33% 0.065 250);
+  --cite-hl-active: oklch(40% 0.09 252);
+  --demo-bg: oklch(29% 0.035 262);
+  --demo-fg: oklch(94.5% 0.008 250);
+  --demo-border: oklch(37% 0.035 262);
+  --graphite: oklch(12.5% 0.012 262);
+  --graphite-2: oklch(19% 0.016 262);
+  --graphite-ink: oklch(93% 0.01 250);
+  --graphite-muted: oklch(70% 0.02 256);
+  --key-face: oklch(25% 0.018 250);
+  --key-edge: oklch(11% 0.01 254);
+  --elev-1: 0 0 0 1px oklch(100% 0 0 / 0.04);
+  --elev-3: 0 0 0 1px var(--border-2), 0 16px 32px -8px oklch(0% 0 0 / 0.55);
+  --key-shadow: 0 2px 0 0 var(--key-edge), inset 0 1px 0 oklch(100% 0 0 / 0.06);
+  --key-shadow-accent: 0 2px 0 0 var(--accent-edge), inset 0 1px 0 oklch(100% 0 0 / 0.25);
+  --key-shadow-press: inset 0 1px 2px oklch(0% 0 0 / 0.5);
+  --body-weight: 370;
 }
 
+/* Utilities. Colours, shadows and faces resolve per mode through the variables above. */
 @theme inline {
   --color-bg: var(--bg);
+  --color-landing-bg: var(--landing-bg);
   --color-panel: var(--panel);
   --color-panel-2: var(--panel-2);
+  --color-panel-3: var(--panel-3);
   --color-border: var(--border);
+  --color-border-2: var(--border-2);
+  --color-border-strong: var(--border-strong);
   --color-text: var(--text);
+  --color-text-2: var(--text-2);
   --color-muted: var(--muted);
   --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-edge: var(--accent-edge);
   --color-accent-soft: var(--accent-soft);
   --color-accent-contrast: var(--accent-contrast);
+  --color-accent-2: var(--accent-2);
+  --color-focus: var(--focus);
   --color-ok: var(--ok);
   --color-ok-soft: var(--ok-soft);
   --color-warn: var(--warn);
@@ -151,10 +270,7 @@
   --color-bad-soft: var(--bad-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
-  --color-focus: var(--focus);
-  --color-border-strong: var(--border-strong);
   --color-dropzone-border: var(--dropzone-border);
-  --color-landing-bg: var(--landing-bg);
   --color-cite-chip-bg: var(--cite-chip-bg);
   --color-cite-chip-fg: var(--cite-chip-fg);
   --color-cite-chip-active-bg: var(--cite-chip-active-bg);
@@ -164,22 +280,134 @@
   --color-demo-bg: var(--demo-bg);
   --color-demo-fg: var(--demo-fg);
   --color-demo-border: var(--demo-border);
+  --color-graphite: var(--graphite);
+  --color-graphite-2: var(--graphite-2);
+  --color-graphite-ink: var(--graphite-ink);
+  --color-graphite-muted: var(--graphite-muted);
+  --color-key-face: var(--key-face);
+  --color-key-edge: var(--key-edge);
+  --color-scrim: var(--scrim);
+  /* `font-normal` follows the body weight (370 in dark), so no fourth weight is drawn. */
+  --font-weight-normal: var(--body-weight);
   --shadow-elev-1: var(--elev-1);
   --shadow-elev-3: var(--elev-3);
+  --shadow-key: var(--key-shadow);
+  --shadow-key-accent: var(--key-shadow-accent);
+  --shadow-key-press: var(--key-shadow-press);
   --animate-flash: flash 1.2s var(--ease-snappy) 1;
   --animate-shimmer: shimmer 2s ease-in-out infinite;
   --animate-dash: dash 0.8s linear infinite;
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-    Arial, sans-serif;
-  --font-display: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+  --font-sans: var(--font-plex), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: var(--font-familjen), var(--font-plex), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
+}
+
+/* Static scale. App type runs on a 1.2 ratio; the landing roles are fluid and capped.
+   Three weights only (400, 500, 600): `font-bold` renders 600 so no 700 is ever drawn. */
+@theme {
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.375rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.2rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.44rem;
+  --text-xl--line-height: 1.95rem;
+  --text-2xl: 1.728rem;
+  --text-2xl--line-height: 2.2rem;
+  --text-3xl: 2.074rem;
+  --text-3xl--line-height: 2.5rem;
+  --text-lead: clamp(1.0625rem, 0.35vw + 0.95rem, 1.25rem);
+  --text-lead--line-height: 1.5;
+  --text-title: clamp(1.125rem, 0.5vw + 0.9rem, 1.375rem);
+  --text-title--line-height: 1.25;
+  --text-section: clamp(1.75rem, 1.5vw + 1.25rem, 2.75rem);
+  --text-section--line-height: 1.08;
+  --text-display-s: clamp(2rem, 2vw + 1.25rem, 3.25rem);
+  --text-display-s--line-height: 1.05;
+  /* The landing hero head in its 5-column slot: 36px on phones, 56px from about 1280. */
+  --text-display-hero: clamp(2.25rem, 3vw + 1rem, 3.5rem);
+  --text-display-hero--line-height: 1.04;
+  --text-display: clamp(2.5rem, 2.6vw + 1.5rem, 4.25rem);
+  --text-display--line-height: 1.02;
+  --tracking-display: -0.028em;
+  --tracking-head: -0.014em;
+  --font-weight-bold: 600;
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 8px;
+  --radius-2xl: 12px;
+  --radius-3xl: 12px;
+  --radius-card: 8px;
+  --radius-input: 6px;
+  --radius-chip: 4px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
 
 html,
 body {
+  overflow-x: clip;
   background: var(--bg);
   color: var(--text);
+}
+
+html {
+  scrollbar-color: var(--border-strong) var(--bg);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+  font-weight: var(--body-weight);
+  /* 15/23 for the app. Unitless, so larger text doesn't inherit a fixed height. */
+  line-height: 1.55;
+  font-synthesis: none;
+  caret-color: var(--accent);
+}
+
+@layer base {
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: var(--tracking-head);
+    overflow-wrap: break-word;
+    min-width: 0;
+  }
+  /* Balance section and card heads; display heads set their own line breaks (F3). */
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+  p {
+    text-wrap: pretty;
+  }
+  ::placeholder {
+    color: var(--muted);
+    opacity: 1;
+  }
+  a {
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.18em;
+  }
+}
+
+/* 16px fields on phones, so iOS never zooms on focus. Unlayered on purpose: beats text-sm. */
+@media (max-width: 40rem) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: max(1rem, 1em);
+  }
 }
 
 @keyframes flash {
@@ -191,7 +419,7 @@ body {
   }
 }
 
-/* Skeleton loop. Opacity only: §8.4 animates opacity, translate, scale, colour, shadow and
+/* Skeleton loop. Opacity only: animate opacity, translate, scale, colour, shadow and
    stroke-dashoffset, never layout or background position. */
 @keyframes shimmer {
   50% {
@@ -207,19 +435,12 @@ body {
 }
 
 ::selection {
-  background: var(--accent-soft);
+  background: color-mix(in oklab, var(--accent) 24%, transparent);
+  color: var(--text);
 }
 
 html:has(dialog[open]) {
-  overflow: hidden;
-}
-
-body {
-  font-feature-settings: "cv05", "cv08";
-  font-family: var(--font-sans);
-  font-size: 14px;
-  /* §8.2 base 14/22. Unitless, so larger text doesn't inherit a fixed 22px. */
-  line-height: calc(22 / 14);
+  overflow-y: hidden;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -229,7 +450,8 @@ body {
 }
 
 /* The ring itself is unlayered, so a stray `outline-none` utility can't remove it; components
-   that draw their own indicator opt out with `focus-visible:outline-none!`. */
+   that draw their own indicator opt out with `focus-visible:outline-none!`. It appears instantly:
+   nothing transitions outline. */
 :focus-visible {
   outline: 2px solid var(--focus);
 }
@@ -239,12 +461,122 @@ body {
 @layer base {
   :focus-visible {
     outline-offset: 2px;
-    border-radius: 4px;
+    border-radius: var(--radius-chip);
   }
 }
 
 table {
   border-collapse: collapse;
+}
+
+/* Cobalt material, as component classes so every builder draws the same objects.
+   Utilities still win over these (they sit in a later layer). */
+@layer components {
+  /* Cut panel: two opposite corners bevelled where the browser can, plain 8px radius otherwise. */
+  .cut {
+    border-radius: var(--radius-card);
+  }
+  .cut-sm {
+    border-radius: var(--radius-input);
+  }
+  @supports (corner-shape: bevel) {
+    .cut {
+      border-radius: var(--cut-l) var(--radius-sm);
+      corner-shape: bevel round;
+    }
+    .cut-sm {
+      border-radius: var(--cut) var(--radius-xs);
+      corner-shape: bevel round;
+    }
+  }
+
+  /* Keycap button. Secondary by default; `.key-primary` is the one cobalt key per view. */
+  .key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-xs);
+    min-height: 40px;
+    padding-inline: var(--space-md);
+    border: var(--rule-hair) solid var(--border-2);
+    border-radius: var(--radius-input);
+    background: var(--key-face);
+    color: var(--text);
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: var(--text-sm);
+    line-height: 1;
+    box-shadow: var(--key-shadow);
+    cursor: pointer;
+    transition:
+      transform var(--dur-micro) var(--ease-out),
+      box-shadow var(--dur-micro) var(--ease-out),
+      background-color var(--dur-micro) var(--ease-out),
+      border-color var(--dur-micro) var(--ease-out);
+  }
+  .key:hover {
+    transform: translateY(-1px);
+    border-color: var(--border-strong);
+  }
+  .key:active,
+  .key[aria-pressed="true"] {
+    transform: translateY(2px);
+    box-shadow: var(--key-shadow-press);
+    background: var(--panel-3);
+  }
+  /* Selected key: accent edge, ink and soft fill, so the choice reads in both modes and never
+     looks like the flat disabled key (accent on accent-soft: 4.89:1 light, 5.60:1 dark). */
+  .key[aria-pressed="true"] {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .key-primary {
+    border-color: var(--accent-edge);
+    background: var(--accent);
+    color: var(--accent-contrast);
+    box-shadow: var(--key-shadow-accent);
+  }
+  .key-primary:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-edge);
+  }
+  .key-primary:active {
+    background: var(--accent-hover);
+  }
+  .key-lg {
+    min-height: 48px;
+    padding-inline: var(--space-lg);
+    font-size: var(--text-base);
+  }
+  .key:disabled,
+  .key[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+  }
+  .key[aria-busy="true"] {
+    cursor: progress;
+    transform: none;
+  }
+  .key-danger {
+    color: var(--bad);
+  }
+
+  /* A sunken tray of keys for options (segmented control); the chosen key is pressed. */
+  .tray {
+    display: inline-flex;
+    gap: var(--space-2xs);
+    padding: var(--space-2xs);
+    border: var(--rule-hair) solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--panel-3);
+  }
+
+  /* Machine values: page refs, sizes, timestamps, ids, emails. */
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -256,12 +588,20 @@ table {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  .key:hover {
+    transform: none;
+  }
 }
 
 @media (forced-colors: active) {
   .badge,
-  .cite-chip {
+  .cite-chip,
+  .key {
     border: 1px solid CanvasText;
+  }
+  .key[aria-pressed="true"] {
+    border-color: Highlight;
+    outline: 2px solid Highlight;
   }
   :focus-visible {
     outline-color: Highlight;

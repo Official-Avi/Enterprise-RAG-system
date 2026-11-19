@@ -2,7 +2,7 @@
 
 import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
 import { cx } from "@/components/ui";
-import { secondaryButtonClass } from "./parts";
+import { AlertIcon, secondaryButtonClass } from "./parts";
 
 /** §6 delete confirmation: native <dialog>.showModal(), Cancel focused (§9 #10). */
 export function ConfirmDelete({
@@ -63,21 +63,25 @@ export function ConfirmDelete({
         if (open) onCancel();
       }}
       className={cx(
-        "m-auto w-[min(calc(100%-32px),420px)] rounded-2xl border border-border bg-panel p-6 text-text shadow-elev-3",
-        "backdrop:bg-black/40 transition-opacity duration-200 ease-[var(--ease-snappy)] starting:opacity-0",
+        // design.md, Dialogs: a cut panel on the elevated shadow.
+        "cut m-auto w-[min(calc(100%-32px),440px)] border border-border bg-panel p-6 text-text shadow-elev-3",
+        // Graphite rather than ink: ink is light in dark mode, and the wash must dim in both.
+        "backdrop:bg-[color-mix(in_oklab,var(--graphite)_55%,transparent)]",
+        "transition-opacity duration-[var(--dur-short)] ease-out starting:opacity-0",
       )}
     >
       {shownName !== null && (
         <>
-          <h2 id={titleId} className="text-base font-semibold [overflow-wrap:anywhere]">
+          <h2 id={titleId} className="text-lg [overflow-wrap:anywhere]">
             Delete {shownName}?
           </h2>
-          <p id={descId} className="mt-2 text-sm text-muted">
+          <p id={descId} className="mt-2 text-sm text-text-2">
             You won&apos;t be able to ask about it any more.
           </p>
           {error && (
-            <p role="alert" className="mt-4 rounded-lg bg-bad-soft px-3 py-2 text-sm text-bad">
-              {error}
+            <p role="alert" className="mt-4 flex items-start gap-2 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">
+              <AlertIcon className="mt-0.5 shrink-0" />
+              <span>{error}</span>
             </p>
           )}
           <div className="mt-6 flex flex-wrap justify-end gap-2">
@@ -87,13 +91,16 @@ export function ConfirmDelete({
             <button
               type="button"
               aria-disabled={busy || undefined}
+              aria-busy={busy || undefined}
               onClick={() => {
                 if (!busy) onConfirm();
               }}
+              // The dialog's one destructive key: solid error fill, panel ink (design.md, Buttons).
               className={cx(
-                "inline-flex h-9 items-center justify-center rounded-lg border border-border-strong bg-panel px-4",
-                "text-sm font-medium text-bad transition-colors duration-150 hover:bg-bad-soft pointer-coarse:h-11",
-                "aria-disabled:cursor-not-allowed aria-disabled:opacity-60",
+                "key border-bad bg-bad text-panel pointer-coarse:min-h-11",
+                "hover:border-bad hover:bg-[color-mix(in_oklab,var(--bad)_86%,var(--text))]",
+                "active:bg-[color-mix(in_oklab,var(--bad)_78%,var(--text))]",
+                "aria-disabled:cursor-not-allowed aria-disabled:opacity-55",
               )}
             >
               {busy ? "Deleting…" : "Delete"}

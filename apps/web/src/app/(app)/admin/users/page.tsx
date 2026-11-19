@@ -2,15 +2,16 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { flushSync } from "react-dom";
+import { Icon } from "@/components/icons";
 import { RequirePermission } from "@/components/Shell";
 import {
   Badge,
   Button,
   ConfirmDialog,
+  cx,
   Dialog,
   ErrorState,
   inputClass,
-  Loading,
   PageHeader,
   TableWrap,
   Td,
@@ -28,6 +29,26 @@ const ROLES: { value: Member["role"]; label: string; help: string }[] = [
   { value: "engineer", label: "Engineer", help: "Upload documents, create collections, ask questions" },
   { value: "auditor", label: "Auditor", help: "Read-only status and audit log; never document content" },
 ];
+
+/** Rows in the shape of the member table while it loads. The status text is for screen readers. */
+function TableSkeleton() {
+  return (
+    <div role="status" className="divide-y divide-border border-y border-border">
+      <span className="sr-only">Loading…</span>
+      <div aria-hidden="true" className="h-9 bg-panel-2" />
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} aria-hidden="true" className="flex items-center gap-6 px-3 py-3">
+          <div className="w-48 space-y-2">
+            <div className="h-4 w-32 motion-safe:animate-shimmer rounded-sm bg-panel-3" />
+            <div className="h-3 w-44 motion-safe:animate-shimmer rounded-sm bg-panel-3" />
+          </div>
+          <div className="h-8 w-36 motion-safe:animate-shimmer rounded-input bg-panel-3" />
+          <div className="hidden h-4 w-28 motion-safe:animate-shimmer rounded-sm bg-panel-3 sm:block" />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function AddMember({ onAdded }: { onAdded: () => void }) {
   const [open, setOpen] = useState(false);
@@ -54,32 +75,49 @@ function AddMember({ onAdded }: { onAdded: () => void }) {
       <Button variant="primary" onClick={() => { setTemp(null); setError(null); setOpen(true); }}>Add member</Button>
       <Dialog open={open} title="Add workspace member" onClose={() => setOpen(false)}>
         {temp ? (
-          <div className="space-y-3 text-sm">
-            <p>Account created. Share this one-time password through a secure channel; it will not be shown again.</p>
-            <code className="block rounded-lg bg-panel-2 px-3 py-2 font-mono">{temp}</code>
+          <div className="space-y-4 text-sm">
+            <p className="text-text-2">Account created. Share this one-time password through a secure channel; it will not be shown again.</p>
+            <code className="block rounded-md bg-graphite px-3 py-3 font-mono text-base text-graphite-ink select-all wrap-anywhere">{temp}</code>
             <div className="flex justify-end"><Button variant="primary" onClick={() => setOpen(false)}>Done</Button></div>
           </div>
         ) : (
-          <form onSubmit={submit} className="space-y-3">
+          <form onSubmit={submit} className="space-y-4">
             <div>
-              <label htmlFor="m-email" className="mb-1 block text-sm font-medium">Email</label>
-              <input id="m-email" name="email" type="email" required className={inputClass} />
+              <label htmlFor="m-email" className="mb-2 block text-sm font-medium text-text">Email</label>
+              <input id="m-email" name="email" type="email" required className={cx(inputClass, "focus-visible:border-accent")} />
             </div>
             <div>
-              <label htmlFor="m-name" className="mb-1 block text-sm font-medium">Display name</label>
-              <input id="m-name" name="name" required maxLength={200} className={inputClass} />
+              <label htmlFor="m-name" className="mb-2 block text-sm font-medium text-text">Display name</label>
+              <input id="m-name" name="name" required maxLength={200} className={cx(inputClass, "focus-visible:border-accent")} />
             </div>
             <fieldset>
-              <legend className="mb-1 text-sm font-medium">Role</legend>
-              {ROLES.map((r, i) => (
-                <label key={r.value} className="mb-1 flex min-h-8 items-start gap-2 text-sm">
-                  <input type="radio" name="role" value={r.value} defaultChecked={i === 2} className="mt-1" />
-                  <span><span className="font-medium">{r.label}</span> <span className="text-muted">— {r.help}</span></span>
-                </label>
-              ))}
+              <legend className="mb-2 text-sm font-medium text-text">Role</legend>
+              {/* Ruled options: the whole row picks the role, the chosen one takes the accent fill. */}
+              <div className="divide-y divide-border overflow-hidden rounded-card border border-border">
+                {ROLES.map((r, i) => (
+                  <label
+                    key={r.value}
+                    className={cx(
+                      "flex min-h-11 cursor-pointer items-start gap-3 px-3 py-2 text-sm transition-colors duration-[var(--dur-micro)]",
+                      "hover:bg-panel-2 active:bg-panel-3 has-checked:bg-accent-soft has-focus-visible:bg-panel-2",
+                    )}
+                  >
+                    <input type="radio" name="role" value={r.value} defaultChecked={i === 2} className="mt-1 size-4 shrink-0 accent-[var(--accent)]" />
+                    <span className="min-w-0">
+                      <span className="block font-medium text-text">{r.label}</span>
+                      <span className="block text-text-2">{r.help}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </fieldset>
             <p className="text-xs text-muted">Existing accounts are added to this workspace without changing their password.</p>
-            {error && <p role="alert" className="text-sm text-bad">{error}</p>}
+            {error && (
+              <p role="alert" className="flex items-start gap-2 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">
+                <Icon name="cross" className="mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </p>
+            )}
             <div className="flex justify-end gap-2">
               <Button type="button" onClick={() => setOpen(false)}>Cancel</Button>
               <Button type="submit" variant="primary">Add</Button>
@@ -119,7 +157,7 @@ function RoleSelect({ member, onChanged }: { member: Member; onChanged: () => vo
   };
 
   return (
-    <div className="flex min-w-36 flex-col gap-1.5">
+    <div className="flex min-w-40 flex-col gap-2">
       <select
         ref={selectRef}
         aria-label={`Role for ${member.email}`}
@@ -133,10 +171,10 @@ function RoleSelect({ member, onChanged }: { member: Member; onChanged: () => vo
         {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
       </select>
       {draft && (
-        <div className="flex gap-1.5">
-          <Button variant="primary" className="px-2 py-1 text-xs max-sm:min-h-11" aria-label={`Apply role change for ${member.email}`} onClick={() => setConfirming(true)}>Apply</Button>
+        <div className="flex gap-2">
+          <Button variant="primary" size="sm" aria-label={`Apply role change for ${member.email}`} onClick={() => setConfirming(true)}>Apply</Button>
           <Button
-            className="px-2 py-1 text-xs max-sm:min-h-11"
+            size="sm"
             aria-label={`Undo role change for ${member.email}`}
             onClick={() => {
               setDraft(null);
@@ -195,7 +233,7 @@ export default function UsersPage() {
         description="Workspace members and their roles. Collection-level access is managed from each collection."
         actions={canManage && <AddMember onAdded={members.reload} />}
       />
-      {members.loading && <Loading />}
+      {members.loading && <TableSkeleton />}
       {members.error && <ErrorState error={members.error} onRetry={members.reload} />}
       {members.data && (
         <TableWrap label="Workspace members">
@@ -205,10 +243,10 @@ export default function UsersPage() {
               const isMe = m.user_id === me.user_id;
               const isPersona = personaEmails.includes(m.email.toLowerCase());
               return (
-                <tr key={m.user_id}>
+                <tr key={m.user_id} className="transition-colors duration-[var(--dur-micro)] hover:bg-panel-2">
                   <Td>
-                    <div className="font-medium">{m.display_name}{isMe && <span className="ml-2 text-xs text-muted">(you)</span>}</div>
-                    <div className="text-xs text-muted">{m.email}</div>
+                    <div className="font-medium text-text">{m.display_name}{isMe && <span className="ml-2 text-xs font-normal text-muted">(you)</span>}</div>
+                    <div className="mt-0.5 font-mono text-xs whitespace-nowrap text-muted">{m.email}</div>
                   </Td>
                   <Td>
                     {canManage && !isMe && !isPersona ? (
@@ -216,12 +254,12 @@ export default function UsersPage() {
                     ) : (
                       <div className="whitespace-nowrap">
                         <Badge>{roleLabel(m.role)}</Badge>
-                        {canManage && <div className="mt-1 text-xs text-muted">{isPersona ? "Shared demo account" : "Another admin can change this"}</div>}
+                        {canManage && <div className="mt-2 text-xs text-muted">{isPersona ? "Shared demo account" : "Another admin can change this"}</div>}
                       </div>
                     )}
                   </Td>
                   <Td className="text-muted">{formatTime(m.joined_at)}</Td>
-                  <Td className="text-muted">{formatTime(m.last_login_at)}</Td>
+                  <Td className="text-muted">{m.last_login_at ? formatTime(m.last_login_at) : "Never"}</Td>
                   <Td className="text-right">
                     {canManage && !isMe && !isPersona && (
                       <Button variant="danger" aria-label={`Remove ${m.email}`} onClick={() => setRemoving(m)}>Remove</Button>

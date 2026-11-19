@@ -31,28 +31,46 @@ const ITEMS: { id?: string; q: string; a: string; open?: boolean }[] = [
   },
 ];
 
-/** §3.7: native disclosure widgets; the first two start open. A link to one opens it (§3.8). */
+/** A ruled list of native disclosures; the first two start open, and a link to one opens it.
+ *  The plus/minus is drawn as a small keycap: it lifts on hover and sinks while pressed. */
 export function Faq() {
   return (
-    <div className="mx-auto max-w-[820px] space-y-2">
+    <div className="border-b border-border">
       <OpenDetailsOnHash />
       {ITEMS.map((item) => (
-        <details
-          key={item.q}
-          id={item.id}
-          open={item.open}
-          className="group scroll-mt-20 rounded-xl bg-panel-2"
-        >
-          <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-4 rounded-xl px-5 py-3 text-base font-semibold leading-6 [&::-webkit-details-marker]:hidden">
+        <details key={item.q} id={item.id} open={item.open} className="group scroll-mt-20 border-t border-border">
+          <summary
+            className={
+              "flex min-h-14 cursor-pointer list-none items-center justify-between gap-4 py-4 " +
+              "font-display text-base font-medium text-text [&::-webkit-details-marker]:hidden " +
+              "hover:text-accent focus-visible:outline-offset-4"
+            }
+          >
             {item.q}
-            <Icon
-              name="plus"
-              width={18}
-              height={18}
-              className="shrink-0 text-muted group-open:rotate-45"
-            />
+            <span
+              aria-hidden="true"
+              className={
+                "grid size-8 shrink-0 place-items-center rounded-md border border-border-2 bg-key-face text-text-2 shadow-key " +
+                "transition-[transform,box-shadow,background-color] duration-[var(--dur-micro)] ease-out " +
+                "group-hover:-translate-y-px group-active:translate-y-0.5 group-active:bg-panel-3 group-active:shadow-key-press"
+              }
+            >
+              <Icon name="plus" className="group-open:hidden" />
+              <svg
+                viewBox="0 0 24 24"
+                width={16}
+                height={16}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                strokeLinecap="round"
+                className="hidden group-open:block"
+              >
+                <path d="M5 12h14" />
+              </svg>
+            </span>
           </summary>
-          <p className="px-5 pb-5 text-[15px] leading-6 text-muted">{item.a}</p>
+          <p className="max-w-[65ch] pb-6 text-base leading-7 text-text-2">{item.a}</p>
         </details>
       ))}
     </div>

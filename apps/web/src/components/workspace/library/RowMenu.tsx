@@ -21,9 +21,12 @@ interface Position {
   right: number;
 }
 
+// design.md, Menus: 36px items (44 on touch), hover and keyboard focus share the panel-2 fill.
+// The global focus ring stays on top of the fill.
 const ITEM =
-  "flex min-h-10 w-full items-center rounded-lg px-3 text-left text-sm font-medium outline-none " +
-  "transition-colors duration-150 hover:bg-panel-2 focus-visible:bg-panel-2 pointer-coarse:min-h-11";
+  "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium " +
+  "transition-colors duration-[var(--dur-micro)] hover:bg-panel-2 focus-visible:bg-panel-2 " +
+  "focus-visible:outline-offset-[-2px] active:bg-panel-3 pointer-coarse:min-h-11";
 
 /** "⋯" menu button (WAI-ARIA menu button). The menu is position:fixed so the table's
  *  overflow wrapper can't clip it, but stays next to its trigger in the DOM for Tab order. */
@@ -123,9 +126,11 @@ export function RowMenu({
           }
         }}
         className={cx(
-          "inline-grid shrink-0 place-items-center rounded-lg text-muted transition-colors duration-150",
-          "hover:bg-panel-2 hover:text-text aria-expanded:bg-panel-2 aria-expanded:text-text",
-          size === "lg" ? "h-11 w-11" : "h-10 w-10 pointer-coarse:h-11 pointer-coarse:w-11",
+          // A quiet icon button: a key face per row would turn the list into a keyboard.
+          "inline-grid shrink-0 cursor-pointer place-items-center rounded-md text-muted",
+          "transition-colors duration-[var(--dur-micro)] hover:bg-panel-3 hover:text-text focus-visible:text-text",
+          "active:bg-panel-3 aria-expanded:bg-panel-3 aria-expanded:text-text",
+          size === "lg" ? "size-11" : "size-9 pointer-coarse:size-11",
         )}
       >
         <DotsIcon />
@@ -139,13 +144,13 @@ export function RowMenu({
           onKeyDown={onMenuKey}
           style={{ top: pos.top, bottom: pos.bottom, right: pos.right }}
           className={cx(
-            "fixed z-40 min-w-48 rounded-xl border border-border bg-panel p-1 text-left shadow-elev-3",
-            "transition-[opacity,translate] duration-200 ease-[var(--ease-snappy)]",
+            "fixed z-[var(--z-dropdown)] min-w-48 rounded-lg border border-border-2 bg-panel p-1 text-left shadow-elev-3",
+            "transition-[opacity,translate] duration-[var(--dur-short)] ease-out",
             "starting:opacity-0 motion-safe:starting:translate-y-1",
           )}
         >
           {actions.map((a) => {
-            const cls = cx(ITEM, a.danger ? "text-bad" : "text-text");
+            const cls = cx(ITEM, a.danger ? "text-bad hover:bg-bad-soft focus-visible:bg-bad-soft" : "text-text");
             if (a.href && a.download) {
               return (
                 <a

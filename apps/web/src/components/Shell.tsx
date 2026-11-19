@@ -13,7 +13,7 @@ import { NoAccess } from "./Can";
 import { DemoStrip } from "./DemoStrip";
 import { Icon, type IconName } from "./icons";
 import { Logo } from "./Logo";
-import { Button, cx, ErrorState, Loading } from "./ui";
+import { Button, cx, ErrorState, iconButtonClass, Loading } from "./ui";
 
 interface NavItem {
   href: string;
@@ -26,7 +26,7 @@ interface NavItem {
 const NAV: { section: string; items: NavItem[] }[] = [
   { section: "", items: [{ href: "/overview", label: "Overview", icon: "overview", permission: "ops:read" }] },
   {
-    section: "Knowledge Base",
+    section: "Knowledge base",
     items: [
       { href: "/collections", label: "Collections", icon: "collections", permission: "collection:read" },
       { href: "/documents", label: "Documents", icon: "documents", permission: "collection:read" },
@@ -107,16 +107,20 @@ function NavList({
   touch?: boolean;
   onNavigate?: () => void;
 }) {
-  const base = "flex items-center gap-2 rounded-lg px-2 text-sm transition-colors";
-  const row = cx(base, touch ? "min-h-11" : "py-1.5");
+  // 36px rows on desktop, 44px in the touch drawer (§10). Colour is the only thing that moves.
+  const base = cx(
+    "flex items-center gap-2.5 rounded-md px-2 text-sm transition-colors duration-(--dur-micro) ease-out",
+    "focus-visible:outline-offset-[-2px]",
+  );
+  const row = cx(base, touch ? "min-h-11" : "h-9");
   return (
     <>
       {permissions.includes("chat:use") && (
-        <div className="mb-3 border-b border-border pb-3">
+        <div className="mb-4 border-b border-border pb-3">
           <Link
             href="/ask"
             onClick={onNavigate}
-            className={cx(base, touch ? "min-h-11" : "h-9", "font-medium text-text hover:bg-panel-2")}
+            className={cx(row, "font-medium text-text hover:bg-panel-3 active:bg-panel-3")}
           >
             <Icon name="arrowLeft" />
             Back to Ask
@@ -127,13 +131,9 @@ function NavList({
         const items = group.items.filter((i) => !i.permission || permissions.includes(i.permission));
         if (!items.length) return null;
         return (
-          <div key={group.section || "top"} className="mb-3">
-            {group.section && (
-              <div className="px-2 pb-1 text-xs font-semibold uppercase tracking-wider text-muted">
-                {group.section}
-              </div>
-            )}
-            <ul>
+          <div key={group.section || "top"} className="mb-4">
+            {group.section && <div className="px-2 pb-1.5 text-xs font-medium text-muted">{group.section}</div>}
+            <ul className="space-y-px">
               {items.map((item) => {
                 const active = isActive(pathname, item.href);
                 return (
@@ -144,7 +144,9 @@ function NavList({
                       aria-current={active ? "page" : undefined}
                       className={cx(
                         row,
-                        active ? "bg-accent-soft font-medium text-accent" : "text-muted hover:bg-panel-2 hover:text-text",
+                        active
+                          ? "bg-accent-soft font-medium text-accent"
+                          : "text-text-2 hover:bg-panel-3 hover:text-text active:bg-panel-3",
                       )}
                     >
                       <Icon name={item.icon} />
@@ -164,11 +166,12 @@ function NavList({
 function UserBlock({ user, touch }: { user: Me; touch?: boolean }) {
   return (
     <div className="border-t border-border px-3 py-3">
-      <div className="truncate text-sm font-medium">{user.display_name}</div>
-      <div className="truncate text-xs text-muted">
-        {user.email} · {ROLE_LABEL[user.role] ?? user.role}
+      <div className="px-2">
+        <div className="truncate text-sm font-medium text-text">{user.display_name}</div>
+        <div className="truncate font-mono text-xs text-muted">{user.email}</div>
+        <div className="mt-0.5 text-xs text-text-2">{ROLE_LABEL[user.role] ?? user.role}</div>
       </div>
-      <Button variant="ghost" className={cx("mt-2 w-full justify-start", touch && "min-h-11")} onClick={logout}>
+      <Button variant="ghost" className={cx("mt-2 w-full justify-start px-2", touch && "min-h-11")} onClick={logout}>
         <Icon name="logout" /> Sign out
       </Button>
     </div>
@@ -211,9 +214,11 @@ function NavDrawer({ open, onClose, children }: { open: boolean; onClose: () => 
       }}
       className={cx(
         "fixed inset-y-0 left-0 right-auto m-0 h-dvh max-h-none w-[min(85vw,320px)] max-w-none",
-        "border-r border-border bg-panel p-0 text-text shadow-elev-3 backdrop:bg-black/40",
+        "border-r border-border bg-panel-2 p-0 text-text shadow-elev-3",
+        "backdrop:bg-[color-mix(in_oklab,var(--graphite)_55%,transparent)]",
         "-translate-x-full open:translate-x-0 starting:open:-translate-x-full",
-        "transition-[translate,overlay,display] transition-discrete duration-200 ease-(--ease-drawer) open:duration-[260ms]",
+        "transition-[translate,overlay,display] transition-discrete duration-(--dur-short) ease-(--ease-drawer)",
+        "open:duration-(--dur-long)",
       )}
     >
       <div className="flex h-full flex-col">{children}</div>
@@ -271,20 +276,24 @@ export function Shell({ children }: { children: ReactNode }) {
     <MeContext.Provider value={user}>
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-panel focus:px-3 focus:py-2"
+        className={cx(
+          "sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-[var(--z-tooltip)]",
+          "focus:rounded-md focus:border focus:border-border-2 focus:bg-panel focus:px-3 focus:py-2 focus:text-sm",
+          "focus:font-medium focus:text-text focus:shadow-elev-3",
+        )}
       >
         Skip to main content
       </a>
-      <div className="flex min-h-screen flex-col">
+      <div className="flex min-h-screen flex-col bg-bg">
         <DemoStrip me={user} demo={demo} onSwitched={onSwitched} />
         <div className="flex flex-1">
-          <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-panel md:flex">
-            <div className="border-b border-border px-4 py-3.5">
-              <Link href={home} className="flex items-center gap-2.5 rounded-lg">
-                <Logo size={34} />
-                <span>
-                  <span className="block text-sm font-semibold leading-tight">RackFlow AI</span>
-                  <span className="block text-xs text-muted">{tenant?.tenant_name ?? "Workspace"}</span>
+          <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-panel-2 md:flex">
+            <div className="flex h-16 shrink-0 items-center border-b border-border px-4">
+              <Link href={home} className="flex min-w-0 items-center gap-2.5 rounded-md">
+                <Logo size={30} />
+                <span className="min-w-0">
+                  <span className="block font-display text-base leading-tight font-semibold text-text">RackFlow AI</span>
+                  <span className="block truncate text-xs text-muted">{tenant?.tenant_name ?? "Workspace"}</span>
                 </span>
               </Link>
             </div>
@@ -294,7 +303,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <UserBlock user={user} />
           </aside>
           <div className="flex min-w-0 flex-1 flex-col">
-            <header className="flex items-center gap-1 border-b border-border bg-panel px-2 py-1 md:hidden [@media(max-height:500px)]:py-0">
+            <header className="flex items-center gap-1 border-b border-border bg-panel-2 px-2 py-1 md:hidden [@media(max-height:500px)]:py-0">
               <button
                 type="button"
                 aria-label="Open navigation"
@@ -302,11 +311,11 @@ export function Shell({ children }: { children: ReactNode }) {
                 aria-expanded={drawerOpen}
                 aria-controls={DRAWER_ID}
                 onClick={() => setDrawerOpen(true)}
-                className="inline-flex size-11 items-center justify-center rounded-lg text-muted transition-colors hover:bg-panel-2 hover:text-text"
+                className={cx(iconButtonClass, "size-11 hover:bg-panel-3")}
               >
                 <Icon name="menu" width={20} height={20} />
               </button>
-              <Link href={home} className="flex min-h-11 items-center gap-2 rounded-lg px-1 font-semibold">
+              <Link href={home} className="flex min-h-11 items-center gap-2 rounded-md px-1 font-display font-semibold">
                 <Logo size={26} />
                 RackFlow AI
               </Link>
@@ -314,15 +323,15 @@ export function Shell({ children }: { children: ReactNode }) {
                 Sign out
               </Button>
             </header>
-            <main id="main" key={user.user_id} className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 md:px-8">
+            <main id="main" key={user.user_id} className="mx-auto w-full max-w-7xl min-w-0 flex-1 p-4 md:p-6 lg:px-10 lg:py-8">
               {allowed ? children : <NoAccess page={pageName(pathname)} permission={required} />}
             </main>
           </div>
         </div>
       </div>
       <NavDrawer open={drawerOpen} onClose={closeDrawer}>
-        <div className="flex items-center gap-2 border-b border-border py-1 pl-4 pr-2">
-          <span className="flex items-center gap-2 font-semibold">
+        <div className="flex h-14 items-center gap-2 border-b border-border pr-2 pl-4">
+          <span className="flex items-center gap-2 font-display font-semibold">
             <Logo size={26} />
             RackFlow AI
           </span>
@@ -330,7 +339,7 @@ export function Shell({ children }: { children: ReactNode }) {
             type="button"
             aria-label="Close navigation"
             onClick={closeDrawer}
-            className="ml-auto inline-flex size-11 items-center justify-center rounded-lg text-muted transition-colors hover:bg-panel-2 hover:text-text"
+            className={cx(iconButtonClass, "ml-auto size-11 hover:bg-panel-3")}
           >
             <Icon name="close" width={20} height={20} />
           </button>

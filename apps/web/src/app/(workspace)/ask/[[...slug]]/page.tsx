@@ -260,7 +260,7 @@ function AskView({ route, onAdopt }: { route: AskRoute; onAdopt: (sessionId: str
             ) : (
               dataFailed && hasTurns && <ErrorState error={data.error} onRetry={data.retry} />
             )}
-            {chat.notice && <p className="py-1 text-center text-sm text-muted">{chat.notice}</p>}
+            {chat.notice && <p className="px-1 py-1 text-sm text-muted">{chat.notice}</p>}
             {note && (
               <SystemRow
                 note={note}
@@ -347,7 +347,7 @@ function ChatHeader({
 
   const content = (
     <>
-      <h1 className="min-w-0 max-w-[420px] truncate text-[15px] font-medium" title={title ?? undefined}>
+      <h1 className="min-w-0 max-w-[420px] truncate text-base font-medium" title={title ?? undefined}>
         {title ?? "New chat"}
       </h1>
       {sourceCount > 0 && (
@@ -357,9 +357,10 @@ function ChatHeader({
           aria-expanded={sourcesOpen}
           aria-controls="sources-panel"
           className={cx(
-            "ml-auto inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border-strong px-3",
-            "text-sm font-medium text-text tabular-nums transition-colors duration-150 hover:bg-panel-2 pointer-coarse:h-11",
-            sourcesOpen && "border-accent/40 bg-accent-soft text-accent",
+            // A key that stays pressed (accent-soft, the selected state) while the panel is open.
+            "key ml-auto min-h-9 shrink-0 gap-1.5 px-3 tabular-nums pointer-coarse:min-h-11",
+            "focus-visible:border-border-strong active:shadow-key-press",
+            sourcesOpen && "border-accent bg-accent-soft text-accent shadow-key-press hover:border-accent",
           )}
         >
           <Icon name="quote" />
@@ -373,7 +374,7 @@ function ChatHeader({
   return (
     <header
       className={cx(
-        "flex h-14 shrink-0 items-center gap-3 border-b px-6 transition-colors duration-150",
+        "flex h-14 shrink-0 items-center gap-3 border-b px-6 transition-colors duration-(--dur-micro)",
         "[@media(max-height:500px)]:h-11",
         scrolled ? "border-border" : "border-transparent",
       )}
@@ -402,7 +403,7 @@ function readyDocs(docs: DocumentItem[], names: string[]): DocumentItem[] {
   return docs.filter((d) => d.status === "indexed" && wanted.has(d.filename));
 }
 
-/** The one centred system row (§5.5): "✓ report.pdf is ready · 42 pages", or the ?doc= arrival's
+/** The one system row (§5.5): "report.pdf is ready, 42 pages", or the ?doc= arrival's
  *  "Reading report.pdf…". The announcer already said it (UploadsProvider), so it isn't a live region. */
 function SystemRow({
   note,
@@ -424,9 +425,9 @@ function SystemRow({
         <span className="min-w-0 wrap-anywhere">
           {note.names.length === 1 ? (
             <>
-              {/* readyMessage starts with the filename; only that part is bold. */}
-              <strong className="font-semibold text-text">{note.names[0]}</strong>
-              {message.slice(note.names[0].length)}
+              {/* Shown without readyMessage's middle dot (Floor gate 63); the announcer keeps lib's wording. */}
+              <strong className="font-semibold text-text">{note.names[0]}</strong> is ready
+              {note.pageCount ? `, ${note.pageCount} ${note.pageCount === 1 ? "page" : "pages"}` : ""}
             </>
           ) : (
             message
@@ -442,21 +443,24 @@ function SystemRow({
       .filter((n): n is string => !!n && n !== LOADING_FILENAME);
     body = (
       <span className="min-w-0 wrap-anywhere">
-        Reading {names.length ? joinNames(names) : "your file"}… usually 5–60 seconds. You can type your question
-        now.
+        Reading {names.length ? joinNames(names) : "your file"}… usually 5 to 60 seconds. You can type your
+        question now.
       </span>
     );
   }
 
   return (
-    <div className="flex items-start justify-center gap-2 text-center text-sm text-muted">
-      <p className="flex min-w-0 items-start justify-center gap-2 py-1">{body}</p>
+    <div className="flex items-start gap-2 px-1 text-sm text-text-2">
+      <p className="flex min-w-0 flex-1 items-start gap-2 py-1">{body}</p>
       {onDismiss && (
         <button
           type="button"
           onClick={onDismiss}
           aria-label="Dismiss"
-          className="grid size-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-panel-2 hover:text-text pointer-coarse:size-11"
+          className={cx(
+            "grid size-7 shrink-0 place-items-center rounded-sm text-muted transition-colors duration-(--dur-micro)",
+            "hover:bg-panel-2 hover:text-text focus-visible:text-text active:bg-panel-3 pointer-coarse:size-11",
+          )}
         >
           <Icon name="close" width={14} height={14} />
         </button>

@@ -3,7 +3,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { announce } from "@/lib/announce";
 import { Sheet } from "../Sheet";
-import { Button, cx } from "../ui";
+import { cx } from "../ui";
 import type { ScopeCollection, ScopeValue } from "./types";
 
 const TITLE = "Choose what to search";
@@ -104,7 +104,8 @@ function summarize(collections: ScopeCollection[], value: ScopeValue): Summary {
   };
 }
 
-/** "Searching: All documents · 16" chip + "Choose what to search" picker (§5.8). */
+/** "Searching: All documents | 16" key (a hairline, not a dot, splits the parts) + the
+ *  "Choose what to search" picker (§5.8). */
 export function ScopeChip({
   collections,
   value,
@@ -199,14 +200,12 @@ export function ScopeChip({
         aria-controls={popoverOpen ? dialogId : undefined}
         onClick={() => (open ? close(false) : show())}
         className={cx(
-          "relative inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full border px-3",
-          "text-sm font-medium transition-colors duration-150",
-          // 44px hit area on touch while the chip stays 32px tall (§9 #9).
-          "pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:-inset-y-1.5",
-          "pointer-coarse:before:content-['']",
+          // A compact key in the composer's tray: 32px, 44px on touch (§9 #9).
+          "key relative min-h-8 min-w-0 max-w-full gap-2 px-3 pointer-coarse:min-h-11",
+          // Narrowed is a selected state, so it takes the accent's soft fill (design.md).
           summary.narrowed
-            ? "border-accent bg-accent-soft text-accent hover:bg-accent-soft/80"
-            : "border-border-strong bg-panel text-text hover:bg-panel-2",
+            ? "border-accent bg-accent-soft text-accent hover:border-accent active:bg-accent-soft"
+            : "aria-expanded:bg-panel-3 aria-expanded:shadow-key-press",
         )}
       >
         <span className="min-w-0 truncate">
@@ -215,7 +214,7 @@ export function ScopeChip({
         </span>
         {summary.docs !== null && (
           <>
-            <span aria-hidden="true">·</span>
+            <Rule />
             <span className="shrink-0 tabular-nums">
               {summary.docs}
               <span className="sr-only"> {summary.docs === 1 ? "document" : "documents"}, </span>
@@ -224,7 +223,7 @@ export function ScopeChip({
         )}
         {reading && (
           <>
-            <span aria-hidden="true">·</span>
+            <Rule />
             <Spinner />
             <span className="shrink-0 whitespace-nowrap tabular-nums">{reading}</span>
           </>
@@ -247,13 +246,14 @@ export function ScopeChip({
           className={cx(
             // placePopover sets the side and the height limit; very short screens scroll the whole picker.
             "absolute bottom-full left-0 z-30 my-2 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col",
-            "overflow-x-hidden overflow-y-auto rounded-xl border border-border bg-panel text-text shadow-elev-3 outline-none",
-            "transition-[opacity,translate] duration-200 ease-[var(--ease-snappy)]",
+            "overflow-x-hidden overflow-y-auto rounded-lg border border-border-2 bg-panel text-text shadow-elev-3",
+            // tabIndex -1 only so a click inside keeps focus in the picker; it is never tabbed to.
+            "outline-none transition-[opacity,translate] duration-(--dur-short) ease-out",
             "starting:opacity-0 motion-safe:starting:translate-y-1",
           )}
         >
           <div className="shrink-0 border-b border-border px-4 py-3">
-            <h2 className="text-base font-semibold">{TITLE}</h2>
+            <h2 className="text-base">{TITLE}</h2>
           </div>
           <ScopePicker
             collections={collections}
@@ -377,8 +377,9 @@ function ScopePicker({
               }
             }}
             className={cx(
-              "h-9 w-full rounded-lg border border-border-strong bg-panel px-3 text-base text-text",
-              "placeholder:text-muted pointer-fine:sm:text-sm pointer-coarse:h-11",
+              "h-9 w-full rounded-input border border-border-strong bg-panel px-3 text-base text-text",
+              "placeholder:text-muted hover:border-text-2 focus-visible:outline-offset-[-1px]",
+              "pointer-fine:sm:text-sm pointer-coarse:h-11",
             )}
           />
         </div>
@@ -387,8 +388,8 @@ function ScopePicker({
       <div className="shrink-0 border-b border-border px-2 py-1">
         <label
           className={cx(
-            "flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5",
-            "transition-colors duration-150 hover:bg-panel-2 pointer-coarse:min-h-12",
+            "flex min-h-11 cursor-pointer items-center gap-3 rounded-md px-2 py-1.5",
+            "transition-colors duration-(--dur-micro) hover:bg-panel-2 pointer-coarse:min-h-12",
           )}
         >
           <input
@@ -434,14 +435,9 @@ function ScopePicker({
         <p className="min-w-0 text-xs text-muted tabular-nums">
           Searching {plural(chosenDocs, "document")} in {plural(ids.size, "collection")}
         </p>
-        <Button
-          type="button"
-          variant="primary"
-          onClick={onDone}
-          className="h-9 shrink-0 justify-center px-4 pointer-coarse:h-11"
-        >
+        <button type="button" onClick={onDone} className="key key-primary min-h-9 shrink-0 px-4 pointer-coarse:min-h-11">
           Done
-        </Button>
+        </button>
       </div>
     </div>
   );
@@ -466,13 +462,13 @@ function CollectionRow({
     collection.pendingCount > 0 && `${collection.pendingCount} getting ready`,
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(", ");
 
   return (
     <li
       className={cx(
-        "group flex min-h-11 items-center gap-2 rounded-lg px-2",
-        "transition-colors duration-150 hover:bg-panel-2 pointer-coarse:min-h-12",
+        "group flex min-h-11 items-center gap-2 rounded-md px-2",
+        "transition-colors duration-(--dur-micro) hover:bg-panel-2 pointer-coarse:min-h-12",
       )}
     >
       <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 self-stretch py-1.5">
@@ -499,8 +495,10 @@ function CollectionRow({
         onClick={onOnly}
         aria-label={`Only ${collection.name}`}
         className={cx(
-          "h-8 shrink-0 rounded-md px-2.5 text-xs font-medium text-accent hover:bg-accent-soft",
-          "transition-[opacity,background-color] duration-150 pointer-coarse:h-11 pointer-coarse:px-3",
+          // A text button (tertiary): accent ink, underlined on hover.
+          "h-8 shrink-0 rounded-sm px-2.5 text-sm font-medium text-accent underline-offset-2",
+          "hover:underline active:text-accent-hover",
+          "transition-opacity duration-(--dur-micro) pointer-coarse:h-11 pointer-coarse:px-3",
           // Revealed on row hover/focus where hover exists; always shown on touch (§10).
           "[@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
         )}
@@ -518,6 +516,11 @@ function AtLeastOneNote({ id }: { id: string }) {
       {AT_LEAST_ONE}
     </span>
   );
+}
+
+/** A short vertical hairline between the chip's parts, in place of a middle dot. */
+function Rule() {
+  return <span aria-hidden="true" className="h-3.5 w-px shrink-0 bg-current opacity-30" />;
 }
 
 function Spinner() {

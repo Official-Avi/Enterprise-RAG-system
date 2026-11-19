@@ -35,9 +35,10 @@ const announced = new Set<string>();
 // Not status 0: AnswerErrorCard reads 0 as "Can't reach RackFlow".
 const FALLBACK_ERROR = new ApiError(500, "UNKNOWN", "Something went wrong on our side.", null);
 
-const heldButton =
-  "inline-flex h-8 items-center rounded-lg px-3 text-[13px] font-medium transition-colors duration-150 " +
-  "pointer-coarse:h-11";
+// A quiet text button for the second choice next to a key (Cancel).
+const textButton =
+  "inline-flex h-10 items-center rounded-md px-3 text-sm font-medium text-text-2 transition-colors " +
+  "duration-[var(--dur-micro)] ease-out hover:bg-panel-2 hover:text-text active:bg-panel-3 pointer-coarse:h-11";
 
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
@@ -68,7 +69,7 @@ function joinFiles(files: string[] | undefined): string {
   return `${files[0]}, ${files[1]} and ${files.length - 2} more`;
 }
 
-/** Turns as <article>s (§5.6): user bubble, held note, waiting stages, answers, errors. Handles
+/** Turns as <article>s (§5.6): question, held note, waiting stages, answers, errors. Handles
  *  scroll-to-answer and the "New answer ↓" pill. */
 export function Thread(props: ThreadProps) {
   const { turns, mode, selectedTurnId, activeMarker, notFound } = props;
@@ -169,7 +170,7 @@ export function Thread(props: ThreadProps) {
       className="relative min-h-0 flex-1 overflow-y-auto"
       style={{ scrollPaddingBottom: "16px" }}
     >
-      <div className="mx-auto flex w-full max-w-[768px] flex-col gap-6 px-4 pt-6 pb-8 md:px-6">
+      <div className="mx-auto flex w-full max-w-[768px] flex-col px-4 pt-6 pb-10 md:px-6">
         {turns.map((turn, i) => (
           <TurnArticle
             key={turn.id}
@@ -187,17 +188,9 @@ export function Thread(props: ThreadProps) {
         <div className="pointer-events-none sticky bottom-0 h-0">
           {/* The composer sits below this scroller, so the scroller's bottom edge is its top edge. */}
           <div className="absolute inset-x-0 bottom-3 flex justify-center">
-            <button
-              type="button"
-              onClick={jumpToAnswer}
-              className={
-                "pointer-events-auto inline-flex h-9 items-center gap-1.5 rounded-full border border-border-strong " +
-                "bg-panel px-4 text-sm font-medium text-text shadow-elev-3 transition-[opacity,translate,background-color] " +
-                "duration-200 ease-[var(--ease-snappy)] hover:bg-panel-2 starting:opacity-0 " +
-                "motion-safe:starting:translate-y-1 pointer-coarse:h-11"
-              }
-            >
-              New answer <span aria-hidden="true">↓</span>
+            <button type="button" onClick={jumpToAnswer} className="key pointer-events-auto pointer-coarse:min-h-11">
+              New answer
+              <Icon name="arrowRight" width={16} height={16} className="rotate-90" />
             </button>
           </div>
         </div>
@@ -209,16 +202,12 @@ export function Thread(props: ThreadProps) {
 /** A saved answer hidden because its source is no longer open to this user. The note is the API's. */
 function WithheldNote({ note, onAskAgain }: { note: string; onAskAgain: () => void }) {
   return (
-    <div className="rounded-xl border border-border bg-panel-2 p-4">
+    <div className="rounded-card border border-border bg-panel p-4">
       <div className="flex gap-3">
         <Icon name="lock" width={20} height={20} className="mt-0.5 shrink-0 text-muted" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm text-text text-pretty wrap-anywhere">{note}</p>
-          <button
-            type="button"
-            onClick={onAskAgain}
-            className={`${heldButton} mt-3 border border-border-strong bg-panel text-text hover:bg-panel-2`}
-          >
+          <p className="max-w-[72ch] text-sm leading-6 text-text text-pretty wrap-anywhere">{note}</p>
+          <button type="button" onClick={onAskAgain} className="key mt-3 pointer-coarse:min-h-11">
             Ask again
           </button>
         </div>
@@ -256,35 +245,33 @@ function TurnArticle({
   }
 
   return (
-    <article className="flex flex-col gap-4">
+    // Turns read as a document: each question sets a short head over its answer, and a hairline
+    // separates one exchange from the next.
+    <article className="flex flex-col gap-4 border-t border-border pt-8 pb-8 first:border-t-0 first:pt-0 last:pb-0">
       <h3 className="sr-only">You asked</h3>
-      <div
+      <p
         className={
-          "max-w-[85%] self-end rounded-[20px] bg-panel-2 px-4 py-2 text-[16px] leading-[26px] text-text " +
-          "whitespace-pre-wrap wrap-anywhere sm:max-w-[75%]"
+          "max-w-[60ch] font-display text-lg leading-7 font-medium tracking-head text-text text-pretty " +
+          "whitespace-pre-wrap wrap-anywhere"
         }
       >
         {turn.question}
-      </div>
+      </p>
 
       {turn.status === "held" && (
-        <div className="flex max-w-[85%] flex-col items-end gap-2 self-end text-right sm:max-w-[75%]">
+        <div className="flex flex-col items-start gap-3">
           <p className="text-sm text-muted wrap-anywhere">
             Waiting for {joinFiles(turn.heldFor)} (usually under a minute)…
           </p>
-          <div className="flex flex-wrap justify-end gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => props.onAskWithoutHeld(turn.id)}
-              className={`${heldButton} border border-border-strong bg-panel text-text hover:bg-panel-2`}
+              className="key pointer-coarse:min-h-11"
             >
               Ask now without it
             </button>
-            <button
-              type="button"
-              onClick={() => props.onCancelHeld(turn.id)}
-              className={`${heldButton} text-muted hover:bg-panel-2 hover:text-text`}
-            >
+            <button type="button" onClick={() => props.onCancelHeld(turn.id)} className={textButton}>
               Cancel
             </button>
           </div>
@@ -333,7 +320,7 @@ function TurnArticle({
           )}
           {/* Meta line and "Answered without report.pdf": on every outcome, not found included (§5.5). */}
           {turn.scopeLabel && turn.status !== "waiting" && (
-            <p className="mt-3 text-xs text-muted wrap-anywhere">{turn.scopeLabel}</p>
+            <p className="mt-4 text-xs text-muted wrap-anywhere">{turn.scopeLabel}</p>
           )}
         </div>
       )}

@@ -1,0 +1,16 @@
+{
+  "scanned": "2026-11-18",
+  "findings": {
+    "fonts": "Inter via next/font/google as --font-inter, mapped to --font-sans and --font-display (src/app/layout.tsx:5, globals.css @theme inline)",
+    "palette": "hex custom properties, restrained neutrals with one teal accent #0f6b66, status, cite chip, demo and landing tokens; light :root plus identical prefers-color-scheme dark and [data-theme=dark] blocks (src/app/globals.css:17-128)",
+    "motion": "no motion library; --ease-snappy and --ease-drawer, flash/shimmer/dash keyframes, reduced-motion block (globals.css)",
+    "spacing": "Tailwind 4 default 4px scale, no custom spacing tokens",
+    "framework": "Next.js 16.4.6 App Router, React 19, Tailwind 4 (@import tailwindcss, @theme inline), no tailwind.config",
+    "product": "running dev server at http://127.0.0.1:3000 with DEMO_MODE (Engineer, Operator, Admin, Auditor); captured /, /ask, /library, /overview in light and dark",
+    "design_md": "none before this run",
+    "brand": "no brand file; teal accent and Inter are a project default, not a named brand: replaced"
+  },
+  "preserve": ["every token name in globals.css", "the dual dark selector system and the dark: custom variant", "content and wiring of every route", "focus ring architecture (unlayered outline, layered offset)", "reduced-motion and forced-colors blocks", "keyframes flash, shimmer, dash"],
+  "introduce": ["Cobalt theme (cool paper, IBM Plex Sans + Familjen Grotesk, one cobalt signal, graphite, keycaps, cut panels)", "Hallmark space, type, radius, motion and z scales", "dark re-derivation per dark-mode.md", "design.md as the locked system", "Workbench landing shape with a Settled hero"],
+  "render_tier": "not available: puppeteer-core not installed; screenshots taken with Playwright (msedge) instead"
+}

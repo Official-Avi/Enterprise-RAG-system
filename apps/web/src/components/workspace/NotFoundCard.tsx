@@ -3,11 +3,7 @@
 import { Icon } from "@/components/icons";
 import type { NotFoundContext } from "./types";
 
-const actionClass =
-  "inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border-strong bg-panel px-3 " +
-  "text-sm font-medium text-text transition-[background-color,scale] duration-150 hover:bg-bg " +
-  "active:scale-[.98] active:duration-100 " +
-  "max-sm:min-h-11";
+const actionClass = "key pointer-coarse:min-h-11";
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -25,7 +21,7 @@ function SearchXIcon() {
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
-      className="mt-0.5 shrink-0 text-muted"
+      className="mt-1 shrink-0 text-muted"
     >
       <circle cx="11" cy="11" r="7" />
       <path d="m21 21-5-5M13.5 8.5l-5 5M8.5 8.5l5 5" />
@@ -60,20 +56,20 @@ export function NotFoundCard({
         : "I searched your documents and found nothing about this.";
 
   return (
-    <div className="rounded-xl border border-border bg-panel-2 p-4">
+    <div className="rounded-card border border-border bg-panel p-4 sm:p-6">
       <div className="flex gap-3">
         <SearchXIcon />
         <div className="min-w-0 flex-1">
-          <p className="text-base font-semibold text-text">{title}</p>
-          <p className="mt-1 text-sm text-muted">{body}</p>
+          <p className="font-display text-lg leading-7 font-semibold text-text">{title}</p>
+          <p className="mt-1 max-w-[65ch] text-sm leading-6 text-text-2">{body}</p>
           {readingCount > 0 && (
-            <p className="mt-1 text-sm text-muted">
+            <p className="mt-1 max-w-[65ch] text-sm leading-6 text-text-2">
               {readingCount === 1
                 ? "1 file is still being read. Try again in a minute."
                 : `${readingCount} files are still being read. Try again in a minute.`}
             </p>
           )}
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-4 flex flex-wrap gap-2">
             <button type="button" className={actionClass} onClick={onRephrase}>
               Rephrase
             </button>

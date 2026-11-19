@@ -114,13 +114,21 @@ export function useCitationHover(citation: Citation) {
   };
 }
 
-/** The chip's colours, shared with the badge on the source card. */
+/** The chip's colours, shared with the source rows and the quote blocks. */
 export function chipTone(citation: Citation, active: boolean): string {
   if (isDocumentDeleted(citation)) {
-    return active ? "bg-muted text-panel" : "bg-panel-2 text-muted ring-1 ring-border-strong";
+    return active ? "bg-muted text-panel" : "bg-panel-2 text-muted shadow-[inset_0_0_0_1px_var(--border-strong)]";
   }
-  return active ? "bg-cite-chip-active-bg text-cite-chip-active-fg" : "bg-cite-chip-bg text-cite-chip-fg";
+  return active
+    ? "bg-cite-chip-active-bg text-cite-chip-active-fg shadow-[inset_0_-1px_0_var(--accent-edge)]"
+    : "bg-cite-chip-bg text-cite-chip-fg shadow-[inset_0_-1px_0_color-mix(in_oklab,var(--cite-chip-fg)_30%,transparent)]";
 }
+
+/** A small numbered key in the display face. The same object marks a chip in an answer, a quote
+ *  in an extractive answer and a row in the sources panel, so the number always reads as one thing. */
+export const chipShape =
+  "cite-chip inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-chip px-1 " +
+  "font-display text-xs/5 font-medium tabular-nums";
 
 /** Numbered source chip (§5.7). Grey and labelled "Source no longer available" for a deleted document. */
 export function CitationChip({
@@ -146,13 +154,15 @@ export function CitationChip({
       // detail is 0 for clicks synthesised from Enter/Space, so keyboard users get the card focused.
       onClick={(e) => onActivate(citation, e.detail === 0)}
       className={cx(
-        "cite-chip relative inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-[5px]",
-        "align-[2px] text-[11px]/[18px] font-semibold tabular-nums transition-[color,background-color,box-shadow]",
-        // Invisible hit area: 24x24 (WCAG 2.5.8), 44x44 on touch.
-        "before:absolute before:-inset-[3px] before:content-[''] pointer-coarse:before:-inset-[13px]",
+        chipShape,
+        "relative mx-px cursor-pointer align-[0.12em] focus-visible:outline-offset-1",
+        "transition-[color,background-color,box-shadow,translate] duration-[var(--dur-micro)] ease-out",
+        "active:translate-y-px",
+        // Invisible hit area: 26x26 (WCAG 2.5.8), 44x44 on touch.
+        "before:absolute before:-inset-[3px] before:content-[''] pointer-coarse:before:-inset-[12px]",
         chipTone(citation, active),
-        !active && "hover:ring-1 hover:ring-cite-chip-fg",
-        !active && hovered && "ring-1 ring-cite-chip-fg",
+        !active && "hover:shadow-[inset_0_0_0_1px_var(--accent)]",
+        !active && hovered && "shadow-[inset_0_0_0_1px_var(--accent)]",
       )}
     >
       {number}

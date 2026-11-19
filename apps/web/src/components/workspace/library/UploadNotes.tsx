@@ -6,8 +6,33 @@ import { cx } from "@/components/ui";
 import { describeStatus } from "@/lib/status";
 import { LOADING_FILENAME, MY_DOCUMENTS } from "@/lib/workspace";
 import type { TrackedUpload } from "../types";
+import { AlertIcon } from "./parts";
 
+// Soft fill plus one glyph in the status ink, so the tone never rests on colour alone.
 const NOTE_TONE = { info: "bg-info-soft", warn: "bg-warn-soft", bad: "bg-bad-soft" };
+const NOTE_INK = { info: "text-info", warn: "text-warn", bad: "text-bad" };
+
+function NoteGlyph({ tone }: { tone: keyof typeof NOTE_TONE }) {
+  if (tone === "info") {
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        width={16}
+        height={16}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        strokeLinecap="round"
+        aria-hidden="true"
+        className="shrink-0"
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 11v5M12 8v.1" />
+      </svg>
+    );
+  }
+  return <AlertIcon className="shrink-0" />;
+}
 
 /** A dismissible line above the list. Announced by the caller, so it has no live role unless
  *  `alert` is set. */
@@ -28,17 +53,24 @@ export function NoteBar({
     <div
       role={alert ? "alert" : undefined}
       className={cx(
-        "mt-4 flex items-start gap-2 rounded-lg border border-border py-2 pr-1 pl-3 text-sm text-text",
+        "mt-4 flex max-w-[var(--container)] items-start gap-2 rounded-card py-2 pr-1 pl-3 text-sm text-text",
         NOTE_TONE[tone],
       )}
     >
+      <span className={cx("flex h-6 items-center", NOTE_INK[tone])}>
+        <NoteGlyph tone={tone} />
+      </span>
       <p className="min-w-0 flex-1 py-0.5 [overflow-wrap:anywhere]">{children}</p>
       {action}
       <button
         type="button"
         onClick={onDismiss}
         aria-label="Dismiss note"
-        className="grid size-6 shrink-0 place-items-center rounded-md text-muted transition-colors duration-150 hover:text-text pointer-coarse:size-11"
+        className={cx(
+          "grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-text-2",
+          "transition-colors duration-[var(--dur-micro)] hover:bg-panel/60 hover:text-text active:bg-panel",
+          "pointer-coarse:size-11",
+        )}
       >
         <Icon name="close" width={14} height={14} />
       </button>

@@ -224,7 +224,7 @@ function WorkspaceFrame({
           {sidebarShown && (
             <header
               data-sidebar-region=""
-              className="relative flex w-[260px] shrink-0 flex-col overflow-y-auto border-r border-border bg-bg"
+              className="relative flex w-[260px] shrink-0 flex-col overflow-y-auto border-r border-border bg-panel-2"
             >
               <ChatSidebar onCollapse={() => setCollapsedFromButton(true)} pendingIds={pendingIds} />
             </header>
@@ -232,7 +232,7 @@ function WorkspaceFrame({
           {!isDesktop && (
             <SidebarDrawer id={drawerId} open={drawerOpen} onClose={closeDrawer} pendingIds={pendingIds} />
           )}
-          <div className="flex min-w-0 flex-1 flex-col bg-panel">
+          <div className="flex min-w-0 flex-1 flex-col bg-bg">
             {!sidebarShown && (
               <WorkspaceHeader
                 mainRef={mainRef}
@@ -281,8 +281,8 @@ function consoleHrefFor(perms: string[]): string | null {
 }
 
 const iconButton =
-  "grid size-11 shrink-0 place-items-center rounded-lg text-text transition-colors duration-150 " +
-  "hover:bg-panel-2 lg:size-10";
+  "grid size-11 shrink-0 place-items-center rounded-md text-text-2 transition-colors duration-(--dur-micro) " +
+  "hover:bg-panel-2 hover:text-text focus-visible:text-text active:bg-panel-3 lg:size-10";
 
 function WorkspaceHeader({
   mainRef,
@@ -313,9 +313,9 @@ function WorkspaceHeader({
     <header
       data-sidebar-region=""
       className={cx(
-        "flex h-14 shrink-0 items-center gap-1 border-b px-2 transition-colors duration-150",
+        "flex h-14 shrink-0 items-center gap-1 border-b px-2 transition-colors duration-(--dur-micro)",
         "[@media(max-height:500px)]:h-11",
-        scrolled ? "border-border bg-panel/85 backdrop-blur" : "border-transparent",
+        scrolled ? "border-border bg-bg/90 backdrop-blur" : "border-transparent",
       )}
     >
       <button
@@ -395,18 +395,18 @@ function SidebarDrawer({
       }}
       className={cx(
         "group fixed inset-0 m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 text-text",
-        "transition-[display,overlay] transition-discrete duration-200",
-        "backdrop:bg-transparent backdrop:transition-colors backdrop:duration-200",
-        "open:backdrop:bg-black/40 starting:open:backdrop:bg-transparent",
+        "transition-[display,overlay] transition-discrete duration-(--dur-short)",
+        "backdrop:bg-transparent backdrop:transition-colors backdrop:duration-(--dur-short)",
+        "open:backdrop:bg-[color-mix(in_oklab,var(--graphite)_55%,transparent)] starting:open:backdrop:bg-transparent",
       )}
     >
       <div className="pointer-events-none flex h-full">
         <div
           className={cx(
             "pointer-events-auto flex h-full w-[min(85vw,320px)] shrink-0 flex-col overflow-y-auto",
-            "border-r border-border bg-bg pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
-            "-translate-x-full transition-[translate] duration-200 ease-[var(--ease-drawer)]",
-            "group-open:translate-x-0 group-open:duration-[260ms] starting:group-open:-translate-x-full",
+            "border-r border-border bg-panel-2 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
+            "-translate-x-full transition-[translate] duration-(--dur-short) ease-(--ease-drawer)",
+            "group-open:translate-x-0 group-open:duration-(--dur-long) starting:group-open:-translate-x-full",
           )}
         >
           <ChatSidebar onNavigate={onClose} pendingIds={pendingIds} />
@@ -415,9 +415,11 @@ function SidebarDrawer({
           type="button"
           onClick={onClose}
           aria-label="Close sidebar"
+          // A round icon key (design.md allows rounded-full there). Opacity is the only transition:
+          // .key's own lift would fight the fade.
           className={cx(
-            "pointer-events-auto m-1 grid size-11 shrink-0 place-items-center rounded-full bg-panel text-text",
-            "shadow-elev-3 transition-opacity duration-200 opacity-0 group-open:opacity-100",
+            "key pointer-events-auto m-2 size-11 shrink-0 rounded-full p-0",
+            "transition-opacity duration-(--dur-short) opacity-0 group-open:opacity-100",
             "starting:group-open:opacity-0",
           )}
         >
@@ -440,9 +442,9 @@ function SkipLink({ target, children }: { target: string; children: ReactNode })
         el.focus();
       }}
       className={cx(
-        "sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[100]",
-        "focus:rounded-lg focus:bg-panel focus:px-3 focus:py-2 focus:text-sm focus:font-medium",
-        "focus:text-text focus:shadow-elev-3",
+        "sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[var(--z-tooltip)]",
+        "focus:rounded-md focus:border focus:border-border-2 focus:bg-panel focus:px-3 focus:py-2",
+        "focus:text-sm focus:font-medium focus:text-text focus:shadow-elev-3",
       )}
     >
       {children}
@@ -451,7 +453,7 @@ function SkipLink({ target, children }: { target: string; children: ReactNode })
 }
 
 function ShellSkeleton() {
-  const block = "rounded-md bg-border";
+  const block = "rounded-sm bg-panel-3";
   return (
     <div aria-busy="true" className="flex h-[var(--app-h,100dvh)] overflow-hidden bg-bg">
       <div role="status" className="sr-only">
@@ -459,10 +461,10 @@ function ShellSkeleton() {
       </div>
       <div
         aria-hidden="true"
-        className="hidden w-[260px] shrink-0 flex-col gap-3 border-r border-border p-3 motion-safe:animate-shimmer lg:flex"
+        className="hidden w-[260px] shrink-0 flex-col gap-3 border-r border-border bg-panel-2 p-3 motion-safe:animate-shimmer lg:flex"
       >
         <div className={cx(block, "h-8 w-36")} />
-        <div className="h-10 rounded-full bg-border" />
+        <div className="h-10 rounded-md bg-panel-3" />
         <div className={cx(block, "h-9")} />
         <div className="mt-4 flex flex-col gap-2">
           {["w-4/5", "w-3/5", "w-2/3", "w-1/2"].map((w) => (
@@ -470,14 +472,14 @@ function ShellSkeleton() {
           ))}
         </div>
       </div>
-      <div aria-hidden="true" className="flex min-w-0 flex-1 flex-col bg-panel motion-safe:animate-shimmer">
+      <div aria-hidden="true" className="flex min-w-0 flex-1 flex-col bg-bg motion-safe:animate-shimmer">
         <div className="flex h-14 items-center gap-2 px-2 lg:hidden">
-          <div className="size-11 rounded-md bg-panel-2" />
-          <div className="h-6 w-32 rounded-md bg-panel-2" />
+          <div className="size-11 rounded-md bg-panel-3" />
+          <div className="h-6 w-32 rounded-sm bg-panel-3" />
         </div>
-        <div className="flex flex-1 flex-col items-center justify-center gap-8 px-4 md:px-6">
-          <div className="h-9 w-80 max-w-full rounded-md bg-panel-2" />
-          <div className="h-[104px] w-full max-w-[768px] rounded-3xl bg-panel-2" />
+        <div className="mx-auto flex w-full max-w-[768px] flex-1 flex-col justify-center gap-6 px-4 md:px-6">
+          <div className="h-8 w-80 max-w-full rounded-sm bg-panel-3" />
+          <div className="h-[104px] w-full rounded-card bg-panel-3" />
         </div>
       </div>
     </div>

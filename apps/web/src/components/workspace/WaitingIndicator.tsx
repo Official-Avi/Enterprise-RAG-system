@@ -14,7 +14,10 @@ function stageLabel(elapsedMs: number, mode: AnswerMode): string {
   return "Searching your documents";
 }
 
-/** Three dots + timed stage labels from 0.5s; Stop after 25s (§5.6). */
+// The skeleton is the shape of the answer on its way: three lines of a paragraph.
+const LINES = ["w-[92%]", "w-[84%]", "w-[58%]"];
+
+/** Timed stage labels from 0.5s over a skeleton of the coming answer; Stop after 25s (§5.6). */
 export function WaitingIndicator({
   startedAt,
   mode,
@@ -31,48 +34,38 @@ export function WaitingIndicator({
     return () => window.clearInterval(id);
   }, [startedAt]);
 
-  // Reserve the row's height so the thread doesn't jump when the label appears.
-  if (elapsed < SHOW_AFTER_MS) return <div aria-hidden="true" className="min-h-[26px]" />;
+  // Reserve the block's height so the thread doesn't jump when the label appears.
+  if (elapsed < SHOW_AFTER_MS) return <div aria-hidden="true" className="min-h-24" />;
 
   const seconds = Math.floor(elapsed / 1000);
 
   return (
-    <div
-      className={
-        "flex min-h-[26px] flex-wrap items-center gap-x-3 gap-y-2 transition-opacity duration-200 " +
-        "ease-[var(--ease-snappy)] starting:opacity-0"
-      }
-    >
-      <span aria-hidden="true" className="flex items-center gap-1">
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            className="size-1.5 rounded-full bg-accent motion-safe:animate-pulse"
-            style={{ animationDelay: `${i * 200}ms` }}
-          />
-        ))}
-      </span>
-      <p role="status" className="text-sm text-muted">
-        {stageLabel(elapsed, mode)}
+    <div className="flex min-h-24 flex-col gap-3 transition-opacity duration-[var(--dur-short)] ease-out starting:opacity-0">
+      <div className="flex min-h-8 flex-wrap items-center gap-x-3 gap-y-2">
+        <p role="status" className="text-sm text-text-2">
+          {stageLabel(elapsed, mode)}
+        </p>
         {/* The ticking seconds stay out of the accessibility tree so only stage changes are read. */}
         {elapsed >= 5_000 && (
-          <span aria-hidden="true" className="tabular-nums">
-            {` · ${seconds}s`}
+          <span aria-hidden="true" className="font-mono text-xs text-muted tabular-nums">
+            {`${seconds}s`}
           </span>
         )}
-      </p>
-      {elapsed >= STOP_AFTER_MS && onStop && (
-        <button
-          type="button"
-          onClick={onStop}
-          className={
-            "inline-flex h-8 items-center rounded-lg border border-border-strong bg-panel px-3 text-[13px] " +
-            "font-medium text-text transition-colors duration-150 hover:bg-panel-2 pointer-coarse:h-11"
-          }
-        >
-          Stop
-        </button>
-      )}
+        {elapsed >= STOP_AFTER_MS && onStop && (
+          <button type="button" onClick={onStop} className="key pointer-coarse:min-h-11">
+            Stop
+          </button>
+        )}
+      </div>
+      <div aria-hidden="true" className="flex max-w-[72ch] flex-col gap-2">
+        {LINES.map((width, i) => (
+          <span
+            key={width}
+            className={`h-3 rounded-sm bg-panel-3 motion-safe:animate-shimmer ${width}`}
+            style={{ animationDelay: `${i * 160}ms` }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

@@ -61,47 +61,40 @@ export function DropOverlay() {
     <div
       aria-hidden="true"
       className={cx(
-        "pointer-events-none fixed inset-4 z-50 grid place-items-center rounded-3xl bg-accent/8 p-6 backdrop-blur-[2px]",
-        "transition-[opacity,visibility] ease-(--ease-snappy)",
-        dragging ? "visible opacity-100 duration-120" : "invisible opacity-0 duration-100",
+        // The whole window becomes one dropzone: a dashed edge at 3:1 over a light accent wash.
+        "pointer-events-none fixed inset-4 z-[var(--z-modal)] grid place-items-center rounded-card p-6",
+        "border-2 border-dashed bg-[color-mix(in_oklab,var(--accent-soft)_70%,transparent)] backdrop-blur-[2px]",
+        canUpload ? "border-dropzone-border" : "border-border-strong",
+        "transition-[opacity,visibility] ease-out",
+        dragging ? "visible opacity-100 duration-(--dur-micro)" : "invisible opacity-0 duration-(--dur-micro)",
       )}
     >
-      <svg
-        className={cx(
-          "absolute top-px left-px h-[calc(100%-2px)] w-[calc(100%-2px)] overflow-visible",
-          canUpload ? "text-dropzone-border" : "text-border-strong",
-        )}
-      >
-        <rect width="100%" height="100%" rx="23" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="10 8" />
-      </svg>
-
-      <div className="relative flex max-w-md flex-col items-center rounded-2xl bg-panel/90 px-8 py-7 text-center shadow-elev-3">
+      <div className="cut relative flex w-full max-w-md flex-col items-start border border-border bg-panel px-8 py-7 shadow-elev-3">
         <Icon
           name={canUpload ? "upload" : "lock"}
-          width={48}
-          height={48}
-          strokeWidth={1.5}
+          width={24}
+          height={24}
           className={canUpload ? "text-accent" : "text-muted"}
         />
         {canUpload ? (
           <>
-            <p className="mt-4 text-2xl font-semibold tracking-tight text-text">Drop files to add them</p>
-            <p className="mt-2 text-sm text-muted">
-              {inChat ? "They go to My documents and this chat" : "They go to My documents"} · PDF, Word, text or
-              Markdown · up to 25 MB each, 20 at a time
+            <p className="mt-3 font-display text-xl font-semibold tracking-head text-text">Drop files to add them</p>
+            <p className="mt-2 text-sm text-text-2">
+              {inChat ? "They go to My documents and this chat." : "They go to My documents."}
             </p>
+            <p className="mt-1 text-sm text-muted">PDF, Word, text or Markdown, up to 25 MB each, 20 at a time.</p>
           </>
         ) : (
           <>
-            <p className="mt-4 text-2xl font-semibold tracking-tight text-text">
+            <p className="mt-3 font-display text-xl font-semibold tracking-head text-text">
               {roleLabel ? `${roleLabel}s can't add documents` : "Your role can't add documents"}
             </p>
-            <p className="mt-2 text-sm text-muted">
+            <p className="mt-2 text-sm text-text-2">
               {me.permissions.includes("chat:use") ? "You can ask about documents already here. " : ""}
               An Engineer or Admin can add files.
             </p>
             {canSwitchToEngineer && (
-              <p className="mt-4 rounded-full border border-demo-border bg-demo-bg px-3 py-1 text-[13px] text-demo-fg">
+              <p className="mt-4 rounded-chip border border-demo-border bg-demo-bg px-3 py-1.5 text-sm text-demo-fg">
                 <strong className="font-semibold">Switch to Engineer</strong> with Switch persona at the top of the page
               </p>
             )}

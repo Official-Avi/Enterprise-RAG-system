@@ -130,7 +130,7 @@ export function SourcesPanel({
   // One "Back to answer": inside the selected card, so keyboard users needn't tab through the rest.
   const hasActiveCard = sorted.some((c) => c.marker === activeMarker);
 
-  const empty = <p className="text-sm text-muted">This answer has no sources to show.</p>;
+  const empty = <p className="px-4 py-4 text-sm text-muted">This answer has no sources to show.</p>;
 
   if (docked) {
     if (!open) return null;
@@ -144,23 +144,20 @@ export function SourcesPanel({
         }}
         className="flex h-full min-h-0 w-[360px] shrink-0 flex-col border-l border-border bg-panel"
       >
-        <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border pl-4 pr-2">
-          <h2 ref={headingRef} tabIndex={-1} className="rounded-lg text-base font-semibold">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border pr-2 pl-4">
+          <h2 ref={headingRef} tabIndex={-1} className="rounded-md font-display text-base font-semibold">
             {title}
           </h2>
           <button
             type="button"
             aria-label="Close sources"
             onClick={closeDocked}
-            className={cx(
-              "inline-flex size-10 items-center justify-center rounded-lg text-muted",
-              "transition-colors hover:bg-panel-2 hover:text-text",
-            )}
+            className="key size-10 p-0"
           >
             <Icon name="close" width={18} height={18} />
           </button>
         </header>
-        <div data-scroll-container className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+        <div data-scroll-container className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-4">
           {sorted.length ? (
             <SourceList
               citations={sorted}
@@ -173,7 +170,11 @@ export function SourcesPanel({
           ) : (
             empty
           )}
-          {!hasActiveCard && <BackToAnswer onClick={closeDocked} />}
+          {!hasActiveCard && (
+            <div className="px-2">
+              <BackToAnswer onClick={closeDocked} />
+            </div>
+          )}
         </div>
       </aside>
     );
@@ -182,7 +183,7 @@ export function SourcesPanel({
   if (drawer) {
     return (
       <Sheet open={open} onClose={onClose} title={title} side="right">
-        <div id="sources-panel" ref={contentRef}>
+        <div id="sources-panel" ref={contentRef} className="-mx-4 -mt-4">
           {sorted.length ? (
             <SourceList
               citations={sorted}
@@ -195,7 +196,11 @@ export function SourcesPanel({
           ) : (
             empty
           )}
-          {!hasActiveCard && <BackToAnswer onClick={onClose} />}
+          {!hasActiveCard && (
+            <div className="px-2">
+              <BackToAnswer onClick={onClose} />
+            </div>
+          )}
         </div>
       </Sheet>
     );
@@ -203,7 +208,7 @@ export function SourcesPanel({
 
   return (
     <Sheet open={open} onClose={onClose} title={title} side="bottom">
-      <div id="sources-panel" ref={contentRef}>
+      <div id="sources-panel" ref={contentRef} className="-mx-4">
         {sorted.length ? (
           <SheetPager
             citations={sorted}
@@ -216,7 +221,11 @@ export function SourcesPanel({
         ) : (
           empty
         )}
-        {!hasActiveCard && <BackToAnswer onClick={onClose} />}
+        {!hasActiveCard && (
+          <div className="px-2">
+            <BackToAnswer onClick={onClose} />
+          </div>
+        )}
       </div>
     </Sheet>
   );
@@ -233,7 +242,7 @@ interface SourceListProps {
 
 function SourceList({ citations, numbers, activeMarker, bestMarker, onSelect, onBack }: SourceListProps) {
   return (
-    <ol className="flex flex-col gap-3">
+    <ol className="divide-y divide-border border-b border-border">
       {citations.map((c) => (
         <li key={`${c.marker}-${c.chunk_id ?? c.document_id}`}>
           <SourceCard
@@ -257,17 +266,17 @@ function BackToAnswer({ onClick }: { onClick: () => void }) {
       type="button"
       onClick={onClick}
       className={cx(
-        "mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-accent",
-        "transition-colors hover:bg-accent-soft pointer-coarse:h-11",
+        "mt-2 inline-flex h-9 items-center gap-2 rounded-md px-2 text-sm font-medium text-accent underline-offset-2",
+        "transition-colors duration-[var(--dur-micro)] ease-out hover:underline active:text-accent-hover pointer-coarse:h-11",
       )}
     >
-      <span aria-hidden="true">←</span>
+      <Icon name="arrowLeft" width={16} height={16} />
       Back to answer
     </button>
   );
 }
 
-/** Below 1024px: one card at a time behind "‹ 2 of 3 ›". */
+/** Below 1024px: one source at a time behind a "2 of 3" pager. */
 function SheetPager({ citations, numbers, activeMarker, bestMarker, onSelect, onBack }: SourceListProps) {
   const index = Math.max(
     0,
@@ -292,13 +301,10 @@ function SheetPager({ citations, numbers, activeMarker, bestMarker, onSelect, on
         // aria-disabled, not disabled: the button keeps focus at either end (§9 #5).
         aria-disabled={unavailable || undefined}
         onClick={() => go(delta)}
-        className={cx(
-          "inline-flex size-11 items-center justify-center rounded-lg border border-border-strong text-xl leading-none",
-          "transition-colors",
-          unavailable ? "cursor-not-allowed text-muted opacity-50" : "text-text hover:bg-panel-2",
-        )}
+        // .key draws the aria-disabled state (flat, 55%).
+        className="key size-11 p-0"
       >
-        <span aria-hidden="true">{delta < 0 ? "‹" : "›"}</span>
+        <Icon name={delta < 0 ? "arrowLeft" : "arrowRight"} width={18} height={18} />
       </button>
     );
   };
@@ -306,9 +312,9 @@ function SheetPager({ citations, numbers, activeMarker, bestMarker, onSelect, on
   return (
     <>
       {total > 1 && (
-        <div className="mb-3 flex items-center justify-center gap-3">
+        <div className="flex items-center justify-center gap-3 px-4 pb-3">
           {pagerButton(-1)}
-          <span className="min-w-16 text-center text-sm font-medium tabular-nums">
+          <span className="min-w-16 text-center font-display text-sm font-medium tabular-nums">
             {index + 1} of {total}
           </span>
           {pagerButton(1)}

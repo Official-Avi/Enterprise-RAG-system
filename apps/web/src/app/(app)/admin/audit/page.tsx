@@ -4,11 +4,11 @@ import { useState } from "react";
 import { RequirePermission } from "@/components/Shell";
 import {
   Button,
+  cx,
   Dialog,
   Empty,
   ErrorState,
   inputClass,
-  Loading,
   PageHeader,
   StatusBadge,
   TableWrap,
@@ -59,19 +59,37 @@ function EventDetails({ event, onClose }: { event: AuditEvent | null; onClose: (
     : [];
   return (
     <Dialog open={event !== null} title="Audit event" onClose={onClose} wide>
-      <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
+      <dl className="divide-y divide-border border-y border-border text-sm">
         {rows.map(([label, value]) => (
-          <div key={label} className="contents">
+          <div key={label} className="grid gap-x-4 gap-y-1 py-2 sm:grid-cols-[9rem_minmax(0,1fr)]">
             <dt className="text-muted">{label}</dt>
-            <dd className="mb-1 font-mono text-xs wrap-anywhere sm:mb-0 sm:leading-5">{value}</dd>
+            <dd className="font-mono text-xs wrap-anywhere text-text sm:leading-5">{value}</dd>
           </div>
         ))}
       </dl>
-      <h3 className="mt-3 mb-1 text-sm font-medium">Details</h3>
-      <pre className="max-h-72 overflow-auto rounded-lg bg-panel-2 p-3 font-mono text-xs whitespace-pre-wrap wrap-anywhere">
+      <h3 className="mt-6 mb-2 text-sm font-medium">Details</h3>
+      <pre className="cut-sm max-h-72 overflow-auto bg-graphite p-4 font-mono text-xs leading-5 whitespace-pre-wrap wrap-anywhere text-graphite-ink">
         {event && Object.keys(event.metadata).length ? JSON.stringify(event.metadata, null, 2) : "None recorded."}
       </pre>
     </Dialog>
+  );
+}
+
+/** Rows in the shape of the audit table while it loads. The status text is for screen readers. */
+function TableSkeleton() {
+  return (
+    <div role="status" className="divide-y divide-border border-y border-border">
+      <span className="sr-only">Loading…</span>
+      <div aria-hidden="true" className="h-9 bg-panel-2" />
+      {[0, 1, 2, 3, 4, 5].map((i) => (
+        <div key={i} aria-hidden="true" className="flex items-center gap-6 px-3 py-3">
+          <div className="h-4 w-36 motion-safe:animate-shimmer rounded-sm bg-panel-3" />
+          <div className="h-4 w-44 motion-safe:animate-shimmer rounded-sm bg-panel-3" />
+          <div className="hidden h-4 w-32 motion-safe:animate-shimmer rounded-sm bg-panel-3 sm:block" />
+          <div className="hidden h-6 w-16 motion-safe:animate-shimmer rounded-chip bg-panel-3 md:block" />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -89,10 +107,10 @@ export default function AuditPage() {
   return (
     <RequirePermission permission="audit:read">
       <PageHeader title="Audit log" description="Security-relevant actions in this workspace. Metadata never contains passwords, secrets or document text." />
-      <div className="mb-3 flex flex-wrap gap-3">
-        <div>
-          <label htmlFor="a-action" className="mb-1 block text-xs font-medium text-muted">Action</label>
-          <select id="a-action" className={inputClass} value={action} onChange={(e) => { setCursor(null); setAction(e.target.value); }}>
+      <div className="mb-4 flex flex-wrap items-end gap-4 border-b border-border pb-4">
+        <div className="w-full sm:w-64">
+          <label htmlFor="a-action" className="mb-2 block text-sm font-medium text-text">Action</label>
+          <select id="a-action" className={cx(inputClass, "focus-visible:border-accent")} value={action} onChange={(e) => { setCursor(null); setAction(e.target.value); }}>
             <option value="">All</option>
             {ACTION_FAMILIES.map(({ family, actions }) => (
               <optgroup key={family} label={family}>
@@ -102,9 +120,9 @@ export default function AuditPage() {
             ))}
           </select>
         </div>
-        <div>
-          <label htmlFor="a-outcome" className="mb-1 block text-xs font-medium text-muted">Outcome</label>
-          <select id="a-outcome" className={inputClass} value={outcome} onChange={(e) => { setCursor(null); setOutcome(e.target.value); }}>
+        <div className="w-full sm:w-44">
+          <label htmlFor="a-outcome" className="mb-2 block text-sm font-medium text-text">Outcome</label>
+          <select id="a-outcome" className={cx(inputClass, "focus-visible:border-accent")} value={outcome} onChange={(e) => { setCursor(null); setOutcome(e.target.value); }}>
             <option value="">All</option>
             <option value="success">success</option>
             <option value="denied">denied</option>
@@ -112,7 +130,7 @@ export default function AuditPage() {
           </select>
         </div>
       </div>
-      {events.loading && <Loading />}
+      {events.loading && <TableSkeleton />}
       {events.error && <ErrorState error={events.error} onRetry={events.reload} />}
       {events.data?.items.length === 0 && <Empty title="No audit events match" />}
       {events.data && events.data.items.length > 0 && (
@@ -121,27 +139,27 @@ export default function AuditPage() {
             <thead><tr><Th>Time</Th><Th>Actor</Th><Th>Action</Th><Th>Resource</Th><Th>Outcome</Th><Th>Details</Th><Th>Correlation</Th></tr></thead>
             <tbody>
               {events.data.items.map((e) => (
-                <tr key={e.id}>
-                  <Td className="whitespace-nowrap text-muted">{formatTime(e.created_at)}</Td>
-                  <Td>{e.actor_email ?? <span className="text-muted">{actorLabel(e)}</span>}</Td>
+                <tr key={e.id} className="transition-colors duration-[var(--dur-micro)] hover:bg-panel-2">
+                  <Td className="whitespace-nowrap text-muted tabular-nums">{formatTime(e.created_at)}</Td>
+                  <Td>{e.actor_email ? <span className="font-mono text-xs whitespace-nowrap">{e.actor_email}</span> : <span className="text-muted">{actorLabel(e)}</span>}</Td>
                   <Td className="font-mono text-xs whitespace-nowrap">{e.action}</Td>
-                  <Td className="text-xs">{e.resource_type} <span className="font-mono text-muted">{shortId(e.resource_id)}</span></Td>
+                  <Td className="text-xs">{e.resource_type} {e.resource_id ? <span className="font-mono text-muted">{shortId(e.resource_id)}</span> : null}</Td>
                   <Td><StatusBadge status={e.outcome === "success" ? "succeeded" : "failed"} label={e.outcome} /></Td>
                   <Td>
                     <div className="flex items-center gap-2">
                       {/* The preview only shows when there is room; View always has the full text. */}
                       <span className="hidden max-w-40 truncate font-mono text-xs text-muted min-[1400px]:inline">
-                        {Object.keys(e.metadata).length ? JSON.stringify(e.metadata) : "—"}
+                        {Object.keys(e.metadata).length ? JSON.stringify(e.metadata) : "None"}
                       </span>
-                      <Button className="shrink-0 px-2 py-0.5 text-xs max-sm:min-h-11" aria-label={`View details: ${e.action}, ${formatTime(e.created_at)}`} onClick={() => setOpen(e)}>View</Button>
+                      <Button size="sm" className="shrink-0" aria-label={`View details: ${e.action}, ${formatTime(e.created_at)}`} onClick={() => setOpen(e)}>View</Button>
                     </div>
                   </Td>
-                  <Td className="font-mono text-xs text-muted">{shortId(e.correlation_id)}</Td>
+                  <Td className="text-xs text-muted">{e.correlation_id ? <span className="font-mono">{shortId(e.correlation_id)}</span> : "None"}</Td>
                 </tr>
               ))}
             </tbody>
           </TableWrap>
-          <div className="mt-3 flex justify-end gap-2">
+          <div className="mt-4 flex justify-end gap-2">
             {cursor && <Button onClick={() => setCursor(null)}>Newest</Button>}
             {events.data.next_cursor && <Button onClick={() => setCursor(events.data!.next_cursor)}>Older</Button>}
           </div>

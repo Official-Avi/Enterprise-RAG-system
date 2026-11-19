@@ -1,0 +1,80 @@
+src\app\(app)\admin\users\page.tsx
+  FAIL 19 :77 dash "—" in copy | fix: A comma, a colon, a full stop or parentheses; never a dash
+src\app\(app)\collections\page.tsx
+  FAIL 19 :82 dash "—" in copy
+src\app\(app)\infrastructure\[id]\page.tsx
+  FAIL 19 :212 dash "—" in copy
+  FAIL 26a :1 no :focus-visible styling anywhere | fix: A focus ring at 3:1 or better, instant
+  REFLEX 26b :1 no :active styling anywhere | fix: All eight states; guard: not a form control, no aria-disabled anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\infrastructure\page.tsx
+  FAIL 19 :232 dash "—" in copy
+src\app\(workspace)\ask\[[...slug]]\page.tsx
+  FAIL 19 :445 dash "–" in copy
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\admin\audit\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\admin\settings\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\admin\users\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\collections\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\documents\[id]\page.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  FAIL 63 :227 middle-dot meta string "attempt / · job · queued" | fix: Line breaks, columns or hairlines; one dot in a byline at most
+  FAIL 63 :230 middle-dot meta string "attempt / · job · queued"
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+  REFLEX 64 :235 font-mono on "Correlation ID:" at 12px (<div class="font-mono text-xs text-muted">) | fix: Labels in the body face at a smaller size and normal case; font-mono only for code and figures
+src\app\(app)\documents\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\evaluation\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\infrastructure\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\inspector\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\jobs\layout.tsx
+  FAIL 26a :1 no :focus-visible styling anywhere
+  REFLEX 26b :1 no :active styling anywhere
+  REFLEX 26b :1 no :disabled styling anywhere
+src\app\(app)\documents\page.tsx
+  FAIL 27 :183 motion utilities (a transition on a transform) with no motion-reduce: or motion-safe: variant anywhere | fix: Add motion-reduce: fallbacks, or put the motion behind motion-safe:
+  FAIL 63 :176 middle-dot meta string "PDF, DOCX, TXT, Markdown · up to 25 MiB each · sc…"
+  FAIL 67 :394 uppercase at 12px on <div class="text-xs uppercase text-muted"> | fix: Sentence case in the body face, a step smaller, untracked: drop uppercase and the tracking-* class
+src\components\workspace\library\states.tsx
+  FAIL 30a :184 emoji icon "⚠" in <span class=""> | fix: One icon library or custom SVG
+  REFLEX 64 :171 font-mono on "Ref" at 12px (<span class="font-mono text-xs text-muted [o…">)
+src\app\(app)\evaluation\page.tsx
+  FAIL 63 :233 middle-dot meta string "Restricted leaks: · errors: · avg latency · p95 ·…"
+src\components\workspace\AnswerBlock.tsx
+  FAIL 63 :394 arrow glued to the label "from ›" | fix: A verb as the label; the link already says it goes somewhere
+src\components\Shell.tsx
+  FAIL 67 :132 uppercase at 12px tracked 0.05em on <div class="px-2 pb-1 text-xs font-semibold…">
+  REFLEX 26b :1 no :active styling anywhere
+src\components\ui.tsx
+  FAIL 67 :165 uppercase at 12px on <div class="text-xs font-medium uppercase t…">
+  FAIL 67 :432 uppercase at 12px on <th class="border-b border-border px-3 py-…">
+  REFLEX 64 :250 font-mono on "Correlation ID:" at 12px (<p class="mt-0.5 font-mono text-xs text-m…">)
+src\components\workspace\AnswerErrorCard.tsx
+  REFLEX 64 :172 font-mono on "Ref Copy reference" at 11px (<div class="mt-3 flex flex-wrap items-cente…">)
+sloplint: 28 FAIL, 29 REFLEX, 0 WARN across 66 file(s).

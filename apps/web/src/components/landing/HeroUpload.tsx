@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { Icon, type IconName } from "@/components/icons";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { Icon } from "@/components/icons";
 import { cx } from "@/components/ui";
 import { NETWORK_ERROR_COPY } from "@/lib/api";
 import { ROLE_LABEL } from "@/lib/demo";
@@ -10,48 +10,44 @@ import { formatBytes } from "@/lib/format";
 import { middleTruncate } from "@/lib/status";
 import { useFileDrop } from "@/lib/useFileDrop";
 import { ACCEPT_ATTR, MAX_FILE_BYTES, MAX_FILES } from "@/lib/workspace";
-import { fileKind, KIND_LABEL, TypeTile } from "@/components/workspace/library/parts";
+import { fileKind, KIND_LABEL } from "@/components/workspace/library/parts";
 import { isBusy, SIGN_IN_HREF, useHeroUpload, useRunActive, type HeroJob, type HeroState } from "./useHeroUpload";
 import { useVisitor } from "./Visitor";
 
 const MAX_MB = Math.round(MAX_FILE_BYTES / (1024 * 1024));
 
-const OUTLINE_ACTION =
-  "inline-flex min-h-11 items-center justify-center rounded-lg border border-border-strong bg-panel px-4 " +
-  "text-sm font-medium text-text transition-colors duration-150 hover:bg-panel-2";
-const PRIMARY_ACTION =
-  "inline-flex min-h-11 items-center justify-center rounded-lg bg-accent px-4 text-sm font-medium " +
-  "text-accent-contrast transition-opacity duration-150 hover:opacity-90";
+// Keycaps from the design system (design.md, Controls): 44px on touch, 40px with a pointer.
+// `.key` carries its own hover, active, disabled and busy states and its transitions.
+const OUTLINE_ACTION = "key min-h-11 sm:min-h-10";
+const PRIMARY_ACTION = "key key-primary min-h-11 sm:min-h-10";
 
-const SUBLINE: { word: string; tile: string; icon: IconName }[] = [
-  { word: "PDF", tile: "bg-bad", icon: "file" },
-  { word: "Word", tile: "bg-info", icon: "file" },
-  { word: "Text", tile: "bg-muted", icon: "file" },
-  { word: "Markdown", tile: "bg-muted", icon: "file" },
-  { word: "Scanned PDFs", tile: "bg-accent", icon: "scan" },
-];
+/** The warning triangle for refusals and errors, so status never rests on colour alone. */
+function AlertGlyph({ className }: { className?: string }) {
+  return <Icon name="alert" width={20} height={20} aria-hidden="true" className={cx("shrink-0", className)} />;
+}
 
 function FileRow({ files }: { files: File[] }) {
   const total = files.reduce((n, f) => n + f.size, 0);
   const name = files.length === 1 ? files[0].name : `${files.length} files`;
   return (
-    <div className="flex w-full min-w-0 items-center gap-3 text-left">
-      <TypeTile kind={fileKind(files[0].name)} />
+    <div className="flex w-full min-w-0 items-start gap-3 text-left">
+      <Icon name="file" width={20} height={20} aria-hidden="true" className="mt-0.5 shrink-0 text-muted" />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium" title={name}>
+        <p className="truncate font-display text-base font-medium text-text" title={name}>
           {middleTruncate(name, 44)}
         </p>
-        <p className="text-[13px] leading-5 text-muted">
-          {files.length === 1 ? KIND_LABEL[fileKind(files[0].name)] : "Files"} · {formatBytes(total)}
+        <p className="mt-0.5 flex flex-wrap items-baseline gap-x-3 text-xs leading-5 text-muted">
+          <span>{files.length === 1 ? KIND_LABEL[fileKind(files[0].name)] : "Files"}</span>
+          <span className="num font-mono">{formatBytes(total)}</span>
         </p>
       </div>
     </div>
   );
 }
 
-function Step({ done, children }: { done: boolean; children: ReactNode }) {
+function Step({ done, meta, children }: { done: boolean; meta?: ReactNode; children: ReactNode }) {
   return (
-    <li className="flex min-w-0 items-start gap-2 text-sm">
+    <li className="flex min-w-0 items-start gap-2 text-sm text-text">
       <span aria-hidden="true" className="mt-0.5 grid size-4 shrink-0 place-items-center">
         {done ? (
           <Icon name="check" width={16} height={16} className="text-accent" />
@@ -59,7 +55,8 @@ function Step({ done, children }: { done: boolean; children: ReactNode }) {
           <span className="size-3.5 rounded-full border-2 border-accent border-t-transparent motion-safe:animate-spin" />
         )}
       </span>
-      <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{children}</span>
+      {meta}
     </li>
   );
 }
@@ -73,11 +70,11 @@ function ProgressBar({ fraction }: { fraction: number }) {
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={percent}
-      className="h-1 w-full overflow-hidden rounded-full bg-panel-2"
+      className="h-1 w-full overflow-hidden rounded-sm bg-panel-3"
     >
-      {/* scaleX, not width: §8.4 only animates transform and opacity. */}
+      {/* scaleX, not width: only transform and opacity animate. */}
       <div
-        className="h-full origin-left rounded-full bg-accent transition-transform duration-200"
+        className="h-full origin-left bg-accent transition-transform duration-(--dur-short) ease-out"
         style={{ transform: `scaleX(${fraction})` }}
       />
     </div>
@@ -86,17 +83,18 @@ function ProgressBar({ fraction }: { fraction: number }) {
 
 function Note({ tone, alert, children }: { tone: "bad" | "warn" | "plain"; alert?: boolean; children: ReactNode }) {
   return (
-    <p
+    <div
       role={alert ? "alert" : undefined}
       className={cx(
-        "w-full rounded-md px-3 py-2 text-left text-sm [overflow-wrap:anywhere]",
-        tone === "bad" && "bg-bad-soft text-bad",
-        tone === "warn" && "bg-warn-soft text-warn",
-        tone === "plain" && "px-0 py-0",
+        "flex w-full items-start gap-2 text-left text-sm [overflow-wrap:anywhere]",
+        tone === "bad" && "rounded-md bg-bad-soft px-3 py-2 text-bad",
+        tone === "warn" && "rounded-md bg-warn-soft px-3 py-2 text-warn",
+        tone === "plain" && "text-text-2",
       )}
     >
-      {children}
-    </p>
+      {tone !== "plain" && <AlertGlyph className="mt-0.5 size-4" />}
+      <p className="min-w-0 flex-1">{children}</p>
+    </div>
   );
 }
 
@@ -132,7 +130,7 @@ function StoredPanel({
         <Note tone="bad" alert>
           {one ? "That file" : `${stored.length} files`} couldn&apos;t be removed. Try again, or delete{" "}
           {one ? "it" : "them"} in the{" "}
-          <Link href="/library" className="underline">
+          <Link href="/library" className="font-medium underline underline-offset-2 hover:decoration-2 active:opacity-80">
             Library
           </Link>
           .
@@ -185,7 +183,7 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
       case "signing_in":
         return (
           <>
-            <ul className="w-full space-y-1.5">
+            <ul className="w-full space-y-2">
               <Step done={false}>Opening the Engineer demo account</Step>
             </ul>
             <Actions>{cancel}</Actions>
@@ -195,16 +193,16 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
         const percent = Math.round(state.progress * 100);
         return (
           <>
-            <ul className="w-full space-y-1.5">
+            <ul className="w-full space-y-2">
               {state.demoStep && <Step done>Opening the Engineer demo account</Step>}
-              <Step done={false}>
-                Uploading {jobName} · {percent}%
+              <Step done={false} meta={<span className="num shrink-0 font-mono text-xs leading-5 text-muted">{percent}%</span>}>
+                Uploading {jobName}
               </Step>
             </ul>
             <ProgressBar fraction={state.progress} />
             <Actions>
               {state.stopping ? (
-                <button type="button" aria-disabled="true" className={cx(OUTLINE_ACTION, "cursor-wait opacity-60")}>
+                <button type="button" aria-disabled="true" aria-busy="true" className={OUTLINE_ACTION}>
                   Stopping…
                 </button>
               ) : (
@@ -216,7 +214,7 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
       }
       case "opening":
         return (
-          <ul className="w-full space-y-1.5">
+          <ul className="w-full space-y-2">
             {state.demoStep && <Step done>Opening the Engineer demo account</Step>}
             {!isAsk && <Step done>Uploaded {jobName}</Step>}
             <Step done>Opening your chat…</Step>
@@ -245,7 +243,7 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
         return <StoredPanel state={state} hero={hero} demoRunning={demoRunning} />;
       case "removing":
         return (
-          <ul className="w-full space-y-1.5">
+          <ul className="w-full space-y-2">
             <Step done={false}>Removing the saved {state.stored.length === 1 ? "copy" : "copies"}</Step>
           </ul>
         );
@@ -266,8 +264,10 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
               <Note tone="plain">Your question stays in this tab until you sign in.</Note>
             ) : (
               <div className="w-full text-left">
-                <p className="text-sm font-semibold [overflow-wrap:anywhere]">Sign in to ask about {jobName}</p>
-                <p className="mt-0.5 text-[13px] leading-5 text-muted">
+                <p className="font-display text-base font-medium text-text [overflow-wrap:anywhere]">
+                  Sign in to ask about {jobName}
+                </p>
+                <p className="mt-0.5 text-sm text-muted">
                   {files.length > 1 ? "Your files stay" : "Your file stays"} in this tab until you sign in.
                 </p>
               </div>
@@ -316,7 +316,7 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
             {/* Not a live region: a ticking countdown would be read out every second. It is announced once. */}
             <Note tone="warn">
               {demoRunning ? "Lots of people are using the demo right now." : "RackFlow is busy right now."} Trying again
-              in {state.seconds}s…
+              in <span className="num">{state.seconds}</span>s…
             </Note>
             <Actions>{cancel}</Actions>
           </>
@@ -352,20 +352,10 @@ function JobPanel({ state, hero, demoRunning }: PanelProps) {
     }
   };
   return (
-    <div className="flex w-full max-w-md flex-col items-start gap-3">
+    <div className="flex w-full max-w-lg flex-col items-start gap-3">
       {files.length > 0 && <FileRow files={files} />}
       {content()}
     </div>
-  );
-}
-
-function AlertWell() {
-  return (
-    <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-full bg-bad-soft text-bad">
-      <svg viewBox="0 0 24 24" width={20} height={20} fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 4 3 20h18zM12 10v4.5M12 17.5h.01" />
-      </svg>
-    </span>
   );
 }
 
@@ -381,12 +371,19 @@ function isDropTarget(card: HTMLElement | null): boolean {
 }
 
 /** The landing page's working tool: drop a file or type a question (§3.1, §3.2). The flow itself lives
- *  in useHeroUpload. `compact` (closing band, §3.6) is the dropzone alone, with the same flow. */
+ *  in useHeroUpload. `compact` (closing band, §3.6) is the dropzone alone, with the same flow.
+ *  It draws its own cut panel, so the page places it bare (never inside another card). */
 export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" }) {
   const compact = variant === "compact";
   const { ready, me, demo, persona } = useVisitor();
   const textarea = useRef<HTMLTextAreaElement>(null);
   const hero = useHeroUpload(textarea);
+  // Send rests flat (aria-disabled) while the ask box is empty, as the Composer's Send does, so the
+  // fold has one filled primary at rest. Read on mount too: the browser may restore the box's text.
+  const [hasQuestion, setHasQuestion] = useState(false);
+  useEffect(() => {
+    setHasQuestion(Boolean(textarea.current?.value.trim()));
+  }, []);
   const { state } = hero;
   const busy = isBusy(state);
   const runActive = useRunActive();
@@ -437,168 +434,121 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
   const uploadPanel = "job" in state && state.job.kind === "upload" ? state : null;
   const askPanel = "job" in state && state.job.kind === "ask" ? state : null;
   const hot = pickable && dragging;
+  const askBusy = askPanel !== null && busy;
   // The note about the shared account: a demo session is running, or about to be.
   const demoRunning = persona !== null || state.kind === "signing_in" || (state.kind === "uploading" && state.demoStep);
   const sharedNote = demoRunning && (state.kind === "signing_in" || state.kind === "uploading");
   const askFooter = elsewhere
-    ? "Upload running · ask when it finishes"
+    ? "Upload running. Ask when it finishes."
     : !ready
-      ? "Press Enter"
+      ? "Press Enter to send."
       : me && !persona
-        ? "Uses your documents · press Enter"
+        ? "Uses your documents. Press Enter to send."
         : demo?.enabled
-          ? "Uses the demo documents · press Enter"
-          : "Sign in first · press Enter";
+          ? "Uses the demo documents. Press Enter to send."
+          : "Sign in first. Press Enter to send.";
 
   const Zone = pickable ? "label" : "div";
 
   return (
     <>
       {!compact && (
-      <div
-        aria-hidden="true"
-        className={cx(
-          "pointer-events-none fixed inset-4 z-50 grid place-items-center rounded-3xl bg-accent/8 p-6 backdrop-blur-[2px] pointer-coarse:hidden",
-          "transition-[opacity,visibility] ease-(--ease-snappy)",
-          dragging && !busy && !runActive ? "visible opacity-100 duration-120" : "invisible opacity-0 duration-100",
-        )}
-      >
-        <svg className="absolute top-px left-px h-[calc(100%-2px)] w-[calc(100%-2px)] overflow-visible text-dropzone-border">
-          <rect width="100%" height="100%" rx="23" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="10 8" />
-        </svg>
-        <div className="relative flex max-w-md flex-col items-center rounded-2xl bg-panel/90 px-8 py-7 text-center shadow-elev-3">
-          <Icon name="upload" width={48} height={48} strokeWidth={1.5} className="text-accent" />
-          <p className="mt-4 text-2xl font-semibold tracking-tight text-text">Drop your file to start</p>
-          <p className="mt-2 text-sm text-muted">PDF, Word, text or Markdown · up to {MAX_MB} MB</p>
+        <div
+          aria-hidden="true"
+          className={cx(
+            "pointer-events-none fixed inset-4 z-[var(--z-modal)] grid place-items-center p-6 pointer-coarse:hidden",
+            "rounded-2xl border-2 border-dashed border-dropzone-border",
+            "bg-[color-mix(in_oklab,var(--bg)_82%,transparent)] backdrop-blur-[2px]",
+            "transition-[opacity,visibility] ease-out",
+            dragging && !busy && !runActive
+              ? "visible opacity-100 duration-(--dur-micro)"
+              : "invisible opacity-0 duration-(--dur-micro)",
+          )}
+        >
+          <div className="cut flex max-w-md items-start gap-4 border border-border bg-panel px-8 py-6 text-left shadow-elev-3">
+            <Icon name="upload" width={24} height={24} strokeWidth={1.75} className="mt-1 shrink-0 text-accent" />
+            <div>
+              <p className="font-display text-2xl font-semibold tracking-head text-text">Drop your file to start</p>
+              <p className="mt-1 text-sm text-muted">PDF, Word, text or Markdown, up to {MAX_MB} MB each</p>
+            </div>
+          </div>
         </div>
-      </div>
       )}
 
-      {/* isolate: without its own stacking context the glow sits behind the page's opaque background. */}
-      <div className="relative isolate">
-        {!compact && (
-          <div
-            aria-hidden="true"
-            className={cx(
-              "pointer-events-none absolute top-[-50px] left-1/2 -z-10 h-[420px] w-[896px] -translate-x-1/2",
-              "dark:opacity-50 [[data-theme=dark]_&]:opacity-50 [[data-theme=light]_&]:opacity-100",
-            )}
-            style={{
-              filter: "blur(48px)",
-              background:
-                "radial-gradient(45% 60% at 30% 45%, rgb(15 107 102 / .14), transparent)," +
-                "radial-gradient(45% 60% at 72% 60%, rgb(217 160 60 / .10), transparent)",
-            }}
-          />
-        )}
+      <div className="relative">
         <div
           ref={card}
           data-hero-card=""
-          className="rounded-2xl border border-border bg-panel px-5 pt-4 pb-5"
+          className="@container cut border border-border bg-panel p-4 shadow-elev-1 sm:p-6"
         >
-          {!compact && (
-            <p className="mb-4 text-center text-lg leading-7 font-semibold">
-              {SUBLINE.map(({ word, tile, icon }, i) => (
-                <span key={word}>
-                  {i > 0 && " · "}
-                  <span className="whitespace-nowrap">
-                    <span
-                      aria-hidden="true"
-                      className={cx("mr-1 inline-grid size-4 place-items-center rounded-[4px] align-[-2px] text-panel", tile)}
-                    >
-                      <Icon name={icon} width={12} height={12} strokeWidth={2} />
-                    </span>
-                    {word}
-                  </span>
-                </span>
-              ))}
-            </p>
-          )}
-          <div className={cx("grid gap-4", !compact && "md:grid-cols-[7fr_5fr]")}>
-            <div ref={zone} tabIndex={-1} className="flex min-w-0 scroll-mt-20 flex-col outline-none">
+          <div className={cx("grid gap-4", !compact && "@3xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]")}>
+            {/* A programmatic focus target only (tabIndex -1): the controls inside carry the ring. */}
+            <div
+              ref={zone}
+              tabIndex={-1}
+              className="flex min-w-0 scroll-mt-20 flex-col focus-visible:outline-none!"
+            >
               <Zone
                 className={cx(
-                  "relative flex flex-1 flex-col items-center justify-center gap-2 rounded-xl px-4 py-3 text-center",
-                  compact ? "min-h-[120px]" : "min-h-[180px] md:min-h-[200px]",
-                  "transition-colors duration-150",
-                  hot ? "bg-accent-soft" : "bg-accent-soft/50",
-                  pickable && "group cursor-pointer hover:bg-accent-soft focus-within:bg-accent-soft",
+                  "relative flex flex-1 flex-col justify-center gap-3 rounded-lg border-2 px-4 py-4 text-left sm:px-6",
+                  compact ? "min-h-30" : "min-h-40 @3xl:min-h-50",
+                  "transition-colors duration-(--dur-micro) ease-out",
+                  refused
+                    ? "border-solid border-bad bg-bad-soft/40"
+                    : hot
+                      ? "border-solid border-accent bg-accent-soft"
+                      : "border-dashed border-dropzone-border bg-accent-soft/40",
+                  pickable &&
+                    !refused &&
+                    "cursor-pointer hover:border-solid hover:border-accent hover:bg-accent-soft focus-within:border-solid focus-within:border-accent focus-within:bg-accent-soft active:bg-accent-soft",
+                  pickable && refused && "cursor-pointer",
                 )}
               >
-                <svg aria-hidden="true" className="pointer-events-none absolute inset-0 size-full">
-                  {/* Stroke is centred on the edge and the outer half is clipped: 1.5px visible. */}
-                  <rect
-                    width="100%"
-                    height="100%"
-                    rx="12"
-                    ry="12"
-                    fill="none"
-                    strokeWidth="3"
-                    className={cx(
-                      "transition-colors duration-150",
-                      refused
-                        ? "stroke-bad"
-                        : hot
-                          ? "stroke-accent"
-                          : "stroke-dropzone-border [stroke-dasharray:4_4]",
-                      pickable &&
-                        !refused &&
-                        "group-hover:stroke-accent group-hover:[stroke-dasharray:none] group-focus-within:stroke-accent group-focus-within:[stroke-dasharray:none]",
-                    )}
-                  />
-                </svg>
-
                 {uploadPanel ? (
                   <JobPanel state={uploadPanel} hero={hero} demoRunning={demoRunning} />
                 ) : (
                   <>
                     {elsewhere && !refused ? (
-                      <span role="status" className="block max-w-md text-sm font-medium [overflow-wrap:anywhere]">
+                      <span role="status" className="block max-w-md text-sm font-medium text-text [overflow-wrap:anywhere]">
                         Another upload is running on this page. You can add files here when it finishes.
                       </span>
                     ) : refused ? (
-                      <>
-                        <AlertWell />
-                        <span role="alert" className="block max-w-md text-sm font-medium text-bad [overflow-wrap:anywhere]">
+                      <div className="flex max-w-lg items-start gap-3">
+                        <AlertGlyph className="mt-0.5 text-bad" />
+                        <span role="alert" className="block text-sm font-medium text-bad [overflow-wrap:anywhere]">
                           {state.message}
                         </span>
-                      </>
+                      </div>
                     ) : (
-                      <>
-                        {!compact && (
-                          <span className="grid size-10 place-items-center rounded-full bg-panel text-accent">
-                            <Icon name="upload" width={20} height={20} />
-                          </span>
-                        )}
-                        <span className="text-base font-semibold pointer-coarse:hidden">Drag a file here</span>
-                        <span className="text-sm text-muted pointer-coarse:hidden">or</span>
-                        <span className="hidden text-base font-semibold pointer-coarse:inline">Tap to choose a file</span>
-                      </>
+                      <div className="flex items-start gap-3">
+                        <Icon
+                          name="upload"
+                          width={20}
+                          height={20}
+                          aria-hidden="true"
+                          className="mt-0.5 shrink-0 text-accent"
+                        />
+                        <p className="min-w-0 font-display text-lg leading-6 font-medium text-text">
+                          <span className="pointer-coarse:hidden">Drag a file here, or</span>
+                          <span className="hidden pointer-coarse:inline">Tap to choose a file</span>
+                        </p>
+                      </div>
                     )}
                     {!elsewhere && (
-                      <>
+                      <div className={cx("flex flex-wrap items-center gap-x-4 gap-y-2", !refused && "sm:pl-8")}>
                         <button
                           type="button"
                           // The wrapping <label> would otherwise become the button's accessible name.
                           aria-label={refused ? "Choose another file" : "Choose a file"}
                           onClick={() => input.current?.click()}
                           className={cx(
-                            "inline-flex h-11 items-center justify-center rounded-lg border px-4 text-sm font-medium",
-                            "transition-colors duration-150",
-                            "group-hover:border-transparent group-hover:bg-accent group-hover:text-accent-contrast",
-                            "pointer-coarse:h-12 pointer-coarse:w-full pointer-coarse:max-w-[360px]",
-                            hot
-                              ? "border-transparent bg-accent text-accent-contrast"
-                              : "border-border-strong bg-panel text-text",
+                            "key min-h-11 sm:min-h-10",
+                            "pointer-coarse:min-h-12 pointer-coarse:w-full pointer-coarse:max-w-[360px]",
+                            hot && "key-primary",
                           )}
                         >
                           {refused ? "Choose another file" : "Choose a file"}
                         </button>
-                        {!refused && (
-                          <span className="text-[13px] leading-5 text-muted">
-                            Up to {MAX_MB} MB each · {MAX_FILES} at a time
-                          </span>
-                        )}
                         <input
                           ref={input}
                           type="file"
@@ -612,7 +562,17 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
                             e.target.value = "";
                           }}
                         />
-                      </>
+                      </div>
+                    )}
+                    {/* Types and limits follow the key, so "Drag a file here, or" leads straight to it. */}
+                    {!elsewhere && !refused && (
+                      <p className="flex flex-wrap gap-x-3 text-xs leading-5 text-muted sm:pl-8">
+                        {!compact && <span>PDF, Word, text, Markdown and scanned PDFs</span>}
+                        <span>
+                          Up to <span className="num">{MAX_MB}</span> MB each, <span className="num">{MAX_FILES}</span>{" "}
+                          at a time
+                        </span>
+                      </p>
                     )}
                   </>
                 )}
@@ -621,7 +581,15 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
             {!compact && (
               <form
                 onSubmit={submitQuestion}
-                className="flex flex-col rounded-xl border border-border-strong bg-panel p-4 transition-colors duration-150 focus-within:border-accent md:min-h-[200px]"
+                aria-busy={askBusy || undefined}
+                className={cx(
+                  "flex flex-col rounded-input border border-border-strong bg-panel px-3 pt-3 pb-2",
+                  "transition-colors duration-(--dur-micro) ease-out hover:border-text-2",
+                  "has-[textarea:focus-visible]:border-accent has-[textarea:focus-visible]:outline-2",
+                  "has-[textarea:focus-visible]:outline-offset-2 has-[textarea:focus-visible]:outline-focus",
+                  "has-[textarea:focus-visible]:outline-solid",
+                  "@3xl:min-h-50",
+                )}
               >
                 <label htmlFor="hero-question" className="sr-only">
                   Ask a question
@@ -633,26 +601,27 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
                   maxLength={4000}
                   rows={2}
                   // A question on its way can't change under the visitor. Once it is held, an edit counts.
-                  readOnly={askPanel !== null && busy}
+                  readOnly={askBusy}
                   placeholder="Or ask a question, e.g. How long are backups retained?"
-                  className="min-h-12 flex-1 resize-none bg-transparent text-base leading-6 outline-none placeholder:text-muted"
+                  // The ring is drawn on the whole box above (has-[textarea:focus-visible]).
+                  className="min-h-12 flex-1 resize-none bg-transparent text-base leading-6 text-text placeholder:text-muted read-only:text-text-2 focus-visible:outline-none!"
                   onKeyDown={onQuestionKey}
+                  onInput={(e) => setHasQuestion(e.currentTarget.value.trim() !== "")}
                 />
                 {askPanel && (
-                  <div className="mt-3 scroll-mt-20">
+                  <div className="mt-3 scroll-mt-20 border-t border-border pt-3">
                     <JobPanel state={askPanel} hero={hero} demoRunning={demoRunning} />
                   </div>
                 )}
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <span className="text-[13px] leading-5 text-muted">{askFooter}</span>
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span className="text-xs leading-5 text-muted">{askFooter}</span>
                   <button
                     type="submit"
                     aria-label="Send question"
-                    aria-disabled={busy || elsewhere || undefined}
-                    className={cx(
-                      "grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-accent-contrast transition-opacity duration-150",
-                      "hover:opacity-90 aria-disabled:cursor-wait aria-disabled:opacity-60 pointer-coarse:size-11",
-                    )}
+                    aria-disabled={busy || elsewhere || !hasQuestion || undefined}
+                    aria-busy={askBusy || undefined}
+                    // `.key` dims an aria-disabled key; the cursor says why: waiting, or not available.
+                    className="key key-primary size-10 shrink-0 p-0 pointer-coarse:size-11 aria-disabled:cursor-not-allowed aria-busy:cursor-progress"
                   >
                     <Icon name="send" width={16} height={16} />
                   </button>
@@ -666,10 +635,10 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
             </p>
           )}
         </div>
-        <p className="mt-3 flex min-h-5 items-start justify-center gap-1.5 text-center text-[13px] leading-5 text-muted">
+        <p className="mt-3 flex min-h-5 items-start gap-2 text-xs leading-5 text-muted">
           {ready && (
             <>
-              <Icon name="lock" width={14} height={14} className="mt-[3px] shrink-0" />
+              <Icon name="lock" width={14} height={14} aria-hidden="true" className="mt-[3px] shrink-0" />
               <span>
                 {demo?.enabled
                   ? "Demo files go to a shared workspace on this server. Please don't upload anything private."
@@ -679,7 +648,7 @@ export function HeroUpload({ variant = "full" }: { variant?: "full" | "compact" 
           )}
         </p>
         {sharedNote && (
-          <p className="mt-1 text-center text-xs text-muted">
+          <p className="mt-1 pl-6 text-xs leading-5 text-muted">
             You&apos;re using a shared demo account. Others using this demo can see what you upload.
           </p>
         )}

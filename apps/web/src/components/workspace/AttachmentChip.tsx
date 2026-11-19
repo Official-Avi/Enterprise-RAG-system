@@ -52,26 +52,20 @@ function useElapsedMs(phase: UploadPhase, since: number): number {
   return Math.max(0, now - since);
 }
 
-// Text tiles (not images) so they survive forced colours and need no assets.
-const TILES: Record<string, [label: string, bg: string]> = {
-  pdf: ["PDF", "bg-bad"],
-  docx: ["DOCX", "bg-info"],
-  txt: ["TXT", "bg-muted"],
-  md: ["MD", "bg-muted"],
-  markdown: ["MD", "bg-muted"],
-};
+// The file type as a plain text glyph, never a coloured tile (design.md). PDF may take the bad ink.
+const TYPE_LABEL: Record<string, string> = { pdf: "PDF", docx: "DOCX", txt: "TXT", md: "MD", markdown: "MD" };
 
-function TypeTile({ filename }: { filename: string }) {
+function TypeGlyph({ filename }: { filename: string }) {
   const dot = filename.lastIndexOf(".");
   const ext = dot > 0 ? filename.slice(dot + 1).toLowerCase() : "";
-  const [label, bg] = TILES[ext] ?? [ext.slice(0, 4).toUpperCase() || "FILE", "bg-muted"];
+  const label = TYPE_LABEL[ext] ?? (ext.slice(0, 4).toUpperCase() || "FILE");
   return (
     <span
       aria-hidden="true"
       className={cx(
-        // 12px is the type floor (§8.2); tracking-tighter keeps "DOCX" inside the 32px tile.
-        "grid size-8 shrink-0 place-items-center rounded-lg text-xs font-semibold tracking-tighter text-panel",
-        bg,
+        // 12px is the type floor (§8.2). A hairline column keeps the names aligned whatever the label.
+        "flex w-10 shrink-0 items-center self-stretch border-r border-border font-display text-xs font-semibold",
+        ext === "pdf" ? "text-bad" : "text-muted",
       )}
     >
       {label}
@@ -80,9 +74,10 @@ function TypeTile({ filename }: { filename: string }) {
 }
 
 const chipAction =
-  "inline-flex min-h-6 items-center rounded text-xs font-medium text-accent underline underline-offset-2 hover:no-underline pointer-coarse:min-h-11";
+  "inline-flex min-h-6 items-center rounded-sm text-xs font-medium text-accent underline underline-offset-2 " +
+  "hover:no-underline active:text-accent-hover aria-disabled:cursor-not-allowed aria-disabled:opacity-55 pointer-coarse:min-h-11";
 
-/** 52px file chip: type tile, middle-truncated name, StatusPill line, cancel/remove (§5.5). It grows
+/** 52px file chip: type glyph, middle-truncated name, StatusPill line, cancel/remove (§5.5). It grows
  *  when it has a sentence to show or an action to offer (§5.4), since neither survives truncation. */
 export function AttachmentChip({
   upload,
@@ -136,17 +131,18 @@ export function AttachmentChip({
   return (
     <div
       className={cx(
-        "relative flex min-h-13 w-[260px] max-w-full gap-2.5 overflow-hidden rounded-xl border border-border bg-panel pr-1 pl-2.5",
+        // A chip inside the composer: panel-2 well with a hairline, never a raised card (design.md).
+        "relative flex min-h-13 w-[260px] max-w-full gap-2.5 overflow-hidden rounded-md border border-border bg-panel-2 pr-1 pl-2.5",
         sentence ? "items-start py-2" : "items-center",
-        "transition-[opacity,translate] duration-200 ease-(--ease-snappy) starting:opacity-0 motion-safe:starting:translate-y-1",
+        "transition-opacity duration-(--dur-short) ease-out starting:opacity-0",
       )}
     >
-      <TypeTile filename={upload.filename} />
+      <TypeGlyph filename={upload.filename} />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] leading-5 font-medium text-text" title={upload.filename}>
+        <p className="truncate text-xs leading-5 font-medium text-text" title={upload.filename}>
           {middleTruncate(upload.filename, 22)}
         </p>
-        <p className="truncate leading-4" title={!sentence && status.sub ? `${status.label} · ${status.sub}` : status.label}>
+        <p className="truncate leading-4" title={!sentence && status.sub ? `${status.label}, ${status.sub}` : status.label}>
           <StatusPill phase={upload.phase} ctx={ctx} variant="inline" showSub={!sentence} />
         </p>
         {sentence && <p className="mt-0.5 text-xs leading-4 text-pretty wrap-break-word text-muted">{sentence}</p>}
@@ -169,7 +165,10 @@ export function AttachmentChip({
           onClick={onRemove}
           aria-label={`${upload.phase === "uploading" ? "Cancel upload of" : "Remove"} ${upload.filename}`}
           title={upload.phase === "uploading" ? "Cancel" : undefined}
-          className="grid size-6 shrink-0 place-items-center rounded-full! text-muted transition-colors hover:bg-panel-2 hover:text-text pointer-coarse:size-11"
+          className={cx(
+            "grid size-6 shrink-0 place-items-center rounded-sm text-muted transition-colors duration-(--dur-micro)",
+            "hover:bg-panel-3 hover:text-text focus-visible:text-text active:bg-border pointer-coarse:size-11",
+          )}
         >
           <Icon name="close" width={14} height={14} />
         </button>
@@ -177,7 +176,7 @@ export function AttachmentChip({
       {upload.phase === "uploading" && (
         <span aria-hidden="true" className="absolute inset-x-0 bottom-0 h-0.5 bg-info-soft">
           <span
-            className="block h-full origin-left bg-info transition-transform duration-200"
+            className="block h-full origin-left bg-info transition-transform duration-(--dur-short)"
             style={{ transform: `scaleX(${Math.min(1, Math.max(0, upload.progress ?? 0))})` }}
           />
         </span>

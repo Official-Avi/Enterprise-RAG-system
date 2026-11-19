@@ -66,7 +66,7 @@ export function AskEmptyState({
     case "auditor":
       return (
         <BlockedState
-          icon={<Icon name="lock" width={24} height={24} />}
+          icon={<Icon name="lock" width={20} height={20} />}
           title="Auditors can't ask questions"
           description="Your role can see activity, file names and statuses, but not what's inside documents. This keeps reviews independent."
           fullPage
@@ -80,7 +80,7 @@ export function AskEmptyState({
             <button
               type="button"
               onClick={() => openPersonaMenu()}
-              className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border-strong bg-panel px-4 text-sm font-medium text-text transition-colors duration-150 hover:bg-panel-2 sm:min-h-10"
+              className="key min-h-11 sm:min-h-10"
             >
               Switch persona
             </button>
@@ -90,7 +90,7 @@ export function AskEmptyState({
     case "operator_empty":
       return (
         <BlockedState
-          icon={<Icon name="documents" width={24} height={24} />}
+          icon={<Icon name="documents" width={20} height={20} />}
           title="Nothing to ask about yet"
           description="Documents added by Engineers or Admins appear here once they're ready."
         >
@@ -105,7 +105,7 @@ export function AskEmptyState({
     case "not_found":
       return (
         <BlockedState
-          icon={<Icon name="chat" width={24} height={24} />}
+          icon={<Icon name="chat" width={20} height={20} />}
           title="This chat isn't available."
           description="It may have been deleted, or it belongs to another account."
         >
@@ -128,11 +128,12 @@ export function AskEmptyState({
   }
 }
 
+/** Left-aligned with the composer below it: the page reads like a document, not a centred splash. */
 function Heading({ title, description }: { title: string; description: string }) {
   return (
-    <div className="text-center">
-      <h1 className="text-[28px] leading-9 font-semibold tracking-tight text-balance">{title}</h1>
-      <p className="mx-auto mt-2 max-w-[560px] text-base text-muted text-pretty">{description}</p>
+    <div className="px-1">
+      <h1 className="text-2xl leading-tight">{title}</h1>
+      <p className="mt-2 max-w-[60ch] text-base text-text-2 text-pretty">{description}</p>
     </div>
   );
 }
@@ -146,10 +147,10 @@ function AskSkeleton() {
   }, []);
   if (!visible) return <div aria-hidden="true" className="h-[68px]" />;
   return (
-    <div role="status" className="flex flex-col items-center gap-3">
+    <div role="status" className="flex flex-col items-start gap-3 px-1">
       <span className="sr-only">Loading…</span>
-      <div aria-hidden="true" className="h-9 w-full max-w-[420px] rounded-lg bg-panel-2 motion-safe:animate-pulse" />
-      <div aria-hidden="true" className="h-5 w-full max-w-[320px] rounded-md bg-panel-2 motion-safe:animate-pulse" />
+      <div aria-hidden="true" className="h-8 w-full max-w-[420px] rounded-sm bg-panel-3 motion-safe:animate-shimmer" />
+      <div aria-hidden="true" className="h-5 w-full max-w-[320px] rounded-sm bg-panel-3 motion-safe:animate-shimmer" />
     </div>
   );
 }
@@ -170,30 +171,22 @@ function BlockedState({
   return (
     <div
       className={cx(
-        "mx-auto flex w-full max-w-[520px] flex-col items-center justify-center px-4 py-12 text-center",
+        // Left-aligned in the region (design.md empty states): a 20px muted icon, no tinted tile.
+        "mx-auto flex w-full max-w-[560px] flex-col items-start justify-center px-4 py-12",
         fullPage && "min-h-[60dvh] flex-1",
       )}
     >
-      <span className="grid size-12 place-items-center rounded-full bg-panel-2 text-muted">{icon}</span>
-      <h1 className="mt-4 text-[28px] leading-9 font-semibold tracking-tight text-balance">{title}</h1>
-      <p className="mt-2 text-base text-muted text-pretty">{description}</p>
-      {children && <div className="mt-6 flex flex-wrap items-center justify-center gap-3">{children}</div>}
+      <span className="text-muted">{icon}</span>
+      <h1 className="mt-3 text-2xl leading-tight">{title}</h1>
+      <p className="mt-2 max-w-[60ch] text-base text-text-2 text-pretty">{description}</p>
+      {children && <div className="mt-6 flex flex-wrap items-center gap-3">{children}</div>}
     </div>
   );
 }
 
 function ActionLink({ href, primary, children }: { href: string; primary?: boolean; children: ReactNode }) {
   return (
-    <Link
-      href={href}
-      className={cx(
-        "inline-flex min-h-11 items-center justify-center rounded-lg border px-4 text-sm font-medium",
-        "transition-colors duration-150 sm:min-h-10",
-        primary
-          ? "border-transparent bg-accent text-accent-contrast hover:opacity-90"
-          : "border-border-strong bg-panel text-text hover:bg-panel-2",
-      )}
-    >
+    <Link href={href} className={cx("key min-h-11 sm:min-h-10", primary && "key-primary")}>
       {children}
     </Link>
   );
@@ -206,72 +199,53 @@ const STEPS = ["Add", "We read it (under a minute)", "Ask and see the source"];
  *  native picker; drops are handled by the workspace-wide overlay (§5.5). */
 function UploadEmpty({ onUpload }: { onUpload: () => void }) {
   return (
-    <div className="mx-auto flex w-full max-w-[640px] flex-col items-center">
+    <div className="flex w-full flex-col">
       <Heading
         title="Add a document to get started"
         description="Drop in a PDF, Word, text or Markdown file. Scanned PDFs work too."
       />
       <label
         className={cx(
-          "group relative mt-6 flex h-[220px] w-full cursor-pointer flex-col items-center justify-center gap-2",
-          "rounded-xl bg-accent-soft/50 px-4 text-center transition-colors duration-150",
-          "hover:bg-accent-soft focus-within:bg-accent-soft",
+          // Dashed dropzone edge at 3:1 (dropzone-border); hover and focus turn it solid accent.
+          "group relative mt-6 flex min-h-[200px] w-full cursor-pointer flex-col items-start justify-center gap-3",
+          "rounded-card border-[1.5px] border-dashed border-dropzone-border bg-accent-soft/40 px-6 py-6",
+          "transition-colors duration-(--dur-micro)",
+          "hover:border-solid hover:border-accent hover:bg-accent-soft",
+          "focus-within:border-solid focus-within:border-accent focus-within:bg-accent-soft",
+          "max-sm:items-stretch max-sm:px-4",
         )}
       >
-        <svg aria-hidden="true" className="pointer-events-none absolute inset-0 size-full">
-          {/* Stroke is centred on the edge and the outer half is clipped: 1.5px visible. */}
-          <rect
-            width="100%"
-            height="100%"
-            rx="12"
-            ry="12"
-            fill="none"
-            strokeWidth="3"
-            className={cx(
-              "stroke-dropzone-border [stroke-dasharray:4_4] transition-colors duration-150",
-              "group-hover:stroke-accent group-hover:[stroke-dasharray:none]",
-              "group-focus-within:stroke-accent group-focus-within:[stroke-dasharray:none]",
-            )}
-          />
-        </svg>
-        <span className="grid size-10 place-items-center rounded-full bg-panel text-accent">
-          <Icon name="upload" width={20} height={20} />
+        <span className="flex items-center gap-3">
+          <Icon name="upload" width={20} height={20} className="shrink-0 text-accent" />
+          <span className="font-display text-lg font-medium pointer-coarse:hidden">Drag a file here, or</span>
+          <span className="hidden font-display text-lg font-medium pointer-coarse:inline">Tap to choose a file</span>
         </span>
-        <span className="text-base font-semibold pointer-coarse:hidden">Drag a file here</span>
-        <span className="text-sm text-muted pointer-coarse:hidden">or</span>
-        <span className="hidden text-base font-semibold pointer-coarse:inline">Tap to choose a file</span>
         <button
           type="button"
           // The wrapping <label> would otherwise become the button's accessible name.
           aria-label="Choose a file"
           onClick={onUpload}
-          className={cx(
-            "inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-border-strong bg-panel px-4",
-            "text-sm font-medium text-text transition-colors duration-150",
-            "group-hover:border-transparent group-hover:bg-accent group-hover:text-accent-contrast",
-            "pointer-coarse:h-12 pointer-coarse:w-full pointer-coarse:max-w-[360px]",
-          )}
+          // The one action that fills this state, so it is the primary key.
+          className="key key-primary min-h-11 pointer-coarse:min-h-12 pointer-coarse:w-full pointer-coarse:max-w-[360px]"
         >
           <Icon name="paperclip" />
           Choose a file
         </button>
-        <span className="text-[13px] leading-5 text-muted">
-          Up to {MAX_MB} MB each · {MAX_FILES} at a time
+        <span className="text-sm text-muted">
+          Up to {MAX_MB} MB each, {MAX_FILES} at a time
         </span>
       </label>
-      <ol className="mt-4 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[13px] leading-5 text-muted">
+      {/* Three steps as a ruled row: numbers in the display face, no dots, no tinted circles. */}
+      <ol className="mt-4 grid grid-cols-1 border-t border-border sm:grid-cols-3 sm:divide-x sm:divide-border">
         {STEPS.map((step, i) => (
-          <li key={step} className="inline-flex items-center gap-2">
-            {i > 0 && <span aria-hidden="true">·</span>}
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                aria-hidden="true"
-                className="grid size-5 place-items-center rounded-full bg-accent-soft text-xs font-semibold tabular-nums text-accent"
-              >
-                {i + 1}
-              </span>
-              {step}
+          <li
+            key={step}
+            className="flex items-baseline gap-2 py-2.5 text-sm text-text-2 max-sm:border-b max-sm:border-border sm:px-3 sm:first:pl-1"
+          >
+            <span aria-hidden="true" className="font-display font-semibold tabular-nums text-muted">
+              {i + 1}
             </span>
+            {step}
           </li>
         ))}
       </ol>
@@ -297,23 +271,21 @@ function ReadingState({ docs }: { docs: DocumentItem[] }) {
   const shown = docs.slice(0, MAX_READING_ROWS);
   const more = docs.length - shown.length;
   return (
-    <div className="mx-auto w-full max-w-[640px]">
+    <div className="w-full">
       <Heading
         title="Reading your documents…"
         description="This usually takes 5 to 60 seconds. You can type your question now."
       />
       {shown.length > 0 && (
-        <ul aria-label="Documents being read" className="mt-6 flex flex-col gap-2">
+        <ul aria-label="Documents being read" className="mt-6 flex flex-col border-t border-border">
           {shown.map((doc) => {
             const since = Date.parse(doc.updated_at);
             return (
               <li
                 key={doc.id}
-                className="flex min-h-12 items-center gap-3 rounded-xl border border-border bg-panel px-3 py-2"
+                className="flex min-h-12 items-center gap-3 border-b border-border px-1 py-2.5"
               >
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-panel-2 text-muted">
-                  <Icon name="file" />
-                </span>
+                <Icon name="file" width={20} height={20} className="shrink-0 text-muted" />
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-sm font-medium" title={doc.filename}>
                     {middleTruncate(doc.filename, 48)}
@@ -334,7 +306,7 @@ function ReadingState({ docs }: { docs: DocumentItem[] }) {
           })}
         </ul>
       )}
-      {more > 0 && <p className="mt-2 text-center text-[13px] text-muted">+{more} more being read</p>}
+      {more > 0 && <p className="mt-2 px-1 text-xs text-muted tabular-nums">+{more} more being read</p>}
     </div>
   );
 }

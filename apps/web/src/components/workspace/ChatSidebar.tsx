@@ -21,7 +21,7 @@ import { api, ApiError } from "@/lib/api";
 import { ROLE_LABEL } from "@/lib/demo";
 import { useApi } from "@/lib/hooks";
 import type { DocumentItem, Page } from "@/lib/types";
-import { DotsIcon, secondaryButtonClass } from "./library/parts";
+import { DotsIcon } from "./library/parts";
 import type { ChatSession } from "./types";
 import { useUploads } from "./UploadsContext";
 import { useWorkspace } from "./WorkspaceContext";
@@ -35,11 +35,14 @@ interface ChatSidebarProps extends NavigateProps {
   pendingIds?: ReadonlySet<string>;
 }
 
-// 36px rows (44px below lg, where the sidebar is a touch drawer).
+// 36px rows (44px below lg, where the sidebar is a touch drawer). The rail is panel-2, so hover
+// steps one paper up to panel-3, and the current item takes the accent's soft fill (design.md).
 const ROW =
-  "flex h-11 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm transition-colors duration-150 lg:h-9";
-const ROW_IDLE = "text-text hover:bg-panel-2";
-const ROW_ACTIVE = "bg-accent-soft font-medium text-text";
+  "flex h-11 w-full items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors duration-(--dur-micro) lg:h-9";
+const ROW_IDLE = "text-text-2 hover:bg-panel-3 hover:text-text active:bg-panel-3";
+const ROW_ACTIVE = "bg-accent-soft font-medium text-accent";
+/** Row icons stay muted at rest and take the row's ink when it is current. */
+const rowIcon = (active: boolean) => cx("shrink-0", active ? "text-accent" : "text-muted");
 
 /** Sidebar contents (§5.2 + §5.10): logo row, New chat, Add files, My documents (+ready badge),
  *  Recent (date groups), footer (demo note, Admin console, user chip + menu).
@@ -81,9 +84,9 @@ export function ChatSidebar({ onNavigate, onCollapse, pendingIds }: ChatSidebarP
         <Link
           href={homePath(me.permissions)}
           onClick={() => onNavigate?.()}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1 pr-2 text-[15px] font-semibold text-text"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-2 font-display text-base font-semibold tracking-head text-text"
         >
-          <Logo size={28} />
+          <Logo size={26} />
           <span className="truncate">RackFlow AI</span>
         </Link>
         {onCollapse && (
@@ -94,14 +97,17 @@ export function ChatSidebar({ onNavigate, onCollapse, pendingIds }: ChatSidebarP
             aria-label="Collapse sidebar"
             title="Collapse sidebar (Ctrl+Shift+S)"
             aria-keyshortcuts="Control+Shift+S"
-            className="grid size-9 shrink-0 place-items-center rounded-lg text-muted transition-colors duration-150 hover:bg-panel-2 hover:text-text"
+            className={cx(
+              "grid size-9 shrink-0 place-items-center rounded-md text-muted transition-colors duration-(--dur-micro)",
+              "hover:bg-panel-3 hover:text-text focus-visible:text-text active:bg-panel-3",
+            )}
           >
             <SidebarIcon />
           </button>
         )}
       </div>
 
-      <div className="shrink-0 space-y-0.5 px-2">
+      <div className="shrink-0 space-y-px px-2">
         {/* §2.3: a role without chat:use is not offered chat actions. */}
         {canChat && (
           <Link
@@ -110,11 +116,8 @@ export function ChatSidebar({ onNavigate, onCollapse, pendingIds }: ChatSidebarP
             onClick={() => onNavigate?.()}
             title="New chat (Ctrl+Shift+O)"
             aria-keyshortcuts="Control+Shift+O"
-            className={cx(
-              "mb-2 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 lg:h-10",
-              "text-sm font-medium text-accent-contrast hover:bg-accent/90",
-              "transition-[background-color,scale] duration-100 active:scale-[.98]",
-            )}
+            // Secondary key: each page's own action (Send, Add files) is the one filled primary in view.
+            className="key mb-3 w-full min-h-11 lg:min-h-10"
           >
             <PencilIcon />
             New chat
@@ -130,7 +133,7 @@ export function ChatSidebar({ onNavigate, onCollapse, pendingIds }: ChatSidebarP
             }}
             className={cx(ROW, ROW_IDLE)}
           >
-            <Icon name="upload" className="shrink-0 text-muted" />
+            <Icon name="upload" className={rowIcon(false)} />
             Add files
           </button>
         )}
@@ -141,7 +144,7 @@ export function ChatSidebar({ onNavigate, onCollapse, pendingIds }: ChatSidebarP
           aria-current={libraryActive ? "page" : undefined}
           className={cx(ROW, libraryActive ? ROW_ACTIVE : ROW_IDLE)}
         >
-          <Icon name="documents" className="shrink-0 text-muted" />
+          <Icon name="documents" className={rowIcon(libraryActive)} />
           <span className="flex-1 truncate">My documents</span>
           <ReadyBadge canRead={me.permissions.includes("collection:read")} readyUploads={readyUploads} />
         </Link>
@@ -155,13 +158,13 @@ export function ChatSidebar({ onNavigate, onCollapse, pendingIds }: ChatSidebarP
 
       <div className="shrink-0 border-t border-border px-2 pt-2 pb-[max(8px,env(safe-area-inset-bottom))]">
         {persona && canChat && (
-          <p className="px-2.5 pb-2 text-xs text-muted">
+          <p className="px-2.5 pt-1 pb-2 text-xs text-muted">
             Shared demo account: anyone using it sees these chats.
           </p>
         )}
         {consoleHref && (
           <Link href={consoleHref} onClick={() => onNavigate?.()} className={cx(ROW, ROW_IDLE)}>
-            <Icon name="settings" className="shrink-0 text-muted" />
+            <Icon name="settings" className={rowIcon(false)} />
             Admin console
           </Link>
         )}
@@ -190,10 +193,8 @@ function ReadyBadge({ canRead, readyUploads }: { canRead: boolean; readyUploads:
   const label = count >= 200 && ready.data?.next_cursor ? "200+" : String(count);
   return (
     <>
-      <span
-        aria-hidden="true"
-        className="badge rounded-full bg-panel-2 px-2 py-0.5 text-xs font-medium tabular-nums text-muted"
-      >
+      {/* Unboxed count (design.md sidebar rule). */}
+      <span aria-hidden="true" className="text-xs tabular-nums text-muted">
         {label}
       </span>
       <span className="sr-only">, {label} ready</span>
@@ -276,7 +277,7 @@ function groupSessions(items: ChatSession[], todayStart: number): SessionGroup[]
     }
     const title = titleOf(session);
     const repeated = (titleCount.get(title) ?? 0) > 1 && !Number.isNaN(t);
-    group.rows.push({ session, label: repeated ? `${title} · ${formatTime(at)}` : title });
+    group.rows.push({ session, label: repeated ? `${title} (${formatTime(at)})` : title });
   }
   return groups;
 }
@@ -409,8 +410,12 @@ function RecentChats({
   const empty = visible.length === 0;
 
   return (
-    <nav aria-label="Recent chats" ref={navRef} className="mt-4 min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-      <div aria-hidden="true" className="px-2.5 pb-1 text-xs font-semibold text-muted">
+    <nav
+      aria-label="Recent chats"
+      ref={navRef}
+      className="mt-4 min-h-0 flex-1 overflow-y-auto border-t border-border px-2 pt-3 pb-3"
+    >
+      <div aria-hidden="true" className="px-2.5 pb-1 text-sm font-medium text-text-2">
         Recent
       </div>
 
@@ -420,10 +425,7 @@ function RecentChats({
           <button
             type="button"
             onClick={() => sessions.reload()}
-            className={cx(
-              "mt-1.5 inline-flex h-11 items-center gap-1.5 rounded-lg border border-border-strong bg-panel px-3",
-              "text-sm font-medium text-text transition-colors duration-150 hover:bg-panel-2 lg:h-9",
-            )}
+            className="key mt-2 min-h-11 px-3 lg:min-h-9"
           >
             <Icon name="refresh" />
             Retry
@@ -437,7 +439,7 @@ function RecentChats({
           <ul aria-hidden="true">
             {SKELETON_WIDTHS.map((w) => (
               <li key={w} className="flex h-11 items-center px-2.5 lg:h-9">
-                <span className={cx("h-3 rounded bg-border motion-safe:animate-shimmer", w)} />
+                <span className={cx("h-3 rounded-sm bg-panel-3 motion-safe:animate-shimmer", w)} />
               </li>
             ))}
           </ul>
@@ -488,7 +490,7 @@ function RecentChats({
                       aria-current={active ? "page" : undefined}
                       className={cx(
                         ROW,
-                        active ? ROW_ACTIVE : cx(ROW_IDLE, "group-hover/row:bg-panel-2"),
+                        active ? ROW_ACTIVE : cx(ROW_IDLE, "group-hover/row:bg-panel-3 group-hover/row:text-text"),
                         // Room for the "⋯" button whenever it shows, so it never covers the title.
                         !pending && "max-lg:pr-12 [@media(hover:none)]:pr-12",
                         !pending &&
@@ -598,7 +600,12 @@ function RenameInput({
           }
         }}
         // 16px below lg so iOS doesn't zoom the page on focus.
-        className="h-11 w-full rounded-lg border border-accent bg-panel px-2.5 text-base text-text outline-none lg:h-9 lg:text-sm"
+        className={cx(
+          "h-11 w-full rounded-input border bg-panel px-2.5 text-base text-text lg:h-9 lg:text-sm",
+          // Inset ring: the list scrolls, and an outset ring would be clipped at its edges.
+          "focus-visible:outline-offset-[-1px]",
+          error ? "border-bad" : "border-border-strong",
+        )}
       />
       {error && (
         <p id={errorId} role="alert" className="px-2.5 pt-1 pb-1 text-xs text-bad">
@@ -683,7 +690,7 @@ function ChatRowMenu({
 
   const itemClass = cx(
     ROW,
-    "justify-start text-left outline-none hover:bg-panel-2 focus-visible:bg-panel-2",
+    "justify-start text-left hover:bg-panel-2 focus-visible:bg-panel-2 focus-visible:outline-offset-[-2px]",
   );
 
   return (
@@ -704,9 +711,10 @@ function ChatRowMenu({
           }
         }}
         className={cx(
-          "absolute top-1/2 right-0 grid size-11 -translate-y-1/2 place-items-center rounded-lg text-muted",
-          "transition-[opacity,background-color,color] duration-150 hover:bg-border/60 hover:text-text",
-          "aria-expanded:bg-border/60 aria-expanded:text-text aria-expanded:opacity-100",
+          "absolute top-1/2 right-0 grid size-11 -translate-y-1/2 place-items-center rounded-md text-muted",
+          "transition-[opacity,background-color,color] duration-(--dur-micro) hover:bg-border-2/70 hover:text-text",
+          "active:bg-border-2 focus-visible:text-text",
+          "aria-expanded:bg-border-2/70 aria-expanded:text-text aria-expanded:opacity-100",
           "lg:right-1 lg:size-7 lg:pointer-coarse:size-9",
           active
             ? "opacity-100"
@@ -729,8 +737,8 @@ function ChatRowMenu({
             }, () => setOpen(false))
           }
           className={cx(
-            "fixed inset-auto m-0 w-44 rounded-xl border border-border bg-panel p-1 text-text shadow-elev-3",
-            "transition-opacity duration-200 ease-[var(--ease-snappy)] starting:opacity-0",
+            "fixed inset-auto m-0 w-44 rounded-lg border border-border-2 bg-panel p-1 text-text shadow-elev-3",
+            "transition-opacity duration-(--dur-short) ease-out starting:opacity-0",
           )}
         >
           <button type="button" role="menuitem" tabIndex={-1} onClick={() => pick(onRename)} className={cx(itemClass, "text-text")}>
@@ -806,25 +814,27 @@ function DeleteChatDialog({
         if (open) onCancel();
       }}
       className={cx(
-        "m-auto w-[min(calc(100%-32px),420px)] rounded-2xl border border-border bg-panel p-6 text-text shadow-elev-3",
-        "backdrop:bg-black/40 transition-opacity duration-200 ease-[var(--ease-snappy)] starting:opacity-0",
+        "cut m-auto w-[min(calc(100%-32px),420px)] border border-border bg-panel p-6 text-text shadow-elev-3",
+        "backdrop:bg-[color-mix(in_oklab,var(--graphite)_55%,transparent)]",
+        "transition-opacity duration-(--dur-short) ease-out starting:opacity-0",
       )}
     >
       {shown !== null && (
         <>
-          <h2 id={titleId} className="text-base font-semibold">
+          <h2 id={titleId} className="text-lg">
             Delete chat?
           </h2>
-          <p id={descId} className="mt-2 text-sm text-muted [overflow-wrap:anywhere]">
+          <p id={descId} className="mt-2 text-sm text-text-2 [overflow-wrap:anywhere]">
             This deletes &ldquo;{shown}&rdquo; and its answers. Your documents aren&apos;t affected.
           </p>
           {error && (
-            <p role="alert" className="mt-4 rounded-lg bg-bad-soft px-3 py-2 text-sm text-bad">
+            <p role="alert" className="mt-4 flex items-start gap-2 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">
+              <Icon name="cross" className="mt-0.5 shrink-0" />
               {error}
             </p>
           )}
           <div className="mt-6 flex flex-wrap justify-end gap-2">
-            <button ref={cancelRef} type="button" onClick={onCancel} className={secondaryButtonClass}>
+            <button ref={cancelRef} type="button" onClick={onCancel} className="key pointer-coarse:min-h-11">
               Cancel
             </button>
             <button
@@ -833,11 +843,7 @@ function DeleteChatDialog({
               onClick={() => {
                 if (!busy) onConfirm();
               }}
-              className={cx(
-                "inline-flex h-9 items-center justify-center rounded-lg border border-border-strong bg-panel px-4",
-                "text-sm font-medium text-bad transition-colors duration-150 hover:bg-bad-soft pointer-coarse:h-11",
-                "aria-disabled:cursor-not-allowed aria-disabled:opacity-60",
-              )}
+              className="key key-danger hover:bg-bad-soft pointer-coarse:min-h-11"
             >
               {busy ? "Deleting…" : "Delete"}
             </button>
@@ -954,7 +960,10 @@ function UserMenu({ onNavigate }: NavigateProps) {
 
   const name = me.display_name.trim() || me.email;
   const initial = name.charAt(0).toUpperCase();
-  const itemClass = cx(ROW, "text-text hover:bg-panel-2 focus:bg-panel-2");
+  const itemClass = cx(
+    ROW,
+    "text-text hover:bg-panel-2 focus:bg-panel-2 focus-visible:outline-offset-[-2px] aria-disabled:opacity-55",
+  );
 
   return (
     <div ref={wrapRef} className="relative mt-1">
@@ -966,8 +975,8 @@ function UserMenu({ onNavigate }: NavigateProps) {
           aria-labelledby={buttonId}
           onKeyDown={(e) => onMenuKeyDown(e, menuRef.current, closeMenu, () => setOpen(false))}
           className={cx(
-            "absolute inset-x-0 bottom-full z-20 mb-1 rounded-xl border border-border bg-panel p-1 shadow-elev-3",
-            "transition-[opacity,translate] duration-200 ease-[var(--ease-snappy)]",
+            "absolute inset-x-0 bottom-full z-20 mb-1 rounded-lg border border-border-2 bg-panel p-1 shadow-elev-3",
+            "transition-[opacity,translate] duration-(--dur-short) ease-out",
             "starting:opacity-0 motion-safe:starting:translate-y-1",
           )}
         >
@@ -989,7 +998,7 @@ function UserMenu({ onNavigate }: NavigateProps) {
               }}
               className={itemClass}
             >
-              <Icon name="users" className="shrink-0 text-muted" />
+              <Icon name="users" className={rowIcon(false)} />
               Switch persona
             </Link>
           )}
@@ -1004,7 +1013,7 @@ function UserMenu({ onNavigate }: NavigateProps) {
               }}
               className={itemClass}
             >
-              <Icon name="settings" className="shrink-0 text-muted" />
+              <Icon name="settings" className={rowIcon(false)} />
               Admin console
             </Link>
           )}
@@ -1016,7 +1025,7 @@ function UserMenu({ onNavigate }: NavigateProps) {
             onClick={() => void signOut()}
             className={itemClass}
           >
-            <Icon name="logout" className="shrink-0 text-muted" />
+            <Icon name="logout" className={rowIcon(false)} />
             {signingOut ? "Signing out…" : "Sign out"}
           </button>
         </div>
@@ -1031,11 +1040,14 @@ function UserMenu({ onNavigate }: NavigateProps) {
         aria-controls={open ? menuId : undefined}
         onClick={() => (open ? setOpen(false) : openMenu("first"))}
         onKeyDown={onButtonKeyDown}
-        className="flex h-13 w-full items-center gap-2.5 rounded-lg px-2 text-left transition-colors duration-150 hover:bg-panel-2"
+        className={cx(
+          "flex h-13 w-full items-center gap-2.5 rounded-md px-2 text-left transition-colors duration-(--dur-micro)",
+          "hover:bg-panel-3 active:bg-panel-3 aria-expanded:bg-panel-3",
+        )}
       >
         <span
           aria-hidden="true"
-          className="grid size-8 shrink-0 place-items-center rounded-full bg-accent-soft text-sm font-semibold text-accent"
+          className="grid size-8 shrink-0 place-items-center rounded-full border border-border-2 bg-panel font-display text-sm font-semibold text-text-2"
         >
           {initial}
         </span>
