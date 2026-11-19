@@ -45,18 +45,28 @@ const TEXT_LINK =
   "inline-flex min-h-11 items-center font-medium text-accent underline-offset-4 hover:underline focus-visible:underline " +
   "active:text-accent-hover transition-colors duration-(--dur-micro) sm:min-h-8";
 
-/** A landing section below the hero: its own anchor, the section gap above, clear of the sticky bar. */
+/** The full section gap between the sections below the hero (128/96/72px). */
+const SECTION_GAP = "mt-(--section-gap)";
+
+/** The demo accounts are the hero's second way in, so they sit one step closer: the section gap capped at
+ *  --space-3xl (96px on desktop, the tablet section gap; 72px on phones). From 1280 to 1920 the demo head and
+ *  the tops of the four columns then land in the first screen instead of a blank band under the hero. */
+const HERO_GAP = "mt-[min(var(--section-gap),var(--space-3xl))]";
+
+/** A landing section below the hero: its own anchor, a gap above, clear of the sticky bar. */
 function Section({
   id,
+  gap = SECTION_GAP,
   className,
   children,
 }: {
   id: string;
+  gap?: string;
   className?: string;
   children: ReactNode;
 }) {
   return (
-    <section id={id} aria-labelledby={`${id}-title`} className={cx(CONTAINER, "mt-(--section-gap) scroll-mt-20", className)}>
+    <section id={id} aria-labelledby={`${id}-title`} className={cx(CONTAINER, gap, "scroll-mt-20", className)}>
       {children}
     </section>
   );
@@ -102,20 +112,20 @@ export default function LandingPage() {
           </section>
 
           <DemoOnly>
-            <Section id="demo">
+            <Section id="demo" gap={HERO_GAP}>
               <div className={cx(SPLIT, "gap-y-4 lg:items-end")}>
                 <h2 id="demo-title" className={H2}>
                   Try it with a demo account
                 </h2>
                 <p className="max-w-[52ch] text-base text-text-2">
-                  No sign-up and no password. Each account sees a different part of RackFlow.
+                  No sign-up and no password.
                 </p>
               </div>
               <div className="mt-10">
                 <DemoPersonaCards variant="landing" />
               </div>
               <p className="mt-6 text-sm text-muted">
-                Have your own account?{" "}
+                Have an account?{" "}
                 <Link href="/login" className={TEXT_LINK}>
                   Sign in
                 </Link>

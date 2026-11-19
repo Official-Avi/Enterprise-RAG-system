@@ -172,9 +172,9 @@ function RoleSelect({ member, onChanged }: { member: Member; onChanged: () => vo
       </select>
       {draft && (
         <div className="flex gap-2">
-          <Button variant="primary" className="min-h-8 px-3 text-xs max-sm:min-h-11" aria-label={`Apply role change for ${member.email}`} onClick={() => setConfirming(true)}>Apply</Button>
+          <Button variant="primary" size="sm" aria-label={`Apply role change for ${member.email}`} onClick={() => setConfirming(true)}>Apply</Button>
           <Button
-            className="min-h-8 px-3 text-xs max-sm:min-h-11"
+            size="sm"
             aria-label={`Undo role change for ${member.email}`}
             onClick={() => {
               setDraft(null);

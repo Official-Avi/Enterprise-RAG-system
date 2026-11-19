@@ -365,6 +365,44 @@ export default function CollectionsPage() {
           <Empty title="No collections yet">{canCreate ? "Create a collection, then upload documents into it." : "An Engineer or Admin can create one."}</Empty>
         )}
         {list.data && list.data.length > 0 && (
+          <>
+            {/* Under sm the table would push the actions out of reach, so each collection is a ruled
+                row with its actions on their own line. One of the two is always display:none, so
+                assistive tech only ever meets one of them. */}
+            <ul className="divide-y divide-border border-y border-border sm:hidden">
+              {list.data.map((c) => {
+                const manageable = c.access_level === "manage" && canManage;
+                return (
+                  <li key={c.id} className="py-3">
+                    <Link href={`/documents?collection=${c.id}`} className={NAME_LINK}>
+                      {c.name}
+                    </Link>
+                    {c.description && <p className="mt-0.5 text-sm text-muted [overflow-wrap:anywhere]">{c.description}</p>}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Badge tone={c.visibility === "restricted" ? "warn" : "neutral"}>
+                        <span className="inline-flex items-center gap-1">
+                          {c.visibility === "restricted" && <Icon name="lock" width={12} height={12} aria-hidden="true" />}
+                          {c.visibility === "restricted" ? "Restricted" : "Workspace"}
+                        </span>
+                      </Badge>
+                      {c.access_level ? <Badge>{ACCESS_LABEL[c.access_level] ?? c.access_level}</Badge> : <span className="text-sm text-muted">Metadata only</span>}
+                    </div>
+                    <p className="mt-2 text-sm text-text-2 tabular-nums">
+                      {c.document_count} document{c.document_count === 1 ? "" : "s"}
+                      <span className="text-muted">, updated {formatTime(c.updated_at)}</span>
+                    </p>
+                    {manageable && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button aria-label={`Manage access to ${c.name}`} onClick={() => setManaging(c)}>Manage access</Button>
+                        <Button aria-label={`Edit ${c.name}`} onClick={() => setEditing(c)}>Edit</Button>
+                        <Button variant="danger" aria-label={`Delete ${c.name}`} onClick={() => setDeleting(c)}>Delete</Button>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="max-sm:hidden">
           <TableWrap>
             <thead>
               <tr><Th>Name</Th><Th>Visibility</Th><Th>Your access</Th><Th className="text-right">Documents</Th><Th>Updated</Th><Th className="relative"><span className="sr-only">Actions</span></Th></tr>
@@ -406,6 +444,8 @@ export default function CollectionsPage() {
               })}
             </tbody>
           </TableWrap>
+            </div>
+          </>
         )}
       </div>
       {managing && <ManageAccess collection={managing} onClose={() => { setManaging(null); list.reload(); }} />}

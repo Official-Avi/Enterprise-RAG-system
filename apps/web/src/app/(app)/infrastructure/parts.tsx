@@ -124,7 +124,7 @@ function EditDialog({
 
 function RowButton({ name, verb, danger, onClick }: { name: string; verb: string; danger?: boolean; onClick: () => void }) {
   return (
-    <Button variant={danger ? "danger" : "secondary"} aria-label={`${verb} ${name}`} className="min-h-8 px-3 text-xs max-sm:min-h-11" onClick={onClick}>
+    <Button variant={danger ? "danger" : "secondary"} aria-label={`${verb} ${name}`} size="sm" onClick={onClick}>
       {verb}
     </Button>
   );

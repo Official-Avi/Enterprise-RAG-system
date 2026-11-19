@@ -208,8 +208,9 @@ function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, butt
       <span id={`${id}-who`} className="mt-1 block truncate font-mono text-xs text-muted">
         {p.email}
       </span>
+      {/* Two things the role can do and one it can't: enough to tell the four apart at a glance. */}
       <span id={`${id}-caps`} className="mt-4 flex flex-col gap-1 text-sm leading-6">
-        {p.can.slice(0, 3).map((c) => (
+        {p.can.slice(0, 2).map((c) => (
           <span key={c} className="flex items-start gap-2 text-text">
             <LineIcon className="text-accent">
               <Icon name="check" />
@@ -220,7 +221,7 @@ function LandingCard({ persona: p, state, isCurrent, highlighted, onChoose, butt
         {p.cannot.length === 0 ? (
           <span className="pl-6 text-muted">No limits</span>
         ) : (
-          p.cannot.slice(0, 2).map((c) => (
+          p.cannot.slice(0, 1).map((c) => (
             <span key={c} className="flex items-start gap-2 text-muted">
               <LineIcon>
                 <Glyph d={MINUS} size={16} />
@@ -309,7 +310,7 @@ function Skeletons({ variant }: { variant: Variant }) {
       {variant === "landing" ? (
         <div aria-hidden="true" className={GRID}>
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} className={cx(COLUMN, "h-[304px] flex-col gap-3 p-6")}>
+            <div key={i} className={cx(COLUMN, "h-[292px] flex-col gap-3 p-6")}>
               <div className={cx(bar, "h-6 w-1/2")} />
               <div className={cx(bar, "h-4 w-3/4")} />
               <div className={cx(bar, "mt-4 h-4 w-full")} />

@@ -151,7 +151,7 @@ export default function AuditPage() {
                       <span className="hidden max-w-40 truncate font-mono text-xs text-muted min-[1400px]:inline">
                         {Object.keys(e.metadata).length ? JSON.stringify(e.metadata) : "None"}
                       </span>
-                      <Button className="min-h-8 shrink-0 px-3 text-xs max-sm:min-h-11" aria-label={`View details: ${e.action}, ${formatTime(e.created_at)}`} onClick={() => setOpen(e)}>View</Button>
+                      <Button size="sm" className="shrink-0" aria-label={`View details: ${e.action}, ${formatTime(e.created_at)}`} onClick={() => setOpen(e)}>View</Button>
                     </div>
                   </Td>
                   <Td className="text-xs text-muted">{e.correlation_id ? <span className="font-mono">{shortId(e.correlation_id)}</span> : "None"}</Td>
