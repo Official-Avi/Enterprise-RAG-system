@@ -227,9 +227,36 @@ def _is_evidence(sentence: str) -> bool:
                 or looks_like_injection(sentence))
 
 
+_PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n\s*")
+MIN_SCATTERED_WORDS = 8
+
+
+def _rejoin_scattered_words(text: str) -> str:
+    """Undo the PDF extraction that puts every word of a justified line in its own paragraph.
+
+    Some PDFs (CVs especially) come out as "Proficient\\n\\nin\\n\\nPython,\\n\\nFastAPI," and each
+    word then became its own "sentence" or heading, so quotes landed on the name and phone line.
+    Only a chunk that is mostly one-word paragraphs is touched; a break after a full stop stays.
+    """
+    paragraphs = _PARAGRAPH_BREAK_RE.split(text)
+    single = sum(1 for p in paragraphs if len(p.split()) == 1)
+    if single < MIN_SCATTERED_WORDS or single * 3 < len(paragraphs):
+        return text
+    merged = [paragraphs[0]]
+    for paragraph in paragraphs[1:]:
+        previous = merged[-1].rstrip()
+        last_line = previous.rsplit("\n", 1)[-1]
+        scattered = len(paragraph.split()) == 1 or len(last_line.split()) == 1
+        if scattered and previous and not previous.endswith(_TERMINAL):
+            merged[-1] = f"{previous} {paragraph.lstrip()}"
+        else:
+            merged.append(paragraph)
+    return "\n\n".join(merged)
+
+
 def parse_passage(text: str) -> Passage:
     """Clean sentences of a chunk, each with the heading it sits under."""
-    lines = text.split("\n")
+    lines = _rejoin_scattered_words(text).split("\n")
     title = ""
     heading = ""
     section = 0

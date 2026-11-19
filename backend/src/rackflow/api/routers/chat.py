@@ -48,6 +48,12 @@ def _no_nul(value: str) -> str:
     return value
 
 
+def _not_blank(value: str) -> str:
+    """A message of only spaces would be stripped to "" and still sent to the model."""
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
 StoredText = Annotated[str, AfterValidator(_no_nul)]
 
 
@@ -112,7 +118,8 @@ class SessionDetail(BaseModel):
 
 
 class AskIn(BaseModel):
-    message: StoredText = Field(min_length=1, max_length=4000)
+    message: Annotated[StoredText, AfterValidator(_not_blank)] = Field(min_length=1,
+                                                                       max_length=4000)
     collection_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
 
 

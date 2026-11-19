@@ -64,7 +64,7 @@ export interface WorkspaceApi {
 export interface AnswerView {
   id: string;
   text: string;
-  evidence_status: "supported" | "insufficient";
+  evidence_status: "supported" | "insufficient" | "conversational";
   citations: Citation[];
   model: ModelRef | null;
   latency_ms: number | null;

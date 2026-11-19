@@ -202,6 +202,23 @@ test.describe("Ask as the Engineer", () => {
     await expect(page).not.toHaveTitle("Ask · RackFlow AI");
     await page.screenshot({ path: join(SHOTS, "22-ask-answered.png"), fullPage: true });
   });
+
+  test("a greeting gets a plain reply, not the not-found card", async ({ page }) => {
+    await openAsk(page);
+    await questionBox(page).fill("hi");
+    await questionBox(page).press("Enter");
+
+    const turn = turns(page).filter({ hasText: "hi" }).first();
+    await expect(turn.getByTestId("conversational-reply")).toBeVisible({ timeout: 60_000 });
+    await expect(turn.getByTestId("conversational-reply")).not.toHaveText("");
+    await expect(turn.getByText("Your documents don't answer this")).toHaveCount(0);
+    await expect(page.getByRole("alert").filter({ hasText: /Something went wrong|Can't reach RackFlow/ })).toHaveCount(0);
+
+    // Delete the chat this test made, so reruns don't fill the Engineer's sidebar.
+    await expect(page).toHaveURL(/\/ask\/c\/[0-9a-f-]{36}$/);
+    const id = page.url().split("/").pop()!;
+    expect((await page.request.delete(`/api/v1/chat/sessions/${id}`, { headers: { "X-RackFlow-CSRF": "1" } })).ok()).toBe(true);
+  });
 });
 
 test.describe("Ask at a 320px viewport (§9 #15)", () => {
