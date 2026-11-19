@@ -148,7 +148,7 @@ services:
   # TLS termination for production. Started only with --profile prod, and configured only by the
   # deploy/compose.prod.yml overlay (DOMAIN, TLS_ISSUER). Routes everything to web:3000.
   caddy:
-    image: caddy:2.10.2
+    image: caddy:2.11.8
     profiles: ["prod"]
     restart: unless-stopped
     environment:
