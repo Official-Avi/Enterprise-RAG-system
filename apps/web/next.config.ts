@@ -71,6 +71,9 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // scripts/dev/start-web.ps1 builds the local prod server into .next-prod so it never collides with a
+  // running dev server's .next. Unset (Docker, CI) it is the usual .next.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   poweredByHeader: false,
   // Stops `next dev` writing a generated AGENTS.md into this folder.
   agentRules: false,
