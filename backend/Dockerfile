@@ -15,7 +15,7 @@
 # sha256:f513a91fc62fe7c17567eee97230dd198e43edb8a9fbecca843714a4358fe1bc).
 FROM ghcr.io/astral-sh/uv:0.12.22 AS uv
 
-FROM python:3.12.16-slim-trixie AS build
+FROM python:3.15.2-slim-trixie AS build
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev \
  && python -m compileall -q /app/src /app/migrations
 
-FROM python:3.12.16-slim-trixie AS runtime
+FROM python:3.15.2-slim-trixie AS runtime
 
 ARG APP_UID=10001
 ARG APP_GID=10001
