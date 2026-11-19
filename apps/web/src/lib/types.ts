@@ -191,7 +191,7 @@ export interface ChatMessage {
   id: Uuid;
   role: "user" | "assistant";
   content: string;
-  evidence_status: "supported" | "insufficient" | null;
+  evidence_status: "supported" | "insufficient" | "conversational" | null;
   citations: Citation[];
   model: ModelRef | null;
   latency_ms: number | null;
@@ -213,7 +213,7 @@ export interface AnswerResponse {
   message_id: Uuid;
   user_message_id: Uuid;
   answer: string;
-  evidence_status: "supported" | "insufficient";
+  evidence_status: "supported" | "insufficient" | "conversational";
   citations: Citation[];
   model: ModelRef;
   latency_ms: number;

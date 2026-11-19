@@ -149,6 +149,7 @@ const statusMap: Record<string, [Tone, StatusGlyphName, string]> = {
   healthy: ["ok", "check", "Healthy"],
   failed: ["bad", "cross", "Failed"],
   insufficient: ["warn", "alert", "Insufficient evidence"],
+  conversational: ["neutral", "check", "Conversation"],
   stale: ["warn", "alert", "Stale"],
   cancelled: ["neutral", "ban", "Cancelled"],
   deleting: ["warn", "trash", "Deleting"],

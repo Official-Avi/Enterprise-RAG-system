@@ -33,6 +33,7 @@ from rackflow.rag.prompts import (
     SYSTEM_PROMPT,
 )
 from rackflow.rag.retrieval import RetrievedChunk, retrieve
+from rackflow.rag.smalltalk import small_talk_reply
 from rackflow.tenant_settings import effective_settings
 
 CONTEXT_BUDGET_TOKENS = 6000
@@ -58,7 +59,7 @@ class CitationResult:
 @dataclass(slots=True)
 class AnswerResult:
     answer: str
-    evidence_status: Literal["supported", "insufficient"]
+    evidence_status: Literal["supported", "insufficient", "conversational"]
     citations: list[CitationResult] = field(default_factory=list)
     provider: str = ""
     model: str = ""
@@ -108,12 +109,21 @@ def _quote(chunk: RetrievedChunk, claim: str, answer: str) -> str:
 
 
 def _claims_by_marker(text: str) -> dict[int, str]:
-    """What the answer says from each source: the text in front of that source's markers."""
+    """What the answer says from each source: the text in front of that source's markers.
+
+    "To fix it, follow these steps [1]:" puts the facts after the marker, so a marker followed by
+    a colon also claims the text up to the next marker; otherwise its quote is picked from the
+    lead-in alone and lands on the symptom, not the fix.
+    """
     claims: dict[int, list[str]] = {}
+    runs = list(_MARKER_RUN_RE.finditer(text))
     position = 0
-    for run in _MARKER_RUN_RE.finditer(text):
+    for i, run in enumerate(runs):
         before = text[position:run.start()]
         position = run.end()
+        if text[run.end():].lstrip(" \t").startswith(":"):
+            end = runs[i + 1].start() if i + 1 < len(runs) else len(text)
+            before += " " + text[run.end():end]
         for raw in MARKER_RE.findall(run.group(0)):
             claims.setdefault(int(raw), []).append(before)
     return {marker: " ".join(parts) for marker, parts in claims.items()}
@@ -157,7 +167,9 @@ def refusal_text(reply: str) -> str:
     """What the reader sees for an INSUFFICIENT_EVIDENCE reply. A refusal has no citations, so any
     marker the model left in its explanation would point at nothing and is removed."""
     explanation = FULLWIDTH_MARKER_RE.sub("", reply[len(INSUFFICIENT_MARKER):])
-    explanation = re.sub(r"[ \t]{2,}", " ", MARKER_RE.sub("", explanation)).strip()
+    # "[ \t]*" too: "by the platform team [3]." must not become "by the platform team ."
+    explanation = re.sub(r"[ \t]*" + MARKER_RE.pattern, "", explanation)
+    explanation = re.sub(r"[ \t]{2,}", " ", explanation).strip()
     return ("The available sources don't contain enough information to answer this."
             + (f" {explanation}" if explanation else ""))
 
@@ -215,7 +227,8 @@ def prior_user_turns(db: Session, tenant_id: uuid.UUID, conversation_id: uuid.UU
         .order_by(ChatMessage.created_at.desc())
         .limit(MAX_HISTORY_LOOKBACK)
     ).all()
-    return list(reversed(rows))
+    # A greeting or "thanks" is not context for the next question.
+    return [q for q in reversed(rows) if small_talk_reply(q) is None]
 
 
 def answer_question(db: Session, principal: Principal, question: str,
@@ -226,6 +239,13 @@ def answer_question(db: Session, principal: Principal, question: str,
     started = time.perf_counter()
     settings = effective_settings(db, principal.tenant_id)
     provider = get_chat_provider()
+
+    reply = small_talk_reply(question)
+    if reply is not None:  # "hi", "thanks", "what can you do": no search, no model call
+        return AnswerResult(answer=reply, evidence_status="conversational",
+                            latency_ms=int((time.perf_counter() - started) * 1000),
+                            provider=provider.provider, model=provider.model,
+                            deployment_mode=provider.deployment_mode)
 
     context = followup_context(question, history)
     query = f"{context} {question}" if context else question

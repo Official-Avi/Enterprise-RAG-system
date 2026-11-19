@@ -298,7 +298,11 @@ export function useChatSession(options: Options) {
       const answer = answerFromResponse(res);
       const now = live.current;
       const hadCitations = now.turns.some((t) => t.id !== turnId && (t.answer?.citations.length ?? 0) > 0);
-      const searched = now.data.collections.length ? scopeLabel(now.data.collections, req.scope) : "";
+      // A greeting searched nothing, so it gets no "Searched N documents" line.
+      const searched =
+        now.data.collections.length && answer.evidence_status !== "conversational"
+          ? scopeLabel(now.data.collections, req.scope)
+          : "";
       patchTurn(turnId, {
         status: "answered",
         answer,
@@ -308,10 +312,12 @@ export function useChatSession(options: Options) {
       });
       adoptUrl(sid);
       // A stopped or failed question named the chat, then a different one got the first answer.
+      // A greeting ("hi") doesn't settle the name either: the first real question still renames the chat.
       const named = unconfirmedTitle.current;
-      unconfirmedTitle.current = null;
+      const settles = answer.evidence_status !== "conversational";
+      if (settles) unconfirmedTitle.current = null;
       const title = titleFrom(req.text);
-      if (named !== null && named !== title) {
+      if (settles && named !== null && named !== title) {
         setSessionTitle(title);
         void renameSession(sid, title)
           .catch(() => undefined)

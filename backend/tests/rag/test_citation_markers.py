@@ -131,3 +131,37 @@ def test_prompt_sets_no_formatting_rule() -> None:
     6 of 11 answerable questions on 2026-11-06. The client handles bold and headings instead
     (AnswerBlock.tsx)."""
     assert "Markdown" not in SYSTEM_PROMPT and "plain text" not in SYSTEM_PROMPT
+
+
+# 2026-11-19 live check regressions.
+RUNBOOK_TEXT = (
+    "## Connection pool exhaustion\n"
+    "Symptom: API requests fail with the error \"connection pool exhausted\" and latency rises "
+    "sharply.\n\n"
+    "Resolution: restart the rackflow-api service first. If the error returns within one hour, "
+    "raise\nmax_connections in postgresql.conf from 100 to 200 and reload PostgreSQL with pg_ctl "
+    "reload.\n")
+
+
+def test_marker_before_a_list_quotes_the_steps_not_the_symptom() -> None:
+    answer = ("To fix the \"connection pool exhausted\" error, follow these steps [1]:\n\n"
+              "1. Restart the `rackflow-api` service.\n2. If the error returns within one hour, "
+              "increase `max_connections` in `postgresql.conf` from 100 to 200.\n"
+              "3. Reload PostgreSQL using `pg_ctl reload`.")
+    _, citations = verify_citations(answer, [_chunk(RUNBOOK_TEXT, "database-runbook.md")])
+    assert "max_connections" in citations[0].quote
+
+
+def test_stripped_marker_leaves_no_space_before_the_full_stop() -> None:
+    text = refusal_text("INSUFFICIENT_EVIDENCE: restore tests run every quarter by the team [3].")
+    assert text.endswith("by the team.")
+
+
+def test_scattered_pdf_words_are_quoted_as_a_sentence() -> None:
+    # A CV PDF came out with every word in its own paragraph; the quote landed on the phone line.
+    scattered = ("AI Engineer building backend systems. Proficient in Python, FastAPI, and "
+                 "PostgreSQL, with hands-on experience in API integration.").replace(" ", "\n\n")
+    text = f"JANE DOE Somewhere ,India\n📞\n+91\n\n6295433428\n\nObjective\n{scattered}"
+    _, citations = verify_citations("Jane Doe is proficient in Python and FastAPI [1].",
+                                    [_chunk(text, "cv.pdf")])
+    assert citations[0].quote.startswith("Proficient in Python, FastAPI, and PostgreSQL")

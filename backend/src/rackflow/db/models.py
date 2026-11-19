@@ -116,6 +116,8 @@ class StageStatus(enum.StrEnum):
 class EvidenceStatus(enum.StrEnum):
     SUPPORTED = "supported"
     INSUFFICIENT = "insufficient"
+    # A greeting, thanks or "what can you do": answered directly, no documents searched.
+    CONVERSATIONAL = "conversational"
 
 
 class StateSource(enum.StrEnum):
