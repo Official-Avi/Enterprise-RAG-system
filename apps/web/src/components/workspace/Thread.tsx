@@ -57,7 +57,7 @@ function answerTopVisible(scroller: HTMLElement, turnId: string): boolean {
 
 function readyMessage(answer: AnswerView): string {
   if (answer.evidence_status === "conversational") return `Reply: ${answer.text}`;
-  if (answer.evidence_status === "insufficient") return "Answer ready. Not found in your documents.";
+  if (answer.evidence_status === "insufficient") return "Answer ready. That's not covered in your documents.";
   const n = answer.citations.length;
   if (n === 0) return "Answer ready. Found in your documents.";
   return `Answer ready. Found in your documents, ${n} ${n === 1 ? "source" : "sources"}.`;

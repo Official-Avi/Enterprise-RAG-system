@@ -192,7 +192,7 @@ test.describe("Ask as the Engineer", () => {
     await expect(box).toBeFocused();
     // An answer or an honest "not found", never an error card.
     await expect(
-      page.getByText(/^(Found in your documents|Not found in your documents|Your documents don't answer this)$/).first(),
+      page.getByText(/^(Found in your documents|That's not covered in your documents)$/).first(),
     ).toBeVisible({ timeout: 60_000 });
     await expect(page.getByRole("alert").filter({ hasText: /Something went wrong|Can't reach RackFlow/ })).toHaveCount(0);
     await expect(box).toHaveValue("");
@@ -211,7 +211,7 @@ test.describe("Ask as the Engineer", () => {
     const turn = turns(page).filter({ hasText: "hi" }).first();
     await expect(turn.getByTestId("conversational-reply")).toBeVisible({ timeout: 60_000 });
     await expect(turn.getByTestId("conversational-reply")).not.toHaveText("");
-    await expect(turn.getByText("Your documents don't answer this")).toHaveCount(0);
+    await expect(turn.getByText("That's not covered in your documents")).toHaveCount(0);
     await expect(page.getByRole("alert").filter({ hasText: /Something went wrong|Can't reach RackFlow/ })).toHaveCount(0);
 
     // Delete the chat this test made, so reruns don't fill the Engineer's sidebar.

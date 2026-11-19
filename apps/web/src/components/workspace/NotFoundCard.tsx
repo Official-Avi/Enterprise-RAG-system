@@ -29,7 +29,7 @@ function SearchXIcon() {
   );
 }
 
-/** Calm "Not found in your documents" card with recovery actions (§5.6). Neutral on purpose:
+/** Calm, polite "not covered" card with recovery actions (§5.6). Neutral on purpose:
  *  an honest "not found" is a valid result, not an error, so no red and no citation chips. */
 export function NotFoundCard({
   retrievedCount,
@@ -46,14 +46,15 @@ export function NotFoundCard({
   const unknown = retrievedCount === null;
   const related = (retrievedCount ?? 0) > 0;
 
-  const title = unknown || related ? "Your documents don't answer this" : "Not found in your documents";
-  const body = unknown
-    ? "I couldn't find an answer to this in your documents."
+  const title = "That's not covered in your documents";
+  const found = unknown
+    ? "I couldn't find it in them."
     : related
-      ? "I found related passages, but none answer the question directly."
+      ? "The closest passages I found don't answer this question."
       : documentCount > 0
-        ? `I searched ${plural(documentCount, "document", "documents")} and found nothing about this.`
-        : "I searched your documents and found nothing about this.";
+        ? `I searched ${plural(documentCount, "document", "documents")} and found nothing about it.`
+        : "I searched them and found nothing about it.";
+  const body = `I only answer from the files you've added, so every answer can be checked. ${found}`;
 
   return (
     <div className="rounded-card border border-border bg-panel p-4 sm:p-6">
@@ -62,6 +63,9 @@ export function NotFoundCard({
         <div className="min-w-0 flex-1">
           <p className="font-display text-lg leading-7 font-semibold text-text">{title}</p>
           <p className="mt-1 max-w-[65ch] text-sm leading-6 text-text-2">{body}</p>
+          <p className="mt-1 max-w-[65ch] text-sm leading-6 text-text-2">
+            Try different words, or add a document that covers it.
+          </p>
           {readingCount > 0 && (
             <p className="mt-1 max-w-[65ch] text-sm leading-6 text-text-2">
               {readingCount === 1
