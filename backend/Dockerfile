@@ -13,7 +13,7 @@
 # uv is copied from its own pinned image (add @sha256:<digest> here too when pinning digests;
 # the 0.12.22 index digest seen on 2026-11-07 was
 # sha256:f513a91fc62fe7c17567eee97230dd198e43edb8a9fbecca843714a4358fe1bc).
-FROM ghcr.io/astral-sh/uv:0.12.22 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.9 AS uv
 
 FROM python:3.12.16-slim-trixie AS build
 ENV UV_COMPILE_BYTECODE=1 \
