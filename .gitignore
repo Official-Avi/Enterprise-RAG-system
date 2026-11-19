@@ -37,3 +37,24 @@ Thumbs.db
 # Local secrets kept in Docs/ (never commit)
 Docs/env
 Docs/demo-password.txt
+Docs/env.example
+Docs/MEMORY.md
+Docs/feedback-*.md
+Docs/project-*.md
+Docs/reference-*.md
+
+# Any other secret-like files, anywhere
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.dump
+*password*.txt
+*secret*.txt
+credentials*.json
+
+# Local screenshots/mockups
+/public/*.png
+!/public/image.png
