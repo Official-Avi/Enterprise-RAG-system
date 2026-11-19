@@ -9,14 +9,14 @@
 #  sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8) and let a bot such as
 # Renovate or Dependabot move it. Keep all three stages on the same tag.
 
-FROM node:24.22.2-alpine3.24 AS deps
+FROM node:26.13.1-alpine3.24 AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 # The npm cache lives in a BuildKit cache mount, never in a layer.
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --no-audit --no-fund
 
-FROM node:24.22.2-alpine3.24 AS build
+FROM node:26.13.1-alpine3.24 AS build
 WORKDIR /app
 # Rewrites (target and proxy timeout) are compiled into the standalone server at build time: point
 # /api/* at the API service. Keep API_PROXY_TIMEOUT_MS equal to the API's
@@ -33,7 +33,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:24.22.2-alpine3.24 AS runtime
+FROM node:26.13.1-alpine3.24 AS runtime
 
 ARG APP_UID=10001
 ARG APP_GID=10001
